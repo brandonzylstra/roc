@@ -371,6 +371,7 @@ pub const MappedProgramView = struct {
         resolved_imports: []ResolvedImportedFn,
     ) CacheError![]const ResolvedImportedFn {
         if (self.types.verify(name_store) != null) return error.CorruptSpecializationCacheFile;
+        if (!self.verifyStorage()) return error.CorruptSpecializationCacheFile;
         if (self.verifyCallTargets() != null) return error.CorruptSpecializationCacheFile;
         return try self.resolveImportTable(loaded_shards, resolved_imports);
     }
@@ -396,6 +397,261 @@ pub const MappedProgramView = struct {
         }
 
         return resolved_imports[0..self.imported_fns.len];
+    }
+
+    fn verifyStorage(self: MappedProgramView) bool {
+        if (self.expr_locs.len != 0 and self.expr_locs.len != self.exprs.len) return false;
+        if (self.expr_regions.len != 0 and self.expr_regions.len != self.exprs.len) return false;
+        if (self.stmt_locs.len != 0 and self.stmt_locs.len != self.stmts.len) return false;
+        if (self.stmt_regions.len != 0 and self.stmt_regions.len != self.stmts.len) return false;
+
+        for (self.locals) |local| {
+            if (!self.typeRefInBounds(local.ty)) return false;
+        }
+        for (self.expr_ids) |expr| {
+            if (!self.exprRefInBounds(expr)) return false;
+        }
+        for (self.pat_ids) |pat| {
+            if (!self.patRefInBounds(pat)) return false;
+        }
+        for (self.stmt_ids) |stmt| {
+            if (!self.stmtRefInBounds(stmt)) return false;
+        }
+        for (self.typed_locals) |typed_local| {
+            if (!self.localRefInBounds(typed_local.local)) return false;
+            if (!self.typeRefInBounds(typed_local.ty)) return false;
+        }
+        for (self.field_exprs) |field| {
+            if (!self.exprRefInBounds(field.value)) return false;
+        }
+        for (self.record_destructs) |destruct| {
+            if (!self.patRefInBounds(destruct.pattern)) return false;
+        }
+        for (self.str_pattern_steps) |step| {
+            if (step.capture) |capture| {
+                if (!self.patRefInBounds(capture)) return false;
+            }
+        }
+        for (self.branches) |branch| {
+            if (!self.patRefInBounds(branch.pat)) return false;
+            if (branch.guard) |guard| {
+                if (!self.exprRefInBounds(guard)) return false;
+            }
+            if (!self.exprRefInBounds(branch.body)) return false;
+        }
+        for (self.if_branches) |branch| {
+            if (!self.exprRefInBounds(branch.cond)) return false;
+            if (!self.exprRefInBounds(branch.body)) return false;
+        }
+
+        for (self.defs) |def| {
+            if (def.fn_id) |fn_id| {
+                if (!self.fnRefInBounds(fn_id)) return false;
+            }
+            if (!self.typedLocalSpanInBounds(def.args)) return false;
+            switch (def.body) {
+                .roc => |body| if (!self.exprRefInBounds(body)) return false,
+                .hosted => {},
+            }
+            if (!self.typeRefInBounds(def.ret)) return false;
+        }
+        for (self.nested_defs) |def| {
+            if (!self.fnRefInBounds(def.fn_id)) return false;
+            if (!self.typedLocalSpanInBounds(def.args)) return false;
+            if (!self.exprRefInBounds(def.body)) return false;
+            if (!self.typeRefInBounds(def.ret)) return false;
+        }
+        for (self.roots) |root| {
+            if (!self.defRefInBounds(root.def)) return false;
+        }
+        for (self.layout_requests) |request| {
+            if (!self.typeRefInBounds(request.ty)) return false;
+            if (request.def) |def| {
+                if (!self.defRefInBounds(def)) return false;
+            }
+        }
+        for (self.runtime_schema_requests) |request| {
+            if (!self.typeRefInBounds(request.ty)) return false;
+        }
+        for (self.exprs) |expr| {
+            if (!self.typeRefInBounds(expr.ty)) return false;
+            if (!self.verifyExprData(expr.data)) return false;
+        }
+        for (self.pats) |pat| {
+            if (!self.typeRefInBounds(pat.ty)) return false;
+            if (!self.verifyPatData(pat.data)) return false;
+        }
+        for (self.stmts) |stmt| {
+            if (!self.verifyStmt(stmt)) return false;
+        }
+
+        return true;
+    }
+
+    fn verifyExprData(self: MappedProgramView, data: Ast.ExprData) bool {
+        return switch (data) {
+            .local => |local| self.localRefInBounds(local),
+            .unit,
+            .int_lit,
+            .frac_f32_lit,
+            .frac_f64_lit,
+            .dec_lit,
+            .str_lit,
+            .uninitialized,
+            .crash,
+            .comptime_exhaustiveness_failed,
+            => true,
+            .list, .tuple => |span| self.exprIdSpanInBounds(span),
+            .record => |span| self.fieldExprSpanInBounds(span),
+            .tag => |tag| self.exprIdSpanInBounds(tag.payloads),
+            .nominal => |expr| self.exprRefInBounds(expr),
+            .let_ => |let_| self.patRefInBounds(let_.bind) and
+                self.exprRefInBounds(let_.value) and
+                self.exprRefInBounds(let_.rest),
+            .lambda => |lambda| self.fnRefInBounds(lambda.fn_id) and
+                self.typedLocalSpanInBounds(lambda.args) and
+                self.exprRefInBounds(lambda.body),
+            .def_ref => |def| self.defRefInBounds(def),
+            .fn_def => |fn_id| self.fnRefInBounds(fn_id),
+            .fn_ref => true,
+            .call_value => |call| self.exprRefInBounds(call.callee) and self.exprIdSpanInBounds(call.args),
+            .call_proc => |call| self.exprIdSpanInBounds(call.args),
+            .low_level => |call| self.exprIdSpanInBounds(call.args),
+            .field_access => |field| self.exprRefInBounds(field.receiver),
+            .tuple_access => |tuple| self.exprRefInBounds(tuple.tuple),
+            .structural_eq => |eq| self.exprRefInBounds(eq.lhs) and self.exprRefInBounds(eq.rhs),
+            .structural_hash => |hash| self.exprRefInBounds(hash.value) and self.exprRefInBounds(hash.hasher),
+            .match_ => |match| self.exprRefInBounds(match.scrutinee) and self.branchSpanInBounds(match.branches),
+            .if_ => |if_| self.ifBranchSpanInBounds(if_.branches) and self.exprRefInBounds(if_.final_else),
+            .uninitialized_payload => |payload| self.localRefInBounds(payload.condition),
+            .if_initialized_payload => |payload| self.exprRefInBounds(payload.cond) and
+                self.localRefInBounds(payload.payload) and
+                self.exprRefInBounds(payload.initialized) and
+                self.exprRefInBounds(payload.uninitialized),
+            .try_sequence => |try_| self.exprRefInBounds(try_.try_expr) and
+                self.localRefInBounds(try_.ok_local) and
+                self.exprRefInBounds(try_.ok_body),
+            .try_record_sequence => |try_| self.exprRefInBounds(try_.try_expr) and
+                self.localRefInBounds(try_.value_local) and
+                self.localRefInBounds(try_.rest_local) and
+                self.exprRefInBounds(try_.ok_body),
+            .block => |block| self.stmtIdSpanInBounds(block.statements) and self.exprRefInBounds(block.final_expr),
+            .loop_ => |loop| self.typedLocalSpanInBounds(loop.params) and
+                self.exprIdSpanInBounds(loop.initial_values) and
+                self.exprRefInBounds(loop.body),
+            .break_ => |maybe_expr| if (maybe_expr) |expr| self.exprRefInBounds(expr) else true,
+            .continue_ => |continue_| self.exprIdSpanInBounds(continue_.values),
+            .return_,
+            .dbg,
+            .expect,
+            => |expr| self.exprRefInBounds(expr),
+            .comptime_branch_taken => |branch| self.exprRefInBounds(branch.body),
+            .expect_err => |expect| self.exprRefInBounds(expect.msg),
+        };
+    }
+
+    fn verifyPatData(self: MappedProgramView, data: Ast.PatData) bool {
+        return switch (data) {
+            .bind => |local| self.localRefInBounds(local),
+            .wildcard,
+            .int_lit,
+            .dec_lit,
+            .frac_f32_lit,
+            .frac_f64_lit,
+            .str_lit,
+            => true,
+            .as => |as| self.patRefInBounds(as.pattern) and self.localRefInBounds(as.local),
+            .record => |span| self.recordDestructSpanInBounds(span),
+            .tuple => |span| self.patIdSpanInBounds(span),
+            .list => |list| self.patIdSpanInBounds(list.patterns) and
+                (list.rest == null or self.optionalListRestPatternInBounds(list.rest.?)),
+            .tag => |tag| self.patIdSpanInBounds(tag.payloads),
+            .nominal => |pat| self.patRefInBounds(pat),
+            .str_pattern => |pattern| self.strPatternStepSpanInBounds(pattern.steps),
+        };
+    }
+
+    fn verifyStmt(self: MappedProgramView, stmt: Ast.Stmt) bool {
+        return switch (stmt) {
+            .uninitialized => |pat| self.patRefInBounds(pat),
+            .let_ => |let_| self.patRefInBounds(let_.pat) and
+                self.exprRefInBounds(let_.value),
+            .expr,
+            .expect,
+            .dbg,
+            .return_,
+            => |expr| self.exprRefInBounds(expr),
+            .crash => true,
+        };
+    }
+
+    fn optionalListRestPatternInBounds(self: MappedProgramView, rest: Ast.ListRestPattern) bool {
+        if (rest.pattern) |pat| return self.patRefInBounds(pat);
+        return true;
+    }
+
+    fn typeRefInBounds(self: MappedProgramView, ty: Type.TypeId) bool {
+        return @intFromEnum(ty) < self.types.types.len;
+    }
+
+    fn fnRefInBounds(self: MappedProgramView, fn_id: Ast.FnId) bool {
+        return @intFromEnum(fn_id) < self.fns.len;
+    }
+
+    fn defRefInBounds(self: MappedProgramView, def: Ast.DefId) bool {
+        return @intFromEnum(def) < self.defs.len;
+    }
+
+    fn exprRefInBounds(self: MappedProgramView, expr: Ast.ExprId) bool {
+        return @intFromEnum(expr) < self.exprs.len;
+    }
+
+    fn patRefInBounds(self: MappedProgramView, pat: Ast.PatId) bool {
+        return @intFromEnum(pat) < self.pats.len;
+    }
+
+    fn stmtRefInBounds(self: MappedProgramView, stmt: Ast.StmtId) bool {
+        return @intFromEnum(stmt) < self.stmts.len;
+    }
+
+    fn localRefInBounds(self: MappedProgramView, local: Ast.LocalId) bool {
+        return @intFromEnum(local) < self.locals.len;
+    }
+
+    fn exprIdSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.ExprId)) bool {
+        return spanInBounds(self.expr_ids.len, span.start, span.len);
+    }
+
+    fn patIdSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.PatId)) bool {
+        return spanInBounds(self.pat_ids.len, span.start, span.len);
+    }
+
+    fn typedLocalSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.TypedLocal)) bool {
+        return spanInBounds(self.typed_locals.len, span.start, span.len);
+    }
+
+    fn stmtIdSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.StmtId)) bool {
+        return spanInBounds(self.stmt_ids.len, span.start, span.len);
+    }
+
+    fn fieldExprSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.FieldExpr)) bool {
+        return spanInBounds(self.field_exprs.len, span.start, span.len);
+    }
+
+    fn recordDestructSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.RecordDestruct)) bool {
+        return spanInBounds(self.record_destructs.len, span.start, span.len);
+    }
+
+    fn strPatternStepSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.StrPatternStep)) bool {
+        return spanInBounds(self.str_pattern_steps.len, span.start, span.len);
+    }
+
+    fn branchSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.Branch)) bool {
+        return spanInBounds(self.branches.len, span.start, span.len);
+    }
+
+    fn ifBranchSpanInBounds(self: MappedProgramView, span: Ast.Span(Ast.IfBranch)) bool {
+        return spanInBounds(self.if_branches.len, span.start, span.len);
     }
 
     pub fn verifyCallTargets(self: MappedProgramView) ?Ast.CallTargetVerifyError {
@@ -474,6 +730,12 @@ pub const ResolvedImportedFn = extern struct {
     loaded_shard_index: u32,
     fn_id: Ast.FnId,
 };
+
+fn spanInBounds(len: usize, start_raw: u32, len_raw: u32) bool {
+    const start: usize = start_raw;
+    const span_len: usize = len_raw;
+    return start <= len and span_len <= len - start;
+}
 
 fn findLoadedShard(loaded_shards: []const LoadedShard, shard_id: Ast.ShardId) CacheError!usize {
     for (loaded_shards, 0..) |loaded, index| {
@@ -1850,6 +2112,33 @@ test "monotype specialization cache reports malformed internal data as corruptio
         try std.testing.expectError(
             error.CorruptSpecializationCacheFile,
             program.verifyAndResolveImports(&name_store, loaded_shards[0..], resolved[0..]),
+        );
+    }
+
+    {
+        const first_type_index: u32 = std.math.minInt(u32);
+        const unit_ty: Type.TypeId = @enumFromInt(first_type_index);
+        const type_nodes = [_]Type.Content{.zst};
+        const type_digests = [_]checked_names.TypeDigest{.{}};
+        const exprs = [_]Ast.Expr{.{
+            .ty = unit_ty,
+            .data = .{ .list = .{ .start = 0, .len = 1 } },
+        }};
+        const image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+            .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(type_nodes[0..]) },
+            .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests[0..]) },
+            .{ .id = .exprs, .bytes = std.mem.sliceAsBytes(exprs[0..]) },
+        });
+        defer allocator.free(image);
+
+        var header: SpecializationCacheHeader = undefined;
+        @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(SpecializationCacheHeader)]);
+        const mapped = try viewMappedFile(&header, image.ptr, image.len, zeroHash(), zeroHash(), 0);
+        const program = try mappedProgramView(mapped);
+        var resolved: [0]ResolvedImportedFn = .{};
+        try std.testing.expectError(
+            error.CorruptSpecializationCacheFile,
+            program.verifyAndResolveImports(&name_store, &.{}, resolved[0..]),
         );
     }
 }
