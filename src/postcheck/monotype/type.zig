@@ -28,7 +28,7 @@ pub const Span = extern struct {
 pub const Primitive = checked.CheckedPrimitive;
 
 /// Static-dispatch owner head for a monomorphic receiver type.
-pub const OwnerHead = union(enum) {
+pub const OwnerHead = union(enum(u8)) {
     none,
     builtin: static_dispatch.BuiltinOwner,
     named_type: TypeDef,
@@ -48,7 +48,7 @@ pub const NamedType = struct {
 };
 
 /// How much of a named type's backing type later stages may inspect.
-pub const BackingUse = enum {
+pub const BackingUse = enum(u8) {
     inspectable,
     runtime_layout_only,
 };
@@ -60,7 +60,7 @@ pub const NamedBacking = struct {
 };
 
 /// Kind of named type visible after checking.
-pub const NamedKind = enum {
+pub const NamedKind = enum(u8) {
     nominal,
     @"opaque",
     alias,
@@ -84,7 +84,7 @@ pub const Tag = struct {
 /// additionally carries this declared order, which the layout commit consumes to
 /// place fields in source order with no internal padding. See design.md
 /// "Nominal Record Field Order".
-pub const DeclaredField = union(enum) {
+pub const DeclaredField = union(enum(u8)) {
     /// A named backing field, matched against the lexicographic backing row by
     /// name at layout time.
     named: names.RecordFieldNameId,
@@ -94,7 +94,7 @@ pub const DeclaredField = union(enum) {
 };
 
 /// Monomorphic type content.
-pub const Content = union(enum) {
+pub const Content = union(enum(u8)) {
     primitive: Primitive,
     named: struct {
         named_type: NamedType,

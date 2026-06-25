@@ -2473,7 +2473,7 @@ fn assertNoRuntimeOwnedFields(comptime T: type, comptime path: []const u8) void 
         .int => {
             if (T == usize or T == isize) @compileError(path ++ " uses host-sized integer " ++ @typeName(T));
         },
-        .@"enum" => {},
+        .@"enum" => |info| assertFixedTagInteger(info.tag_type, path),
         .array => |array| assertNoRuntimeOwnedFields(array.child, path ++ "[]"),
         .optional => |optional| assertNoRuntimeOwnedFields(optional.child, path ++ "?"),
         .@"struct" => |info| {
@@ -2482,6 +2482,7 @@ fn assertNoRuntimeOwnedFields(comptime T: type, comptime path: []const u8) void 
             }
         },
         .@"union" => |info| {
+            if (info.tag_type) |tag_type| assertFixedTagInteger(tag_type, path);
             inline for (info.fields) |field| {
                 assertNoRuntimeOwnedFields(field.type, path ++ "." ++ field.name);
             }
@@ -2496,6 +2497,13 @@ fn assertNoRuntimeOwnedFields(comptime T: type, comptime path: []const u8) void 
         .vector,
         .type,
         => @compileError(path ++ " contains non-durable type " ++ @typeName(T)),
+    }
+}
+
+fn assertFixedTagInteger(comptime T: type, comptime path: []const u8) void {
+    const bits = @bitSizeOf(T);
+    if (bits != 8 and bits != 16 and bits != 32 and bits != 64) {
+        @compileError(path ++ " uses inferred or non-byte-sized enum tag " ++ @typeName(T));
     }
 }
 

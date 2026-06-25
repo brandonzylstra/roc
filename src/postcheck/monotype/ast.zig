@@ -63,7 +63,7 @@ pub fn Span(comptime _: type) type {
 }
 
 /// Checked function definition used by a Monotype function template.
-pub const FnDef = union(enum) {
+pub const FnDef = union(enum(u8)) {
     local_template: names.ProcTemplate,
     imported_template: names.ProcTemplate,
     nested: NestedFn,
@@ -114,7 +114,7 @@ pub const ImportedFn = extern struct {
 };
 
 /// Direct function slot in a Monotype program shard.
-pub const FnSlot = union(enum) {
+pub const FnSlot = union(enum(u8)) {
     local: FnId,
     imported: ImportedFnId,
 };
@@ -125,7 +125,7 @@ pub const HostedId = enum(u32) { _ };
 pub const GeneratedId = enum(u32) { _ };
 
 /// Stable callable identity used to reuse or cache a specialization.
-pub const CallableIdentity = union(enum) {
+pub const CallableIdentity = union(enum(u8)) {
     proc_template: struct {
         module: names.CheckedModuleDigest,
         proc_base: u32,
@@ -151,7 +151,7 @@ pub const SpecIdentity = struct {
 };
 
 /// Lifecycle state for a specialization record.
-pub const SpecStatus = enum {
+pub const SpecStatus = enum(u8) {
     reserved,
     lowering,
     ready,
@@ -286,7 +286,7 @@ pub const CallValue = struct {
 };
 
 /// Direct call target before or after Monotype lifting.
-pub const ProcCallee = union(enum) {
+pub const ProcCallee = union(enum(u8)) {
     func: FnSlot,
     lifted: LiftedFnId,
 };
@@ -389,7 +389,7 @@ pub const ContinueExpr = struct {
 };
 
 /// Source control-flow construct observed during compile-time finalization.
-pub const ComptimeSiteKind = enum {
+pub const ComptimeSiteKind = enum(u8) {
     match,
     destructure,
     if_,
@@ -417,7 +417,7 @@ pub const Expr = struct {
 };
 
 /// Monotype expression forms.
-pub const ExprData = union(enum) {
+pub const ExprData = union(enum(u8)) {
     local: LocalId,
     unit,
     int_lit: can.CIR.IntValue,
@@ -508,7 +508,7 @@ pub const Pat = struct {
 };
 
 /// Monotype pattern forms.
-pub const PatData = union(enum) {
+pub const PatData = union(enum(u8)) {
     bind: LocalId,
     wildcard,
     as: struct {
@@ -532,7 +532,7 @@ pub const PatData = union(enum) {
 };
 
 /// End behavior for a Monotype string interpolation pattern.
-pub const StrPatternEnd = enum {
+pub const StrPatternEnd = enum(u8) {
     exact,
     tail,
 };
@@ -589,7 +589,7 @@ pub const IfBranch = struct {
 pub const StmtId = enum(u32) { _ };
 
 /// Monotype statement forms.
-pub const Stmt = union(enum) {
+pub const Stmt = union(enum(u8)) {
     uninitialized: PatId,
     let_: struct {
         pat: PatId,
@@ -615,7 +615,7 @@ pub const Def = struct {
 };
 
 /// Body availability for a top-level or generated Monotype definition.
-pub const FnBody = union(enum) {
+pub const FnBody = union(enum(u8)) {
     roc: ExprId,
     hosted,
 };
