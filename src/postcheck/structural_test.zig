@@ -215,6 +215,10 @@ test "post-check stage products do not store expression cache state" {
 
 test "Monotype lifting mutates only callable expression nodes in place" {
     const lifted_source = @embedFile("monotype_lifted/lift.zig");
+    try expectContains(lifted_source, "source: Mono.ProgramView");
+    try expectContains(lifted_source, "const source_view = movedMonoView(&owned, &program);");
+    try expectContains(lifted_source, "Lifter.init(allocator, source_view, &program)");
+
     const rewrite_expr = sourceSliceBetween(lifted_source, "fn rewriteExpr", "fn liftLambda");
     try expectContains(rewrite_expr, "expr.data = .{ .fn_ref");
     try expectContains(rewrite_expr, "expr.data = .{ .call_proc");

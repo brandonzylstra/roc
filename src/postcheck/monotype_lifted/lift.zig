@@ -124,7 +124,8 @@ pub fn run(
     runtime_schema_requests = undefined;
     errdefer program.deinit();
 
-    var lifter = try Lifter.init(allocator, &owned, &program);
+    const source_view = movedMonoView(&owned, &program);
+    var lifter = try Lifter.init(allocator, source_view, &program);
     defer lifter.deinit();
 
     try lifter.lowerDefsAndRoots();
@@ -132,6 +133,47 @@ pub fn run(
 
     owned.deinit();
     return program;
+}
+
+/// Build the read-only Monotype input view after side arrays have been moved
+/// into the lifted output program. The source still owns definitions, roots,
+/// and specialization metadata until `run` finishes.
+fn movedMonoView(source: *const Mono.Program, moved: *const Ast.Program) Mono.ProgramView {
+    return .{
+        .names = &moved.names,
+        .types = moved.types.view(),
+        .specs = source.specs.items,
+        .imported_fns = source.imported_fns.items,
+        .fns = source.fns.items,
+        .defs = source.defs.items,
+        .nested_defs = source.nested_defs.items,
+        .exprs = moved.exprs.items,
+        .pats = moved.pats.items,
+        .stmts = moved.stmts.items,
+        .locals = moved.locals.items,
+        .expr_ids = moved.expr_ids.items,
+        .pat_ids = moved.pat_ids.items,
+        .typed_locals = moved.typed_locals.items,
+        .stmt_ids = moved.stmt_ids.items,
+        .field_exprs = moved.field_exprs.items,
+        .record_destructs = moved.record_destructs.items,
+        .str_pattern_steps = moved.str_pattern_steps.items,
+        .branches = moved.branches.items,
+        .if_branches = moved.if_branches.items,
+        .string_literals = moved.string_literals.items,
+        .proc_debug_names = &moved.proc_debug_names,
+        .roots = source.roots.items,
+        .layout_requests = source.layout_requests.items,
+        .runtime_schema_requests = moved.runtime_schema_requests.items,
+        .comptime_sites = moved.comptime_sites.items,
+        .source_files = moved.source_files.items,
+        .expr_locs = moved.expr_locs.items,
+        .expr_regions = moved.expr_regions.items,
+        .stmt_locs = moved.stmt_locs.items,
+        .stmt_regions = moved.stmt_regions.items,
+        .local_names = moved.local_names.items,
+        .next_symbol = source.next_symbol,
+    };
 }
 
 const DefMap = []?Ast.FnId;
@@ -145,7 +187,7 @@ const MonoFnBody = struct {
 
 const Lifter = struct {
     allocator: Allocator,
-    source: *const Mono.Program,
+    source: Mono.ProgramView,
     output: *Ast.Program,
     expr_done: []bool,
     stmt_done: []bool,
@@ -163,7 +205,7 @@ const Lifter = struct {
     /// walking (possibly already-rewritten) bodies.
     fn_captures: []std.ArrayList(Ast.TypedLocal),
 
-    fn init(allocator: Allocator, source: *const Mono.Program, output: *Ast.Program) Allocator.Error!Lifter {
+    fn init(allocator: Allocator, source: Mono.ProgramView, output: *Ast.Program) Allocator.Error!Lifter {
         const expr_done = try allocator.alloc(bool, output.exprCount());
         errdefer allocator.free(expr_done);
         @memset(expr_done, false);
@@ -203,13 +245,13 @@ const Lifter = struct {
     }
 
     fn lowerDefsAndRoots(self: *Lifter) Allocator.Error!void {
-        self.fn_map = try self.allocator.alloc(?Ast.FnId, self.source.fns.items.len);
+        self.fn_map = try self.allocator.alloc(?Ast.FnId, self.source.fns.len);
         @memset(self.fn_map, null);
 
-        self.def_map = try self.allocator.alloc(?Ast.FnId, self.source.defs.items.len);
+        self.def_map = try self.allocator.alloc(?Ast.FnId, self.source.defs.len);
         @memset(self.def_map, null);
 
-        for (self.source.defs.items, 0..) |def, index| {
+        for (self.source.defs, 0..) |def, index| {
             const fn_id: Ast.FnId = @enumFromInt(@as(u32, @intCast(self.output.fns.items.len)));
             try self.output.fns.append(self.allocator, undefined);
             try self.fn_bodies.append(self.allocator, .{ .args = def.args, .body = def.body });
@@ -217,9 +259,9 @@ const Lifter = struct {
             if (def.fn_id) |source_fn_id| self.registerFn(source_fn_id, fn_id);
         }
 
-        self.nested_def_map = try self.allocator.alloc(?Ast.FnId, self.source.nested_defs.items.len);
+        self.nested_def_map = try self.allocator.alloc(?Ast.FnId, self.source.nested_defs.len);
         @memset(self.nested_def_map, null);
-        for (self.source.nested_defs.items, 0..) |def, index| {
+        for (self.source.nested_defs, 0..) |def, index| {
             const fn_id: Ast.FnId = @enumFromInt(@as(u32, @intCast(self.output.fns.items.len)));
             try self.output.fns.append(self.allocator, undefined);
             try self.fn_bodies.append(self.allocator, .{ .args = def.args, .body = .{ .roc = def.body } });
@@ -230,12 +272,12 @@ const Lifter = struct {
 
         try self.computeCaptureFixpoint();
 
-        for (self.source.defs.items, 0..) |def, index| {
+        for (self.source.defs, 0..) |def, index| {
             try self.lowerTopLevelDef(self.def_map[index] orelse
                 Common.invariant("Monotype definition was not reserved before lifting"), def);
         }
 
-        for (self.source.nested_defs.items, 0..) |def, index| {
+        for (self.source.nested_defs, 0..) |def, index| {
             try self.lowerNestedDef(self.nested_def_map[index] orelse
                 Common.invariant("Monotype nested definition was not reserved before lifting"), def);
         }
@@ -246,7 +288,7 @@ const Lifter = struct {
             Common.invariant("Monotype Lifted function was reserved but not initialized");
         }
 
-        for (self.source.roots.items) |root| {
+        for (self.source.roots) |root| {
             const raw = @intFromEnum(root.def);
             if (raw >= self.def_map.len) Common.invariant("Monotype root references a missing definition");
             const fn_id = self.def_map[raw] orelse
@@ -257,7 +299,7 @@ const Lifter = struct {
             });
         }
 
-        for (self.source.layout_requests.items) |request| {
+        for (self.source.layout_requests) |request| {
             const fn_id = if (request.def) |def| blk: {
                 const raw = @intFromEnum(def);
                 if (raw >= self.def_map.len) Common.invariant("Monotype static data layout request references a missing definition");

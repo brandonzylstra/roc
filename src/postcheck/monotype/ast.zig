@@ -703,6 +703,12 @@ pub const ProgramView = struct {
     local_names: []const []const u8,
     next_symbol: u32,
 
+    pub fn fnSource(self: ProgramView, id: FnId) FnTemplate {
+        const raw = @intFromEnum(id);
+        if (raw >= self.fns.len) Common.invariant("Monotype function id referenced a missing specialization");
+        return self.fns[raw].source;
+    }
+
     pub fn verifyCallTargets(self: ProgramView) ?CallTargetVerifyError {
         for (self.imported_fns) |imported| {
             if (imported.shard == .local and @intFromEnum(imported.fn_id) >= self.fns.len) {
@@ -916,9 +922,7 @@ pub const Program = struct {
     }
 
     pub fn fnSource(self: *const Program, id: FnId) FnTemplate {
-        const raw = @intFromEnum(id);
-        if (raw >= self.fns.items.len) Common.invariant("Monotype function id referenced a missing specialization");
-        return self.fns.items[raw].source;
+        return self.view().fnSource(id);
     }
 
     pub fn verifyCallTargets(self: *const Program) ?CallTargetVerifyError {
