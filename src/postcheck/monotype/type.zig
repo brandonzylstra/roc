@@ -15,14 +15,20 @@ const static_dispatch = check.StaticDispatchRegistry;
 pub const TypeId = enum(u32) { _ };
 
 /// Slice descriptor for type, field, or tag arrays in this store.
-pub const Span = extern struct {
+pub const SidePoolSpan = extern struct {
     start: u32,
     len: u32,
 
-    pub fn empty() Span {
+    pub fn empty() SidePoolSpan {
         return .{ .start = 0, .len = 0 };
     }
 };
+
+/// Compatibility name for existing Monotype type side-pool spans.
+pub const Span = SidePoolSpan;
+
+/// Cached structural digest stored beside a durable Monotype type node.
+pub const MonoTypeDigest = names.TypeDigest;
 
 /// Primitive type copied from checked module data.
 pub const Primitive = checked.CheckedPrimitive;
@@ -67,17 +73,23 @@ pub const NamedKind = enum(u8) {
 };
 
 /// Record field type entry.
-pub const Field = struct {
+pub const MonoTypeField = struct {
     name: names.RecordFieldNameId,
     ty: TypeId,
 };
 
+/// Compatibility name for existing Monotype record field entries.
+pub const Field = MonoTypeField;
+
 /// Tag-union variant type entry.
-pub const Tag = struct {
+pub const MonoTypeTag = struct {
     name: names.TagNameId,
     checked_name: names.TagNameId,
     payloads: Span,
 };
+
+/// Compatibility name for existing Monotype tag-union variant entries.
+pub const Tag = MonoTypeTag;
 
 /// One entry of a nominal record's declared layout order. The backing row is
 /// always lexicographic (for name resolution and digests); a nominal type
@@ -93,8 +105,8 @@ pub const DeclaredField = union(enum(u8)) {
     padding: TypeId,
 };
 
-/// Monomorphic type content.
-pub const Content = union(enum(u8)) {
+/// Durable monomorphic type node.
+pub const MonoTypeNode = union(enum(u8)) {
     primitive: Primitive,
     named: struct {
         named_type: NamedType,
@@ -120,8 +132,11 @@ pub const Content = union(enum(u8)) {
     zst,
 };
 
-/// Payload stored by `Content.named`.
-pub const NamedContent = std.meta.fieldInfo(Content, .named).type;
+/// Compatibility name for existing Monotype type-node content.
+pub const Content = MonoTypeNode;
+
+/// Payload stored by `MonoTypeNode.named`.
+pub const NamedContent = std.meta.fieldInfo(MonoTypeNode, .named).type;
 
 /// Store for monomorphic types and their shared spans.
 pub const Store = struct {
