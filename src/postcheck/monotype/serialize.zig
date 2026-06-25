@@ -1491,6 +1491,11 @@ test "monotype specialization cache compiler layout hash is deterministic" {
     try std.testing.expectError(error.InvalidSpecializationCacheFile, validateHeader(header, bytes.len, wrong, zeroHash()));
 }
 
+test "monotype specialization cache typed sections contain no runtime-owned fields" {
+    @setEvalBranchQuota(10_000);
+    comptime assertMappedSectionPayloadsContainNoRuntimeOwnedFields();
+}
+
 test "monotype specialization cache rejects wrong version and hashes" {
     var bytes: [@sizeOf(SpecializationCacheHeader)]u8 align(@alignOf(SpecializationCacheHeader)) = undefined;
     @memset(bytes[0..], 0);
@@ -2451,6 +2456,47 @@ fn expectEquivalentProgramViews(
     try std.testing.expectEqualSlices(Base.Region, fresh.expr_regions, mapped.expr_regions);
     try std.testing.expectEqualSlices(Base.SourceLoc, fresh.stmt_locs, mapped.stmt_locs);
     try std.testing.expectEqualSlices(Base.Region, fresh.stmt_regions, mapped.stmt_regions);
+}
+
+fn assertMappedSectionPayloadsContainNoRuntimeOwnedFields() void {
+    const fields = @typeInfo(MappedSections).@"struct".fields;
+    inline for (fields) |field| {
+        const pointer = @typeInfo(field.type).pointer;
+        if (pointer.child == u8) continue;
+        assertNoRuntimeOwnedFields(pointer.child, "MappedSections." ++ field.name);
+    }
+}
+
+fn assertNoRuntimeOwnedFields(comptime T: type, comptime path: []const u8) void {
+    switch (@typeInfo(T)) {
+        .bool, .float, .comptime_float, .comptime_int, .enum_literal, .void, .noreturn, .null, .undefined => {},
+        .int => {
+            if (T == usize or T == isize) @compileError(path ++ " uses host-sized integer " ++ @typeName(T));
+        },
+        .@"enum" => {},
+        .array => |array| assertNoRuntimeOwnedFields(array.child, path ++ "[]"),
+        .optional => |optional| assertNoRuntimeOwnedFields(optional.child, path ++ "?"),
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                assertNoRuntimeOwnedFields(field.type, path ++ "." ++ field.name);
+            }
+        },
+        .@"union" => |info| {
+            inline for (info.fields) |field| {
+                assertNoRuntimeOwnedFields(field.type, path ++ "." ++ field.name);
+            }
+        },
+        .pointer => @compileError(path ++ " contains pointer or slice type " ++ @typeName(T)),
+        .error_union,
+        .error_set,
+        .@"fn",
+        .@"opaque",
+        .frame,
+        .@"anyframe",
+        .vector,
+        .type,
+        => @compileError(path ++ " contains non-durable type " ++ @typeName(T)),
+    }
 }
 
 fn testModuleId(byte: u8) checked.ModuleId {
