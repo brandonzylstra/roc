@@ -14,6 +14,11 @@ const Type = @import("type.zig");
 const checked = check.CheckedModule;
 const checked_names = check.CheckedNames;
 
+const TestCompareError = error{
+    TestExpectedEqual,
+    TestUnexpectedResult,
+};
+
 /// Magic bytes at the start of a specialization cache file.
 pub const MAGIC: [8]u8 = .{ 'R', 'O', 'C', 'S', 'P', 'E', 'C', 0 };
 /// Serialization format version for specialization cache files.
@@ -334,6 +339,25 @@ pub const MappedProgramView = struct {
     defs: []const Ast.Def,
     nested_defs: []const Ast.NestedDef,
     exprs: []const Ast.Expr,
+    pats: []const Ast.Pat,
+    stmts: []const Ast.Stmt,
+    locals: []const Ast.Local,
+    expr_ids: []const Ast.ExprId,
+    pat_ids: []const Ast.PatId,
+    typed_locals: []const Ast.TypedLocal,
+    stmt_ids: []const Ast.StmtId,
+    field_exprs: []const Ast.FieldExpr,
+    record_destructs: []const Ast.RecordDestruct,
+    str_pattern_steps: []const Ast.StrPatternStep,
+    branches: []const Ast.Branch,
+    if_branches: []const Ast.IfBranch,
+    roots: []const Ast.Root,
+    layout_requests: []const Ast.LayoutRequest,
+    runtime_schema_requests: []const Ast.RuntimeSchemaRequest,
+    expr_locs: []const Base.SourceLoc,
+    expr_regions: []const Base.Region,
+    stmt_locs: []const Base.SourceLoc,
+    stmt_regions: []const Base.Region,
 
     /// Verify the mapped program and resolve its top-level import table.
     ///
@@ -489,6 +513,25 @@ pub fn mappedProgramView(view: MappedView) CacheError!MappedProgramView {
         .defs = sections_.defs,
         .nested_defs = sections_.nested_defs,
         .exprs = sections_.exprs,
+        .pats = sections_.pats,
+        .stmts = sections_.stmts,
+        .locals = sections_.locals,
+        .expr_ids = sections_.expr_ids,
+        .pat_ids = sections_.pat_ids,
+        .typed_locals = sections_.typed_locals,
+        .stmt_ids = sections_.stmt_ids,
+        .field_exprs = sections_.field_exprs,
+        .record_destructs = sections_.record_destructs,
+        .str_pattern_steps = sections_.str_pattern_steps,
+        .branches = sections_.branches,
+        .if_branches = sections_.if_branches,
+        .roots = sections_.roots,
+        .layout_requests = sections_.layout_requests,
+        .runtime_schema_requests = sections_.runtime_schema_requests,
+        .expr_locs = sections_.expr_locs,
+        .expr_regions = sections_.expr_regions,
+        .stmt_locs = sections_.stmt_locs,
+        .stmt_regions = sections_.stmt_regions,
     };
 }
 
@@ -1498,6 +1541,172 @@ test "monotype specialization cache round trips empty program functions imports 
     try std.testing.expectEqual(@as(Type.Content, .{ .record = .{ .start = 0, .len = 1 } }), program.types.get(record_ty));
 }
 
+test "monotype specialization cache maps fresh single-shard program view equivalently" {
+    const allocator = std.testing.allocator;
+
+    var program = Ast.Program.init(allocator);
+    defer program.deinit();
+
+    const field_name = try program.names.internRecordFieldLabel("field");
+    const tag_name = try program.names.internTagLabel("Ok");
+    const module_name = try program.names.internModuleName("M");
+    const type_name = try program.names.internTypeName("Boxed");
+
+    const unit_ty = try program.types.add(.zst);
+    const fn_arg_tys = try program.types.addSpan(&.{unit_ty});
+    const fn_ty = try program.types.add(.{ .func = .{
+        .args = fn_arg_tys,
+        .ret = unit_ty,
+    } });
+    const record_fields = try program.types.addFields(&.{.{ .name = field_name, .ty = unit_ty }});
+    const record_ty = try program.types.add(.{ .record = record_fields });
+    const tag_payloads = try program.types.addSpan(&.{unit_ty});
+    const tags = try program.types.addTags(&.{.{ .name = tag_name, .checked_name = tag_name, .payloads = tag_payloads }});
+    _ = try program.types.add(.{ .tag_union = tags });
+    const declared_order = try program.types.addDeclaredFields(&.{.{ .named = field_name }});
+    const named_ty = try program.types.add(.{ .named = .{
+        .named_type = .{ .module = testModuleDigest(4), .ty = @enumFromInt(8) },
+        .def = .{ .module_name = module_name, .type_name = type_name },
+        .kind = .nominal,
+        .args = Type.Span.empty(),
+        .backing = .{ .ty = record_ty, .use = .inspectable },
+        .declared_order = declared_order,
+    } });
+
+    const local = try program.addLocal(@enumFromInt(1), unit_ty);
+    try program.setLocalName(local, "value");
+    const local_expr = try program.addExpr(.{ .ty = unit_ty, .data = .{ .local = local } });
+    const call_args = try program.addExprSpan(&.{local_expr});
+    const typed_args = try program.addTypedLocalSpan(&.{.{ .local = local, .ty = unit_ty }});
+
+    const fn_template = Ast.FnTemplate{
+        .fn_def = .{ .checked_generated = testProcedureTemplate(1, 1) },
+        .source_fn_ty = @enumFromInt(1),
+        .source_fn_key = .{},
+        .mono_fn_ty = fn_ty,
+    };
+    const fn_id = try program.addFn(fn_template);
+    _ = try program.addImportedFn(.{ .shard = @enumFromInt(2), .fn_id = @enumFromInt(3) });
+    const call_expr = try program.addExpr(.{ .ty = unit_ty, .data = .{ .call_proc = .{
+        .callee = Ast.localProcCallee(fn_id),
+        .args = call_args,
+    } } });
+    const pat = try program.addPat(.{ .ty = unit_ty, .data = .{ .bind = local } });
+    const stmt = try program.addStmt(.{ .expr = call_expr });
+
+    const def_id: Ast.DefId = @enumFromInt(@as(u32, @intCast(program.defs.items.len)));
+    try program.defs.append(allocator, .{
+        .symbol = @enumFromInt(2),
+        .fn_def = fn_template,
+        .fn_id = fn_id,
+        .args = typed_args,
+        .body = .{ .roc = call_expr },
+        .ret = unit_ty,
+    });
+    try program.nested_defs.append(allocator, .{
+        .symbol = @enumFromInt(3),
+        .fn_def = fn_template,
+        .fn_id = fn_id,
+        .args = typed_args,
+        .body = call_expr,
+        .ret = named_ty,
+    });
+    _ = try program.addSpec(.{
+        .identity = .{
+            .callable = .{ .proc_template = .{
+                .module = testModuleDigest(4),
+                .proc_base = 1,
+                .template = 1,
+            } },
+            .source_fn_ty_digest = .{},
+            .mono_fn_ty_digest = .{},
+            .mono_fn_ty = fn_ty,
+        },
+        .fn_id = fn_id,
+        .status = .ready,
+    });
+
+    _ = try program.addFieldExprSpan(&.{.{ .name = field_name, .value = local_expr }});
+    _ = try program.addRecordDestructSpan(&.{.{ .name = field_name, .pattern = pat }});
+    const delimiter = try program.addStringLiteral("done");
+    _ = try program.addStrPatternStepSpan(&.{.{ .capture = pat, .delimiter = delimiter }});
+    _ = try program.addBranchSpan(&.{.{ .pat = pat, .body = call_expr }});
+    _ = try program.addIfBranchSpan(&.{.{ .cond = local_expr, .body = call_expr }});
+    _ = try program.addPatSpan(&.{pat});
+    _ = try program.addStmtSpan(&.{stmt});
+
+    try program.roots.append(allocator, .{
+        .def = def_id,
+        .request = .{
+            .order = 0,
+            .module_idx = 0,
+            .kind = .runtime_entrypoint,
+            .source = .{ .def = @enumFromInt(1) },
+            .checked_type = @enumFromInt(2),
+            .abi = .roc,
+            .exposure = .exported,
+        },
+    });
+    try program.layout_requests.append(allocator, .{
+        .checked_type = @enumFromInt(3),
+        .ty = record_ty,
+        .def = def_id,
+    });
+    try program.runtime_schema_requests.append(allocator, .{
+        .def = .{ .module_name = module_name, .type_name = type_name },
+        .ty = named_ty,
+    });
+
+    const fresh = program.view();
+    const concrete_type_digests = try allocator.alloc(checked_names.TypeDigest, fresh.types.types.len);
+    defer allocator.free(concrete_type_digests);
+    for (concrete_type_digests, 0..) |*digest, index| {
+        digest.* = program.types.typeDigest(&program.names, @enumFromInt(@as(u32, @intCast(index))));
+    }
+
+    const image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+        .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(fresh.types.types) },
+        .{ .id = .type_args, .bytes = std.mem.sliceAsBytes(fresh.types.spans) },
+        .{ .id = .fields, .bytes = std.mem.sliceAsBytes(fresh.types.fields) },
+        .{ .id = .tags, .bytes = std.mem.sliceAsBytes(fresh.types.tags) },
+        .{ .id = .declared_fields, .bytes = std.mem.sliceAsBytes(fresh.types.declared_fields) },
+        .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(concrete_type_digests) },
+        .{ .id = .specs, .bytes = std.mem.sliceAsBytes(fresh.specs) },
+        .{ .id = .imports, .bytes = std.mem.sliceAsBytes(fresh.imported_fns) },
+        .{ .id = .fns, .bytes = std.mem.sliceAsBytes(fresh.fns) },
+        .{ .id = .defs, .bytes = std.mem.sliceAsBytes(fresh.defs) },
+        .{ .id = .nested_defs, .bytes = std.mem.sliceAsBytes(fresh.nested_defs) },
+        .{ .id = .exprs, .bytes = std.mem.sliceAsBytes(fresh.exprs) },
+        .{ .id = .pats, .bytes = std.mem.sliceAsBytes(fresh.pats) },
+        .{ .id = .stmts, .bytes = std.mem.sliceAsBytes(fresh.stmts) },
+        .{ .id = .locals, .bytes = std.mem.sliceAsBytes(fresh.locals) },
+        .{ .id = .expr_ids, .bytes = std.mem.sliceAsBytes(fresh.expr_ids) },
+        .{ .id = .pat_ids, .bytes = std.mem.sliceAsBytes(fresh.pat_ids) },
+        .{ .id = .typed_locals, .bytes = std.mem.sliceAsBytes(fresh.typed_locals) },
+        .{ .id = .stmt_ids, .bytes = std.mem.sliceAsBytes(fresh.stmt_ids) },
+        .{ .id = .field_exprs, .bytes = std.mem.sliceAsBytes(fresh.field_exprs) },
+        .{ .id = .record_destructs, .bytes = std.mem.sliceAsBytes(fresh.record_destructs) },
+        .{ .id = .str_pattern_steps, .bytes = std.mem.sliceAsBytes(fresh.str_pattern_steps) },
+        .{ .id = .branches, .bytes = std.mem.sliceAsBytes(fresh.branches) },
+        .{ .id = .if_branches, .bytes = std.mem.sliceAsBytes(fresh.if_branches) },
+        .{ .id = .roots, .bytes = std.mem.sliceAsBytes(fresh.roots) },
+        .{ .id = .layout_requests, .bytes = std.mem.sliceAsBytes(fresh.layout_requests) },
+        .{ .id = .runtime_schema_requests, .bytes = std.mem.sliceAsBytes(fresh.runtime_schema_requests) },
+        .{ .id = .expr_locs, .bytes = std.mem.sliceAsBytes(fresh.expr_locs) },
+        .{ .id = .expr_regions, .bytes = std.mem.sliceAsBytes(fresh.expr_regions) },
+        .{ .id = .stmt_locs, .bytes = std.mem.sliceAsBytes(fresh.stmt_locs) },
+        .{ .id = .stmt_regions, .bytes = std.mem.sliceAsBytes(fresh.stmt_regions) },
+    });
+    defer allocator.free(image);
+
+    var header: SpecializationCacheHeader = undefined;
+    @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(SpecializationCacheHeader)]);
+    const mapped = try viewMappedFile(&header, image.ptr, image.len, zeroHash(), zeroHash(), 0);
+    const mapped_program = try mappedProgramView(mapped);
+
+    try expectEquivalentProgramViews(fresh, concrete_type_digests, mapped_program);
+}
+
 test "monotype specialization cache mapped view survives source builder deallocation" {
     const allocator = std.testing.allocator;
 
@@ -1755,6 +1964,47 @@ test "monotype specialization cache validity includes stored specialization iden
 
     try std.testing.expect(!std.mem.eql(u8, no_specs[0..], first[0..]));
     try std.testing.expect(!std.mem.eql(u8, first[0..], second[0..]));
+}
+
+fn expectEquivalentProgramViews(
+    fresh: Ast.ProgramView,
+    fresh_type_digests: []const checked_names.TypeDigest,
+    mapped: MappedProgramView,
+) TestCompareError!void {
+    try std.testing.expectEqual(@as(Ast.ShardId, .local), mapped.shard_id);
+
+    try std.testing.expectEqualSlices(Type.Content, fresh.types.types, mapped.types.types);
+    try std.testing.expectEqualSlices(checked_names.TypeDigest, fresh_type_digests, mapped.types.type_digests);
+    try std.testing.expectEqualSlices(Type.TypeId, fresh.types.spans, mapped.types.spans);
+    try std.testing.expectEqualSlices(Type.Field, fresh.types.fields, mapped.types.fields);
+    try std.testing.expectEqualSlices(Type.Tag, fresh.types.tags, mapped.types.tags);
+    try std.testing.expectEqualSlices(Type.DeclaredField, fresh.types.declared_fields, mapped.types.declared_fields);
+
+    try std.testing.expectEqualSlices(Ast.SpecRecord, fresh.specs, mapped.specs);
+    try std.testing.expectEqualSlices(Ast.ImportedFn, fresh.imported_fns, mapped.imported_fns);
+    try std.testing.expectEqualSlices(Ast.Fn, fresh.fns, mapped.fns);
+    try std.testing.expectEqualSlices(Ast.Def, fresh.defs, mapped.defs);
+    try std.testing.expectEqualSlices(Ast.NestedDef, fresh.nested_defs, mapped.nested_defs);
+    try std.testing.expectEqualSlices(Ast.Expr, fresh.exprs, mapped.exprs);
+    try std.testing.expectEqualSlices(Ast.Pat, fresh.pats, mapped.pats);
+    try std.testing.expectEqualSlices(Ast.Stmt, fresh.stmts, mapped.stmts);
+    try std.testing.expectEqualSlices(Ast.Local, fresh.locals, mapped.locals);
+    try std.testing.expectEqualSlices(Ast.ExprId, fresh.expr_ids, mapped.expr_ids);
+    try std.testing.expectEqualSlices(Ast.PatId, fresh.pat_ids, mapped.pat_ids);
+    try std.testing.expectEqualSlices(Ast.TypedLocal, fresh.typed_locals, mapped.typed_locals);
+    try std.testing.expectEqualSlices(Ast.StmtId, fresh.stmt_ids, mapped.stmt_ids);
+    try std.testing.expectEqualSlices(Ast.FieldExpr, fresh.field_exprs, mapped.field_exprs);
+    try std.testing.expectEqualSlices(Ast.RecordDestruct, fresh.record_destructs, mapped.record_destructs);
+    try std.testing.expectEqualSlices(Ast.StrPatternStep, fresh.str_pattern_steps, mapped.str_pattern_steps);
+    try std.testing.expectEqualSlices(Ast.Branch, fresh.branches, mapped.branches);
+    try std.testing.expectEqualSlices(Ast.IfBranch, fresh.if_branches, mapped.if_branches);
+    try std.testing.expectEqualSlices(Ast.Root, fresh.roots, mapped.roots);
+    try std.testing.expectEqualSlices(Ast.LayoutRequest, fresh.layout_requests, mapped.layout_requests);
+    try std.testing.expectEqualSlices(Ast.RuntimeSchemaRequest, fresh.runtime_schema_requests, mapped.runtime_schema_requests);
+    try std.testing.expectEqualSlices(Base.SourceLoc, fresh.expr_locs, mapped.expr_locs);
+    try std.testing.expectEqualSlices(Base.Region, fresh.expr_regions, mapped.expr_regions);
+    try std.testing.expectEqualSlices(Base.SourceLoc, fresh.stmt_locs, mapped.stmt_locs);
+    try std.testing.expectEqualSlices(Base.Region, fresh.stmt_regions, mapped.stmt_regions);
 }
 
 fn testModuleId(byte: u8) checked.ModuleId {
