@@ -28,6 +28,7 @@ pub const SECTION_ALIGNMENT: u64 = 16;
 /// Validation errors for specialization cache mapping.
 pub const CacheError = error{
     InvalidSpecializationCacheFile,
+    CorruptSpecializationCacheFile,
     UnsupportedSpecializationCacheVersion,
 };
 
@@ -321,6 +322,45 @@ pub const MappedProgramView = struct {
     nested_defs: []const Ast.NestedDef,
     exprs: []const Ast.Expr,
 
+    /// Verify the mapped program and resolve its top-level import table.
+    ///
+    /// This is the cache-load boundary for internal program data: malformed
+    /// mapped records are cache corruption, not a reason to reinterpret the
+    /// file through another lowering path.
+    pub fn verifyAndResolveImports(
+        self: MappedProgramView,
+        name_store: *const checked_names.NameStore,
+        loaded_shards: []const LoadedShard,
+        resolved_imports: []ResolvedImportedFn,
+    ) CacheError![]const ResolvedImportedFn {
+        if (self.types.verify(name_store) != null) return error.CorruptSpecializationCacheFile;
+        if (self.verifyCallTargets() != null) return error.CorruptSpecializationCacheFile;
+        return try self.resolveImportTable(loaded_shards, resolved_imports);
+    }
+
+    /// Resolve every import-table entry to one loaded shard index once. Function
+    /// bodies keep their imported function ids; later consumers use this
+    /// resolved table instead of rewriting mapped expression records.
+    pub fn resolveImportTable(
+        self: MappedProgramView,
+        loaded_shards: []const LoadedShard,
+        resolved_imports: []ResolvedImportedFn,
+    ) CacheError![]const ResolvedImportedFn {
+        std.debug.assert(resolved_imports.len >= self.imported_fns.len);
+
+        for (self.imported_fns, 0..) |imported, import_index| {
+            const loaded_index = try findLoadedShard(loaded_shards, imported.shard);
+            const loaded = loaded_shards[loaded_index];
+            if (@intFromEnum(imported.fn_id) >= loaded.fn_count) return error.CorruptSpecializationCacheFile;
+            resolved_imports[import_index] = .{
+                .loaded_shard_index = @intCast(loaded_index),
+                .fn_id = imported.fn_id,
+            };
+        }
+
+        return resolved_imports[0..self.imported_fns.len];
+    }
+
     pub fn verifyCallTargets(self: MappedProgramView) ?Ast.CallTargetVerifyError {
         for (self.imported_fns) |imported| {
             if (imported.shard == .local and @intFromEnum(imported.fn_id) >= self.fns.len) {
@@ -383,6 +423,27 @@ pub const MappedProgramView = struct {
         };
     }
 };
+
+/// One shard available while resolving a mapped program's import table.
+pub const LoadedShard = struct {
+    shard_id: Ast.ShardId,
+    fn_count: u32,
+};
+
+/// Transient resolved import entry. This is the one permitted cache-load fixup:
+/// import-table ids become loaded-shard indexes, while expression bodies remain
+/// mapped exactly as stored.
+pub const ResolvedImportedFn = extern struct {
+    loaded_shard_index: u32,
+    fn_id: Ast.FnId,
+};
+
+fn findLoadedShard(loaded_shards: []const LoadedShard, shard_id: Ast.ShardId) CacheError!usize {
+    for (loaded_shards, 0..) |loaded, index| {
+        if (loaded.shard_id == shard_id) return index;
+    }
+    return error.CorruptSpecializationCacheFile;
+}
 
 /// Validate a mapped cache file and return a view over its bytes.
 pub fn viewMappedFile(
@@ -1235,6 +1296,360 @@ test "monotype specialization cache creates mapped program view without body fix
     try std.testing.expectEqual(@as(Ast.ShardId, @enumFromInt(9)), program.shard_id);
     try std.testing.expectEqual(@as(?Ast.CallTargetVerifyError, null), program.verifyCallTargets());
     try std.testing.expectEqual(@as(?Type.Store.VerifyError, null), program.types.verify(&name_store));
+
+    const loaded_shards = [_]LoadedShard{.{
+        .shard_id = program.shard_id,
+        .fn_count = @intCast(program.fns.len),
+    }};
+    var resolved: [0]ResolvedImportedFn = .{};
+    const resolved_view = try program.verifyAndResolveImports(&name_store, loaded_shards[0..], resolved[0..]);
+    try std.testing.expectEqual(@as(usize, 0), resolved_view.len);
+}
+
+test "monotype specialization cache resolves imported function table once" {
+    const allocator = std.testing.allocator;
+
+    const first_type_index: u32 = std.math.minInt(u32);
+    const first_import_index: u32 = std.math.minInt(u32);
+    const unit_ty: Type.TypeId = @enumFromInt(first_type_index);
+    const type_nodes = [_]Type.Content{.zst};
+    const type_digests = [_]checked_names.TypeDigest{.{}};
+    const imports = [_]Ast.ImportedFn{.{
+        .shard = @enumFromInt(4),
+        .fn_id = @enumFromInt(7),
+    }};
+    const exprs = [_]Ast.Expr{.{
+        .ty = unit_ty,
+        .data = .{ .call_proc = .{
+            .callee = Ast.importedProcCallee(@enumFromInt(first_import_index)),
+            .args = Ast.Span(Ast.ExprId).empty(),
+        } },
+    }};
+
+    const image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+        .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(type_nodes[0..]) },
+        .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests[0..]) },
+        .{ .id = .imports, .bytes = std.mem.sliceAsBytes(imports[0..]) },
+        .{ .id = .exprs, .bytes = std.mem.sliceAsBytes(exprs[0..]) },
+    });
+    defer allocator.free(image);
+
+    var header: SpecializationCacheHeader = undefined;
+    @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(SpecializationCacheHeader)]);
+    const mapped = try viewMappedFile(&header, image.ptr, image.len, zeroHash(), zeroHash(), 1);
+    const program = try mappedProgramView(mapped);
+    var name_store = checked_names.NameStore.init(allocator);
+    defer name_store.deinit();
+
+    const loaded_shards = [_]LoadedShard{.{
+        .shard_id = @enumFromInt(4),
+        .fn_count = 8,
+    }};
+    var resolved: [1]ResolvedImportedFn = undefined;
+    const resolved_view = try program.verifyAndResolveImports(&name_store, loaded_shards[0..], resolved[0..]);
+    try std.testing.expectEqual(@as(usize, 1), resolved_view.len);
+    try std.testing.expectEqual(@as(u32, 0), resolved_view[0].loaded_shard_index);
+    try std.testing.expectEqual(@as(Ast.FnId, @enumFromInt(7)), resolved_view[0].fn_id);
+
+    try std.testing.expectError(
+        error.CorruptSpecializationCacheFile,
+        program.resolveImportTable(&.{}, resolved[0..]),
+    );
+
+    const too_short = [_]LoadedShard{.{
+        .shard_id = @enumFromInt(4),
+        .fn_count = 7,
+    }};
+    try std.testing.expectError(
+        error.CorruptSpecializationCacheFile,
+        program.resolveImportTable(too_short[0..], resolved[0..]),
+    );
+}
+
+test "monotype specialization cache round trips empty program functions imports and type shapes" {
+    const allocator = std.testing.allocator;
+
+    const empty_image = try buildImage(allocator, zeroHash(), zeroHash(), &.{});
+    defer allocator.free(empty_image);
+
+    var empty_header: SpecializationCacheHeader = undefined;
+    @memcpy(std.mem.asBytes(&empty_header), empty_image[0..@sizeOf(SpecializationCacheHeader)]);
+    const empty_mapped = try viewMappedFile(&empty_header, empty_image.ptr, empty_image.len, zeroHash(), zeroHash(), 0);
+    const empty_program = try mappedProgramView(empty_mapped);
+    try std.testing.expectEqual(@as(usize, 0), empty_program.fns.len);
+    try std.testing.expectEqual(@as(usize, 0), empty_program.exprs.len);
+
+    var name_store = checked_names.NameStore.init(allocator);
+    defer name_store.deinit();
+    const field_a = try name_store.internRecordFieldLabel("a");
+    const tag_ok = try name_store.internTagLabel("Ok");
+    const module_name = try name_store.internModuleName("M");
+    const type_name = try name_store.internTypeName("Boxed");
+
+    const first_type_index: u32 = std.math.minInt(u32);
+    const first_fn_index: u32 = std.math.minInt(u32);
+    const first_import_index: u32 = std.math.minInt(u32);
+    const first_expr_index: u32 = std.math.minInt(u32);
+    const unit_ty: Type.TypeId = @enumFromInt(first_type_index);
+    const fn_ty: Type.TypeId = @enumFromInt(1);
+    const record_ty: Type.TypeId = @enumFromInt(2);
+    const tag_ty: Type.TypeId = @enumFromInt(3);
+    const recursive_ty: Type.TypeId = @enumFromInt(4);
+    const named_ty: Type.TypeId = @enumFromInt(5);
+    const type_args = [_]Type.TypeId{unit_ty};
+    const fields = [_]Type.Field{.{
+        .name = field_a,
+        .ty = unit_ty,
+    }};
+    const tags = [_]Type.Tag{.{
+        .name = tag_ok,
+        .checked_name = tag_ok,
+        .payloads = .{ .start = 0, .len = 1 },
+    }};
+    const declared_fields = [_]Type.DeclaredField{.{ .named = field_a }};
+    const type_nodes = [_]Type.Content{
+        .zst,
+        .{ .func = .{
+            .args = Type.Span.empty(),
+            .ret = unit_ty,
+        } },
+        .{ .record = .{ .start = 0, .len = 1 } },
+        .{ .tag_union = .{ .start = 0, .len = 1 } },
+        .{ .list = recursive_ty },
+        .{ .named = .{
+            .named_type = .{ .module = testModuleDigest(9), .ty = @enumFromInt(11) },
+            .def = .{
+                .module_name = module_name,
+                .type_name = type_name,
+            },
+            .kind = .nominal,
+            .args = Type.Span.empty(),
+            .backing = .{
+                .ty = record_ty,
+                .use = .inspectable,
+            },
+            .declared_order = .{ .start = 0, .len = 1 },
+        } },
+    };
+    const type_digests = [_]checked_names.TypeDigest{ .{}, .{}, .{}, .{}, .{}, .{} };
+    const fn_id: Ast.FnId = @enumFromInt(first_fn_index);
+    const fn_template = Ast.FnTemplate{
+        .fn_def = .{ .checked_generated = testProcedureTemplate(1, 1) },
+        .source_fn_ty = @enumFromInt(1),
+        .source_fn_key = .{},
+        .mono_fn_ty = fn_ty,
+    };
+    const fns = [_]Ast.Fn{.{ .source = fn_template }};
+    const defs = [_]Ast.Def{.{
+        .symbol = @enumFromInt(1),
+        .fn_def = fn_template,
+        .fn_id = fn_id,
+        .args = Ast.Span(Ast.TypedLocal).empty(),
+        .body = .hosted,
+        .ret = named_ty,
+    }};
+    const imports = [_]Ast.ImportedFn{.{
+        .shard = @enumFromInt(2),
+        .fn_id = @enumFromInt(3),
+    }};
+    const exprs = [_]Ast.Expr{.{
+        .ty = tag_ty,
+        .data = .{ .call_proc = .{
+            .callee = Ast.importedProcCallee(@enumFromInt(first_import_index)),
+            .args = Ast.Span(Ast.ExprId).empty(),
+        } },
+    }};
+    const nested_defs = [_]Ast.NestedDef{.{
+        .symbol = @enumFromInt(2),
+        .fn_def = fn_template,
+        .fn_id = fn_id,
+        .args = Ast.Span(Ast.TypedLocal).empty(),
+        .body = @enumFromInt(first_expr_index),
+        .ret = recursive_ty,
+    }};
+
+    const image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+        .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(type_nodes[0..]) },
+        .{ .id = .type_args, .bytes = std.mem.sliceAsBytes(type_args[0..]) },
+        .{ .id = .fields, .bytes = std.mem.sliceAsBytes(fields[0..]) },
+        .{ .id = .tags, .bytes = std.mem.sliceAsBytes(tags[0..]) },
+        .{ .id = .declared_fields, .bytes = std.mem.sliceAsBytes(declared_fields[0..]) },
+        .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests[0..]) },
+        .{ .id = .fns, .bytes = std.mem.sliceAsBytes(fns[0..]) },
+        .{ .id = .defs, .bytes = std.mem.sliceAsBytes(defs[0..]) },
+        .{ .id = .nested_defs, .bytes = std.mem.sliceAsBytes(nested_defs[0..]) },
+        .{ .id = .imports, .bytes = std.mem.sliceAsBytes(imports[0..]) },
+        .{ .id = .exprs, .bytes = std.mem.sliceAsBytes(exprs[0..]) },
+    });
+    defer allocator.free(image);
+
+    var header: SpecializationCacheHeader = undefined;
+    @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(SpecializationCacheHeader)]);
+    const mapped = try viewMappedFile(&header, image.ptr, image.len, zeroHash(), zeroHash(), 0);
+    const program = try mappedProgramView(mapped);
+    const loaded_shards = [_]LoadedShard{.{
+        .shard_id = @enumFromInt(2),
+        .fn_count = 4,
+    }};
+    var resolved: [1]ResolvedImportedFn = undefined;
+    const resolved_view = try program.verifyAndResolveImports(&name_store, loaded_shards[0..], resolved[0..]);
+
+    try std.testing.expectEqual(@as(usize, 1), program.fns.len);
+    try std.testing.expectEqual(@as(usize, 1), program.defs.len);
+    try std.testing.expectEqual(@as(usize, 1), program.nested_defs.len);
+    try std.testing.expectEqual(@as(usize, 1), program.imported_fns.len);
+    try std.testing.expectEqual(@as(usize, 1), resolved_view.len);
+    try std.testing.expectEqual(@as(Ast.FnId, @enumFromInt(3)), resolved_view[0].fn_id);
+    try std.testing.expectEqual(@as(?Type.Store.VerifyError, null), program.types.verify(&name_store));
+    try std.testing.expectEqual(@as(Type.Content, .{ .list = recursive_ty }), program.types.get(recursive_ty));
+    try std.testing.expectEqual(@as(Type.Content, .{ .record = .{ .start = 0, .len = 1 } }), program.types.get(record_ty));
+}
+
+test "monotype specialization cache mapped view survives source builder deallocation" {
+    const allocator = std.testing.allocator;
+
+    var image: []u8 = undefined;
+    {
+        var type_nodes = std.ArrayList(Type.Content).empty;
+        defer type_nodes.deinit(allocator);
+        var type_digests = std.ArrayList(checked_names.TypeDigest).empty;
+        defer type_digests.deinit(allocator);
+        var fns = std.ArrayList(Ast.Fn).empty;
+        defer fns.deinit(allocator);
+        var defs = std.ArrayList(Ast.Def).empty;
+        defer defs.deinit(allocator);
+        var exprs = std.ArrayList(Ast.Expr).empty;
+        defer exprs.deinit(allocator);
+
+        const first_type_index: u32 = std.math.minInt(u32);
+        const first_fn_index: u32 = std.math.minInt(u32);
+        const unit_ty: Type.TypeId = @enumFromInt(first_type_index);
+        const fn_ty: Type.TypeId = @enumFromInt(1);
+        try type_nodes.append(allocator, .zst);
+        try type_nodes.append(allocator, .{ .func = .{
+            .args = Type.Span.empty(),
+            .ret = unit_ty,
+        } });
+        try type_digests.appendNTimes(allocator, .{}, type_nodes.items.len);
+
+        const fn_id: Ast.FnId = @enumFromInt(first_fn_index);
+        const fn_template = Ast.FnTemplate{
+            .fn_def = .{ .checked_generated = testProcedureTemplate(1, 1) },
+            .source_fn_ty = @enumFromInt(1),
+            .source_fn_key = .{},
+            .mono_fn_ty = fn_ty,
+        };
+        try fns.append(allocator, .{ .source = fn_template });
+        try defs.append(allocator, .{
+            .symbol = @enumFromInt(1),
+            .fn_def = fn_template,
+            .fn_id = fn_id,
+            .args = Ast.Span(Ast.TypedLocal).empty(),
+            .body = .hosted,
+            .ret = unit_ty,
+        });
+        try exprs.append(allocator, .{
+            .ty = unit_ty,
+            .data = .{ .call_proc = .{
+                .callee = Ast.localProcCallee(fn_id),
+                .args = Ast.Span(Ast.ExprId).empty(),
+            } },
+        });
+
+        image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+            .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(type_nodes.items) },
+            .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests.items) },
+            .{ .id = .fns, .bytes = std.mem.sliceAsBytes(fns.items) },
+            .{ .id = .defs, .bytes = std.mem.sliceAsBytes(defs.items) },
+            .{ .id = .exprs, .bytes = std.mem.sliceAsBytes(exprs.items) },
+        });
+    }
+    defer allocator.free(image);
+
+    var header: SpecializationCacheHeader = undefined;
+    @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(SpecializationCacheHeader)]);
+    const mapped = try viewMappedFile(&header, image.ptr, image.len, zeroHash(), zeroHash(), 0);
+    const program = try mappedProgramView(mapped);
+    var name_store = checked_names.NameStore.init(allocator);
+    defer name_store.deinit();
+    const loaded_shards = [_]LoadedShard{.{
+        .shard_id = program.shard_id,
+        .fn_count = @intCast(program.fns.len),
+    }};
+    var resolved: [0]ResolvedImportedFn = .{};
+    _ = try program.verifyAndResolveImports(&name_store, loaded_shards[0..], resolved[0..]);
+    try std.testing.expectEqual(@as(usize, 1), program.exprs.len);
+}
+
+test "monotype specialization cache reports malformed internal data as corruption" {
+    const allocator = std.testing.allocator;
+    var name_store = checked_names.NameStore.init(allocator);
+    defer name_store.deinit();
+
+    {
+        const bad_type_nodes = [_]Type.Content{.{ .list = @enumFromInt(99) }};
+        const type_digests = [_]checked_names.TypeDigest{.{}};
+        const image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+            .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(bad_type_nodes[0..]) },
+            .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests[0..]) },
+        });
+        defer allocator.free(image);
+
+        var header: SpecializationCacheHeader = undefined;
+        @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(SpecializationCacheHeader)]);
+        const mapped = try viewMappedFile(&header, image.ptr, image.len, zeroHash(), zeroHash(), 0);
+        const program = try mappedProgramView(mapped);
+        var resolved: [0]ResolvedImportedFn = .{};
+        try std.testing.expectError(
+            error.CorruptSpecializationCacheFile,
+            program.verifyAndResolveImports(&name_store, &.{}, resolved[0..]),
+        );
+    }
+
+    {
+        const first_type_index: u32 = std.math.minInt(u32);
+        const first_fn_index: u32 = std.math.minInt(u32);
+        const unit_ty: Type.TypeId = @enumFromInt(first_type_index);
+        const type_nodes = [_]Type.Content{.zst};
+        const type_digests = [_]checked_names.TypeDigest{.{}};
+        const fn_id: Ast.FnId = @enumFromInt(first_fn_index);
+        const fns = [_]Ast.Fn{.{
+            .source = .{
+                .fn_def = .{ .checked_generated = testProcedureTemplate(1, 1) },
+                .source_fn_ty = @enumFromInt(1),
+                .source_fn_key = .{},
+                .mono_fn_ty = unit_ty,
+            },
+        }};
+        const exprs = [_]Ast.Expr{.{
+            .ty = unit_ty,
+            .data = .{ .call_proc = .{
+                .callee = Ast.localProcCallee(fn_id),
+                .args = Ast.Span(Ast.ExprId).empty(),
+            } },
+        }};
+        const image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+            .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(type_nodes[0..]) },
+            .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests[0..]) },
+            .{ .id = .fns, .bytes = std.mem.sliceAsBytes(fns[0..]) },
+            .{ .id = .exprs, .bytes = std.mem.sliceAsBytes(exprs[0..]) },
+        });
+        defer allocator.free(image);
+
+        var header: SpecializationCacheHeader = undefined;
+        @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(SpecializationCacheHeader)]);
+        const mapped = try viewMappedFile(&header, image.ptr, image.len, zeroHash(), zeroHash(), 0);
+        const program = try mappedProgramView(mapped);
+        const loaded_shards = [_]LoadedShard{.{
+            .shard_id = program.shard_id,
+            .fn_count = @intCast(program.fns.len),
+        }};
+        var resolved: [0]ResolvedImportedFn = .{};
+        try std.testing.expectError(
+            error.CorruptSpecializationCacheFile,
+            program.verifyAndResolveImports(&name_store, loaded_shards[0..], resolved[0..]),
+        );
+    }
 }
 
 test "monotype specialization cache writer rejects duplicate sections" {
