@@ -245,6 +245,18 @@ test "Lambda Solved consumes lifted program through a read-only view" {
     try std.testing.expect(std.mem.find(u8, solve_source, "self.program.lifted.") == null);
 }
 
+test "Lambda Mono consumes Lambda Solved through a read-only view" {
+    const solved_ast_source = @embedFile("lambda_solved/ast.zig");
+    try expectContains(solved_ast_source, "pub const ProgramView = struct");
+    try expectContains(solved_ast_source, "pub fn view(self: *const Program) ProgramView");
+
+    const lower_source = @embedFile("lambda_mono/lower.zig");
+    try expectContains(lower_source, "solved: Solved.ProgramView");
+    try expectContains(lower_source, "const solved_view = movedSolvedView(&owned, &program);");
+    try std.testing.expect(std.mem.find(u8, lower_source, "self.solved.lifted.fns.items") == null);
+    try std.testing.expect(std.mem.find(u8, lower_source, "self.solved.fn_tys.items") == null);
+}
+
 test "post-check invariant helper is failure-only" {
     const fn_info = @typeInfo(@TypeOf(Common.invariant)).@"fn";
     try std.testing.expect(fn_info.return_type.? == noreturn);

@@ -45,7 +45,8 @@ pub fn run(
     owned.lifted.source_files = .empty;
     errdefer program.deinit();
 
-    var lowerer = try Lowerer.init(allocator, &owned, &program, options);
+    const solved_view = movedSolvedView(&owned, &program);
+    var lowerer = try Lowerer.init(allocator, solved_view, &program, options);
     defer lowerer.folded_matches.deinit(allocator);
     for (folded_matches) |folded| {
         try lowerer.folded_matches.put(allocator, folded.scrutinee, folded.body);
@@ -56,6 +57,50 @@ pub fn run(
 
     owned.deinit();
     return program;
+}
+
+fn movedSolvedView(source: *const Solved.Program, moved: *const Ast.Program) Solved.ProgramView {
+    return .{
+        .lifted = .{
+            .names = &moved.names,
+            .next_symbol = source.lifted.next_symbol,
+            .types = source.lifted.types.view(),
+            .fns = source.lifted.fns.items,
+            .exprs = source.lifted.exprs.items,
+            .pats = source.lifted.pats.items,
+            .stmts = source.lifted.stmts.items,
+            .locals = source.lifted.locals.items,
+            .expr_ids = source.lifted.expr_ids.items,
+            .pat_ids = source.lifted.pat_ids.items,
+            .typed_locals = source.lifted.typed_locals.items,
+            .stmt_ids = source.lifted.stmt_ids.items,
+            .field_exprs = source.lifted.field_exprs.items,
+            .record_destructs = source.lifted.record_destructs.items,
+            .str_pattern_steps = source.lifted.str_pattern_steps.items,
+            .branches = source.lifted.branches.items,
+            .if_branches = source.lifted.if_branches.items,
+            .string_literals = moved.string_literals.items,
+            .proc_debug_names = &source.lifted.proc_debug_names,
+            .roots = source.lifted.roots.items,
+            .layout_requests = source.lifted.layout_requests.items,
+            .runtime_schema_requests = source.lifted.runtime_schema_requests.items,
+            .comptime_sites = source.lifted.comptime_sites.items,
+            .source_files = moved.source_files.items,
+            .expr_locs = source.lifted.expr_locs.items,
+            .expr_regions = source.lifted.expr_regions.items,
+            .stmt_locs = source.lifted.stmt_locs.items,
+            .stmt_regions = source.lifted.stmt_regions.items,
+            .local_names = source.lifted.local_names.items,
+        },
+        .types = source.types.view(),
+        .defs = source.defs.items,
+        .local_tys = source.local_tys.items,
+        .expr_tys = source.expr_tys.items,
+        .pat_tys = source.pat_tys.items,
+        .fn_tys = source.fn_tys.items,
+        .layout_requests = source.layout_requests.items,
+        .runtime_schema_requests = source.runtime_schema_requests.items,
+    };
 }
 
 const CaptureBinding = struct {
@@ -129,7 +174,7 @@ const CaptureSpanContext = struct {
 
 const Lowerer = struct {
     allocator: Allocator,
-    solved: *const Solved.Program,
+    solved: Solved.ProgramView,
     program: *Ast.Program,
     type_map: std.AutoHashMap(SolvedType.TypeVarId, Type.TypeId),
     local_map: []?Ast.LocalId,
@@ -154,27 +199,27 @@ const Lowerer = struct {
 
     fn init(
         allocator: Allocator,
-        solved: *const Solved.Program,
+        solved: Solved.ProgramView,
         program: *Ast.Program,
         options: Options,
     ) Allocator.Error!Lowerer {
-        const local_map = try allocator.alloc(?Ast.LocalId, solved.lifted.locals.items.len);
+        const local_map = try allocator.alloc(?Ast.LocalId, solved.lifted.locals.len);
         errdefer allocator.free(local_map);
         @memset(local_map, null);
 
-        const expr_map = try allocator.alloc(?Ast.ExprId, solved.lifted.exprs.items.len);
+        const expr_map = try allocator.alloc(?Ast.ExprId, solved.lifted.exprs.len);
         errdefer allocator.free(expr_map);
         @memset(expr_map, null);
 
-        const pat_map = try allocator.alloc(?Ast.PatId, solved.lifted.pats.items.len);
+        const pat_map = try allocator.alloc(?Ast.PatId, solved.lifted.pats.len);
         errdefer allocator.free(pat_map);
         @memset(pat_map, null);
 
-        const stmt_map = try allocator.alloc(?Ast.StmtId, solved.lifted.stmts.items.len);
+        const stmt_map = try allocator.alloc(?Ast.StmtId, solved.lifted.stmts.len);
         errdefer allocator.free(stmt_map);
         @memset(stmt_map, null);
 
-        const comptime_site_map = try allocator.alloc(?Ast.ComptimeSiteId, solved.lifted.comptime_sites.items.len);
+        const comptime_site_map = try allocator.alloc(?Ast.ComptimeSiteId, solved.lifted.comptime_sites.len);
         errdefer allocator.free(comptime_site_map);
         @memset(comptime_site_map, null);
 
@@ -217,24 +262,24 @@ const Lowerer = struct {
     fn lower(self: *Lowerer) Allocator.Error!void {
         try self.indexSourceFns();
 
-        try self.program.roots.ensureTotalCapacity(self.allocator, self.solved.lifted.roots.items.len);
-        for (self.solved.lifted.roots.items) |root| {
+        try self.program.roots.ensureTotalCapacity(self.allocator, self.solved.lifted.roots.len);
+        for (self.solved.lifted.roots) |root| {
             try self.program.roots.append(self.allocator, .{
                 .fn_id = try self.ensureOwnFnSpec(root.fn_id, .finite),
                 .request = root.request,
             });
         }
 
-        try self.program.layout_requests.ensureTotalCapacity(self.allocator, self.solved.layout_requests.items.len);
-        for (self.solved.layout_requests.items) |request| {
+        try self.program.layout_requests.ensureTotalCapacity(self.allocator, self.solved.layout_requests.len);
+        for (self.solved.layout_requests) |request| {
             try self.program.layout_requests.append(self.allocator, .{
                 .checked_type = request.checked_type,
                 .ty = try self.lowerType(request.ty),
             });
         }
 
-        try self.program.runtime_schema_requests.ensureTotalCapacity(self.allocator, self.solved.runtime_schema_requests.items.len);
-        for (self.solved.runtime_schema_requests.items) |request| {
+        try self.program.runtime_schema_requests.ensureTotalCapacity(self.allocator, self.solved.runtime_schema_requests.len);
+        for (self.solved.runtime_schema_requests) |request| {
             try self.program.runtime_schema_requests.append(self.allocator, .{
                 .def = request.def,
                 .ty = try self.lowerType(request.ty),
@@ -245,7 +290,7 @@ const Lowerer = struct {
     }
 
     fn indexSourceFns(self: *Lowerer) Allocator.Error!void {
-        for (self.solved.lifted.fns.items, 0..) |fn_, index| {
+        for (self.solved.lifted.fns, 0..) |fn_, index| {
             const fn_id: Lifted.FnId = @enumFromInt(@as(u32, @intCast(index)));
             const result = try self.source_symbols.getOrPut(fn_.symbol);
             if (result.found_existing) Common.invariant("two lifted functions had the same symbol");
@@ -264,7 +309,7 @@ const Lowerer = struct {
 
     fn lowerFnSpec(self: *Lowerer, out_id: Ast.FnId, spec: FnSpec) Allocator.Error!void {
         const fn_id = spec.source;
-        const fn_ = self.solved.lifted.fns.items[@intFromEnum(fn_id)];
+        const fn_ = self.solved.lifted.fns[@intFromEnum(fn_id)];
         self.captures.clearRetainingCapacity();
         @memset(self.local_map, null);
         @memset(self.expr_map, null);
@@ -343,8 +388,8 @@ const Lowerer = struct {
     }
 
     fn ensureOwnFnSpec(self: *Lowerer, fn_id: Lifted.FnId, abi: CaptureAbi) Allocator.Error!Ast.FnId {
-        const fn_symbol = self.solved.lifted.fns.items[@intFromEnum(fn_id)].symbol;
-        const solved_fn_ty = self.solved.types.root(self.solved.fn_tys.items[@intFromEnum(fn_id)]);
+        const fn_symbol = self.solved.lifted.fns[@intFromEnum(fn_id)].symbol;
+        const solved_fn_ty = self.solved.types.root(self.solved.fn_tys[@intFromEnum(fn_id)]);
         const func = switch (self.solved.types.rootContent(solved_fn_ty)) {
             .func => |func| func,
             else => Common.invariant("Lambda Mono function table contains a non-function type"),
@@ -388,7 +433,7 @@ const Lowerer = struct {
         if (result.found_existing) return result.value_ptr.*;
 
         const fn_id: Ast.FnId = @enumFromInt(@as(u32, @intCast(self.program.fns.items.len)));
-        const source_fn = self.solved.lifted.fns.items[@intFromEnum(source)];
+        const source_fn = self.solved.lifted.fns[@intFromEnum(source)];
         const symbol = self.symbols.fresh();
         try self.program.fns.append(self.allocator, undefined);
         try self.fn_specs.append(self.allocator, spec);
@@ -439,8 +484,8 @@ const Lowerer = struct {
     }
 
     fn capturesForFn(self: *Lowerer, fn_id: Lifted.FnId) SolvedType.Span {
-        const fn_symbol = self.solved.lifted.fns.items[@intFromEnum(fn_id)].symbol;
-        const func = switch (self.solved.types.rootContent(self.solved.fn_tys.items[@intFromEnum(fn_id)])) {
+        const fn_symbol = self.solved.lifted.fns[@intFromEnum(fn_id)].symbol;
+        const func = switch (self.solved.types.rootContent(self.solved.fn_tys[@intFromEnum(fn_id)])) {
             .func => |func| func,
             else => Common.invariant("Lambda Mono function table contains a non-function type"),
         };
@@ -466,7 +511,7 @@ const Lowerer = struct {
         const index = @intFromEnum(expr_id);
         if (self.expr_map[index]) |cached| return cached;
 
-        const expr = self.solved.lifted.exprs.items[index];
+        const expr = self.solved.lifted.exprs[index];
         const saved_loc = self.program.current_loc;
         defer self.program.current_loc = saved_loc;
         const saved_region = self.program.current_region;
@@ -484,7 +529,7 @@ const Lowerer = struct {
             .str_lit => |value| .{ .str_lit = value },
             .uninitialized => .uninitialized,
             .uninitialized_payload => |payload| .{ .uninitialized_payload = .{
-                .condition = try self.localFor(payload.condition, try self.lowerType(self.solved.local_tys.items[@intFromEnum(payload.condition)])),
+                .condition = try self.localFor(payload.condition, try self.lowerType(self.solved.local_tys[@intFromEnum(payload.condition)])),
                 .mask = payload.mask,
             } },
             .list => |items| .{ .list = try self.lowerExprSpan(items) },
@@ -556,22 +601,22 @@ const Lowerer = struct {
             .if_initialized_payload => |payload_switch| .{ .if_initialized_payload = .{
                 .cond = try self.lowerExpr(payload_switch.cond),
                 .cond_mask = payload_switch.cond_mask,
-                .payload = try self.localFor(payload_switch.payload, try self.lowerType(self.solved.local_tys.items[@intFromEnum(payload_switch.payload)])),
+                .payload = try self.localFor(payload_switch.payload, try self.lowerType(self.solved.local_tys[@intFromEnum(payload_switch.payload)])),
                 .uninitialized_is_cold = payload_switch.uninitialized_is_cold,
                 .initialized = try self.lowerExpr(payload_switch.initialized),
                 .uninitialized = try self.lowerExpr(payload_switch.uninitialized),
             } },
             .try_sequence => |sequence| .{ .try_sequence = .{
                 .try_expr = try self.lowerExpr(sequence.try_expr),
-                .ok_local = try self.localFor(sequence.ok_local, try self.lowerType(self.solved.local_tys.items[@intFromEnum(sequence.ok_local)])),
+                .ok_local = try self.localFor(sequence.ok_local, try self.lowerType(self.solved.local_tys[@intFromEnum(sequence.ok_local)])),
                 .err_is_cold = sequence.err_is_cold,
                 .ok_body = try self.lowerExpr(sequence.ok_body),
             } },
             .try_record_sequence => |sequence| .{ .try_record_sequence = .{
                 .try_expr = try self.lowerExpr(sequence.try_expr),
-                .value_local = try self.localFor(sequence.value_local, try self.lowerType(self.solved.local_tys.items[@intFromEnum(sequence.value_local)])),
+                .value_local = try self.localFor(sequence.value_local, try self.lowerType(self.solved.local_tys[@intFromEnum(sequence.value_local)])),
                 .value_field = sequence.value_field,
-                .rest_local = try self.localFor(sequence.rest_local, try self.lowerType(self.solved.local_tys.items[@intFromEnum(sequence.rest_local)])),
+                .rest_local = try self.localFor(sequence.rest_local, try self.lowerType(self.solved.local_tys[@intFromEnum(sequence.rest_local)])),
                 .rest_field = sequence.rest_field,
                 .err_is_cold = sequence.err_is_cold,
                 .ok_body = try self.lowerExpr(sequence.ok_body),
@@ -638,7 +683,7 @@ const Lowerer = struct {
         const captures = self.memberCapturesForExpr(expr_id, fn_id);
         return switch (self.program.types.get(ty)) {
             .callable => |variants| blk: {
-                const fn_symbol = self.solved.lifted.fns.items[@intFromEnum(fn_id)].symbol;
+                const fn_symbol = self.solved.lifted.fns[@intFromEnum(fn_id)].symbol;
                 for (self.program.types.fnVariantSpan(variants)) |variant| {
                     if (variant.source != fn_symbol) continue;
                     break :blk .{ .callable = .{
@@ -650,7 +695,7 @@ const Lowerer = struct {
                 Common.invariant("finite callable type did not contain referenced function");
             },
             .erased_fn => |erased| blk: {
-                const fn_symbol = self.solved.lifted.fns.items[@intFromEnum(fn_id)].symbol;
+                const fn_symbol = self.solved.lifted.fns[@intFromEnum(fn_id)].symbol;
                 for (self.program.types.fnVariantSpan(erased.members)) |variant| {
                     if (variant.source != fn_symbol) continue;
                     break :blk .{ .packed_erased_fn = .{
@@ -665,8 +710,8 @@ const Lowerer = struct {
     }
 
     fn memberCapturesForExpr(self: *Lowerer, expr_id: Lifted.ExprId, fn_id: Lifted.FnId) SolvedType.Span {
-        const fn_symbol = self.solved.lifted.fns.items[@intFromEnum(fn_id)].symbol;
-        const expr_ty = self.solved.expr_tys.items[@intFromEnum(expr_id)];
+        const fn_symbol = self.solved.lifted.fns[@intFromEnum(fn_id)].symbol;
+        const expr_ty = self.solved.expr_tys[@intFromEnum(expr_id)];
         const callable = switch (self.solved.types.rootContent(expr_ty)) {
             .func => |func| func.callable,
             .lambda_set, .erased => expr_ty,
@@ -794,7 +839,7 @@ const Lowerer = struct {
     fn lowerPat(self: *Lowerer, pat_id: Lifted.PatId) Allocator.Error!Ast.PatId {
         const index = @intFromEnum(pat_id);
         if (self.pat_map[index]) |cached| return cached;
-        const pat = self.solved.lifted.pats.items[index];
+        const pat = self.solved.lifted.pats[index];
         const ty = try self.lowerTypeForSolvedPat(pat_id);
         const data: Ast.PatData = switch (pat.data) {
             .bind => |local| .{ .bind = try self.localFor(local, ty) },
@@ -857,7 +902,7 @@ const Lowerer = struct {
         defer self.program.current_region = saved_region;
         self.program.current_loc = self.solved.lifted.stmtLoc(stmt_id);
         self.program.current_region = self.solved.lifted.stmtRegion(stmt_id);
-        const lowered_stmt: Ast.Stmt = switch (self.solved.lifted.stmts.items[index]) {
+        const lowered_stmt: Ast.Stmt = switch (self.solved.lifted.stmts[index]) {
             .uninitialized => |pat| .{ .uninitialized = try self.lowerPat(pat) },
             .let_ => |let_| .{ .let_ = .{
                 .pat = try self.lowerPat(let_.pat),
@@ -897,11 +942,11 @@ const Lowerer = struct {
     }
 
     fn lowerExprTy(self: *Lowerer, expr_id: Lifted.ExprId) Allocator.Error!Type.TypeId {
-        return try self.lowerType(self.solved.expr_tys.items[@intFromEnum(expr_id)]);
+        return try self.lowerType(self.solved.expr_tys[@intFromEnum(expr_id)]);
     }
 
     fn lowerTypeForSolvedPat(self: *Lowerer, pat_id: Lifted.PatId) Allocator.Error!Type.TypeId {
-        return try self.lowerType(self.solved.pat_tys.items[@intFromEnum(pat_id)]);
+        return try self.lowerType(self.solved.pat_tys[@intFromEnum(pat_id)]);
     }
 
     fn lowerType(self: *Lowerer, solved_ty: SolvedType.TypeVarId) Allocator.Error!Type.TypeId {
@@ -1009,7 +1054,7 @@ const Lowerer = struct {
             const source = self.sourceFnForSymbol(member.lambda);
             const target = try self.ensureFnSpec(
                 source,
-                self.solved.types.root(self.solved.fn_tys.items[@intFromEnum(source)]),
+                self.solved.types.root(self.solved.fn_tys[@intFromEnum(source)]),
                 abi,
                 member.captures,
             );
@@ -1053,7 +1098,7 @@ const Lowerer = struct {
     fn localFor(self: *Lowerer, local: Lifted.LocalId, ty: Type.TypeId) Allocator.Error!Ast.LocalId {
         const index = @intFromEnum(local);
         if (self.local_map[index]) |existing| return existing;
-        const lifted_local = self.solved.lifted.locals.items[index];
+        const lifted_local = self.solved.lifted.locals[index];
         const lowered = try self.program.addLocalWithBinder(lifted_local.symbol, ty, lifted_local.binder);
         try self.program.setLocalName(lowered, self.solved.lifted.localName(@enumFromInt(index)));
         self.local_map[index] = lowered;
@@ -1094,7 +1139,7 @@ const Lowerer = struct {
         const lowered = try self.allocator.alloc(Ast.TypedLocal, input_items.len);
         defer self.allocator.free(lowered);
         for (input_items, 0..) |item, i| {
-            const lifted_local = self.solved.lifted.locals.items[@intFromEnum(item.local)];
+            const lifted_local = self.solved.lifted.locals[@intFromEnum(item.local)];
             const ty = try self.lowerTypeByLiftedLocal(lifted_local.id);
             lowered[i] = .{ .local = try self.localFor(item.local, ty), .ty = ty };
         }
@@ -1103,7 +1148,7 @@ const Lowerer = struct {
 
     fn lowerTypeByLiftedLocal(self: *Lowerer, local: Lifted.LocalId) Allocator.Error!Type.TypeId {
         const mapped = self.local_map[@intFromEnum(local)] orelse {
-            return try self.lowerType(self.solved.local_tys.items[@intFromEnum(local)]);
+            return try self.lowerType(self.solved.local_tys[@intFromEnum(local)]);
         };
         return self.program.locals.items[@intFromEnum(mapped)].ty;
     }
