@@ -47,6 +47,16 @@ const LiftedSource = struct {
     }
 };
 
+const MonotypeSource = struct {
+    resources: helpers.ParsedResources,
+    mono: postcheck.Monotype.Ast.Program,
+
+    fn deinit(self: *MonotypeSource, allocator: Allocator) void {
+        self.mono.deinit();
+        helpers.cleanupParseAndCanonical(allocator, self.resources);
+    }
+};
+
 fn sharedPrePublishedBuiltin() TestError!helpers.PrePublishedBuiltin {
     shared_test_builtins_mutex.lockUncancelable(std.testing.io);
     defer shared_test_builtins_mutex.unlock(std.testing.io);
@@ -119,6 +129,88 @@ fn lowerModuleWithOptions(
         .resources = resources,
         .lowered = lowered,
     };
+}
+
+fn monotypeCountersForModule(
+    allocator: Allocator,
+    source: []const u8,
+) TestError!postcheck.Monotype.Lower.SpecializationCounters {
+    return monotypeCountersForModuleWithImports(allocator, source, &.{});
+}
+
+fn lowerMonotypeModule(
+    allocator: Allocator,
+    source: []const u8,
+) TestError!MonotypeSource {
+    var resources = try helpers.parseAndCanonicalizeProgramWithBuiltin(allocator, .module, source, &.{}, try sharedPrePublishedBuiltin());
+    errdefer helpers.cleanupParseAndCanonical(allocator, resources);
+
+    const import_count = resources.import_artifacts.len + if (resources.borrowed_builtin_artifact == null) @as(usize, 0) else 1;
+    const import_views = try allocator.alloc(check.CheckedArtifact.ImportedModuleView, import_count);
+    defer allocator.free(import_views);
+
+    var view_index: usize = 0;
+    if (resources.borrowed_builtin_artifact) |builtin_artifact| {
+        import_views[view_index] = check.CheckedArtifact.importedView(builtin_artifact);
+        view_index += 1;
+    }
+    for (resources.import_artifacts) |*artifact| {
+        import_views[view_index] = check.CheckedArtifact.importedView(artifact);
+        view_index += 1;
+    }
+
+    var mono = try postcheck.Monotype.Lower.run(
+        allocator,
+        .{
+            .root = check.CheckedArtifact.loweringView(&resources.checked_artifact),
+            .imports = import_views,
+        },
+        .{ .requests = resources.checked_artifact.root_requests.requests },
+        .{},
+    );
+    errdefer mono.deinit();
+
+    return .{
+        .resources = resources,
+        .mono = mono,
+    };
+}
+
+fn monotypeCountersForModuleWithImports(
+    allocator: Allocator,
+    source: []const u8,
+    imports: []const helpers.ModuleSource,
+) TestError!postcheck.Monotype.Lower.SpecializationCounters {
+    var resources = try helpers.parseAndCanonicalizeProgramWithBuiltin(allocator, .module, source, imports, try sharedPrePublishedBuiltin());
+    defer helpers.cleanupParseAndCanonical(allocator, resources);
+
+    const import_count = resources.import_artifacts.len + if (resources.borrowed_builtin_artifact == null) @as(usize, 0) else 1;
+    const import_views = try allocator.alloc(check.CheckedArtifact.ImportedModuleView, import_count);
+    defer allocator.free(import_views);
+
+    var view_index: usize = 0;
+    if (resources.borrowed_builtin_artifact) |builtin_artifact| {
+        import_views[view_index] = check.CheckedArtifact.importedView(builtin_artifact);
+        view_index += 1;
+    }
+    for (resources.import_artifacts) |*artifact| {
+        import_views[view_index] = check.CheckedArtifact.importedView(artifact);
+        view_index += 1;
+    }
+
+    var counters: postcheck.Monotype.Lower.SpecializationCounters = .{};
+    var mono = try postcheck.Monotype.Lower.run(
+        allocator,
+        .{
+            .root = check.CheckedArtifact.loweringView(&resources.checked_artifact),
+            .imports = import_views,
+        },
+        .{ .requests = resources.checked_artifact.root_requests.requests },
+        .{ .specialization_counters = &counters },
+    );
+    defer mono.deinit();
+
+    return counters;
 }
 
 fn lowerModuleWithDebugEffects(
@@ -1124,6 +1216,278 @@ fn expectRootTargetHasCalls(
     defer allocator.free(target_calls);
 
     try std.testing.expect(target_calls.len > 0);
+}
+
+fn nestedSite(def: postcheck.Monotype.Ast.NestedDef) ?postcheck.Monotype.Ast.NestedFn {
+    return switch (def.fn_def.fn_def) {
+        .nested => |site| site,
+        else => null,
+    };
+}
+
+fn sameNestedSourceSite(
+    lhs: postcheck.Monotype.Ast.NestedFn,
+    rhs: postcheck.Monotype.Ast.NestedFn,
+) bool {
+    return std.mem.eql(u8, lhs.owner.artifact.bytes[0..], rhs.owner.artifact.bytes[0..]) and
+        lhs.owner.proc_base == rhs.owner.proc_base and
+        lhs.owner.template == rhs.owner.template and
+        lhs.site == rhs.site;
+}
+
+test "issue 9802 same-type map2 specialization counters are bounded" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\module [main]
+        \\
+        \\Boxed(a) := [Boxed(a)]
+        \\
+        \\const : a -> Boxed(a)
+        \\const = |value| Boxed(value)
+        \\
+        \\map2 : Boxed(a), Boxed(b), (a, b -> c) -> Boxed(c)
+        \\map2 = |Boxed(left), Boxed(right), f| Boxed(f(left, right))
+        \\
+        \\unwrap : Boxed(a) -> a
+        \\unwrap = |Boxed(value)| value
+        \\
+        \\main : I64
+        \\main = {
+        \\    v0 = const(0)
+        \\    v1 = map2(v0, const(1), |a, b| a + b)
+        \\    v2 = map2(v1, const(2), |a, b| a + b)
+        \\    v3 = map2(v2, const(3), |a, b| a + b)
+        \\    v4 = map2(v3, const(4), |a, b| a + b)
+        \\    v5 = map2(v4, const(5), |a, b| a + b)
+        \\    v6 = map2(v5, const(6), |a, b| a + b)
+        \\    v7 = map2(v6, const(7), |a, b| a + b)
+        \\    v8 = map2(v7, const(8), |a, b| a + b)
+        \\    unwrap(v8)
+        \\}
+    ;
+
+    const counters = try monotypeCountersForModule(allocator, source);
+
+    try std.testing.expect(counters.template_requests > 0);
+    try std.testing.expect(counters.template_hits > 0);
+    try std.testing.expect(counters.template_lookup_candidates <= counters.template_requests);
+    try std.testing.expect(counters.specialization_type_digest_cache_hits > 0);
+}
+
+test "issue 9802 growing-structural map2 specialization counters are bounded" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\module [main]
+        \\
+        \\Boxed(a) := [Boxed(a)]
+        \\
+        \\const : a -> Boxed(a)
+        \\const = |value| Boxed(value)
+        \\
+        \\map2 : Boxed(a), Boxed(b), (a, b -> c) -> Boxed(c)
+        \\map2 = |Boxed(left), Boxed(right), f| Boxed(f(left, right))
+        \\
+        \\unwrap : Boxed(a) -> a
+        \\unwrap = |Boxed(value)| value
+        \\
+        \\main : I64
+        \\main = {
+        \\    v0 = const(0)
+        \\    v1 = map2(v0, const(1), |acc, n| { acc, n1: n })
+        \\    v2 = map2(v1, const(2), |acc, n| { acc, n2: n })
+        \\    v3 = map2(v2, const(3), |acc, n| { acc, n3: n })
+        \\    v4 = map2(v3, const(4), |acc, n| { acc, n4: n })
+        \\    v5 = map2(v4, const(5), |acc, n| { acc, n5: n })
+        \\    v6 = map2(v5, const(6), |acc, n| { acc, n6: n })
+        \\    unwrap(v6).n6
+        \\}
+    ;
+
+    const counters = try monotypeCountersForModule(allocator, source);
+
+    try std.testing.expect(counters.template_requests > 0);
+    try std.testing.expect(counters.template_misses > 0);
+    try std.testing.expect(counters.template_lookup_candidates <= counters.template_requests);
+    try std.testing.expect(counters.specialization_type_digest_cache_hits > 0);
+    try std.testing.expect(counters.specialization_type_digest_nodes_visited <= counters.specialization_type_digest_cache_misses * 8);
+}
+
+test "imported and local generic specialization counters reuse closed types" {
+    const allocator = std.testing.allocator;
+    const util_module =
+        \\module [identity]
+        \\
+        \\identity : a -> a
+        \\identity = |value| value
+    ;
+    const source =
+        \\module [main]
+        \\
+        \\import Util exposing [identity]
+        \\
+        \\Boxed(a) := [Boxed(a)]
+        \\
+        \\local_identity : a -> a
+        \\local_identity = |value| value
+        \\
+        \\main : { imported_a : Boxed(U64), imported_b : Boxed(U64), local_a : Boxed(U64), local_b : Boxed(U64) }
+        \\main = {
+        \\    value = Boxed(1)
+        \\    {
+        \\        imported_a: identity(value),
+        \\        imported_b: identity(value),
+        \\        local_a: local_identity(value),
+        \\        local_b: local_identity(value),
+        \\    }
+        \\}
+    ;
+
+    const counters = try monotypeCountersForModuleWithImports(allocator, source, &.{
+        .{ .name = "Util", .source = util_module },
+    });
+
+    try std.testing.expect(counters.template_requests >= 4);
+    try std.testing.expect(counters.template_misses >= 2);
+    try std.testing.expect(counters.template_hits >= 2);
+    try std.testing.expect(counters.template_lookup_candidates <= counters.template_requests);
+}
+
+test "nested function specializations keep equal types at different sites distinct" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\module [main]
+        \\
+        \\first : U64 -> U64
+        \\first = |n| {
+        \\    id = |x| x
+        \\    id(n)
+        \\}
+        \\
+        \\second : U64 -> U64
+        \\second = |n| {
+        \\    id = |x| x
+        \\    id(n)
+        \\}
+        \\
+        \\main : { first : U64, second : U64 }
+        \\main = { first: first(1), second: second(2) }
+    ;
+
+    var lowered = try lowerMonotypeModule(allocator, source);
+    defer lowered.deinit(allocator);
+
+    var found_distinct_sites = false;
+    for (lowered.mono.nested_defs.items, 0..) |lhs, lhs_index| {
+        const lhs_site = nestedSite(lhs) orelse continue;
+        for (lowered.mono.nested_defs.items[lhs_index + 1 ..]) |rhs| {
+            const rhs_site = nestedSite(rhs) orelse continue;
+            if (!sameNestedSourceSite(lhs_site, rhs_site) and
+                try lowered.mono.types.typeEql(&lowered.mono.names, lhs.fn_def.mono_fn_ty, rhs.fn_def.mono_fn_ty))
+            {
+                found_distinct_sites = true;
+            }
+        }
+    }
+
+    try std.testing.expect(found_distinct_sites);
+}
+
+test "one nested function site specializes at multiple closed function types" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\module [main]
+        \\
+        \\choose : a -> a
+        \\choose = |value| {
+        \\    id = |x| x
+        \\    id(value)
+        \\}
+        \\
+        \\main : { n : U64, s : Str }
+        \\main = { n: choose(1), s: choose("hi") }
+    ;
+
+    var lowered = try lowerMonotypeModule(allocator, source);
+    defer lowered.deinit(allocator);
+
+    var found_same_site_distinct_types = false;
+    for (lowered.mono.nested_defs.items, 0..) |lhs, lhs_index| {
+        const lhs_site = nestedSite(lhs) orelse continue;
+        for (lowered.mono.nested_defs.items[lhs_index + 1 ..]) |rhs| {
+            const rhs_site = nestedSite(rhs) orelse continue;
+            if (!sameNestedSourceSite(lhs_site, rhs_site)) continue;
+            if (lhs.fn_def.mono_fn_ty != rhs.fn_def.mono_fn_ty) {
+                found_same_site_distinct_types = true;
+            }
+        }
+    }
+
+    try std.testing.expect(found_same_site_distinct_types);
+}
+
+test "differently ordered source record rows produce normalized monotype rows" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\module [main]
+        \\
+        \\choose : Bool -> { a : U64, b : U64 }
+        \\choose = |flag| if flag { b: 2, a: 1 } else { a: 3, b: 4 }
+        \\
+        \\main : { a : U64, b : U64 }
+        \\main = choose(Bool.True)
+    ;
+
+    var resources = try helpers.parseAndCanonicalizeProgramWithBuiltin(allocator, .module, source, &.{}, try sharedPrePublishedBuiltin());
+    defer helpers.cleanupParseAndCanonical(allocator, resources);
+
+    const import_count = resources.import_artifacts.len + if (resources.borrowed_builtin_artifact == null) @as(usize, 0) else 1;
+    const import_views = try allocator.alloc(check.CheckedArtifact.ImportedModuleView, import_count);
+    defer allocator.free(import_views);
+
+    var view_index: usize = 0;
+    if (resources.borrowed_builtin_artifact) |builtin_artifact| {
+        import_views[view_index] = check.CheckedArtifact.importedView(builtin_artifact);
+        view_index += 1;
+    }
+    for (resources.import_artifacts) |*artifact| {
+        import_views[view_index] = check.CheckedArtifact.importedView(artifact);
+        view_index += 1;
+    }
+
+    var mono = try postcheck.Monotype.Lower.run(
+        allocator,
+        .{
+            .root = check.CheckedArtifact.loweringView(&resources.checked_artifact),
+            .imports = import_views,
+        },
+        .{ .requests = resources.checked_artifact.root_requests.requests },
+        .{},
+    );
+    defer mono.deinit();
+
+    try std.testing.expect(mono.specs.items.len > 0);
+    for (mono.specs.items) |spec| {
+        try std.testing.expectEqual(postcheck.Monotype.Ast.SpecStatus.ready, spec.status);
+    }
+
+    const a_name = try mono.names.internRecordFieldLabel("a");
+    const b_name = try mono.names.internRecordFieldLabel("b");
+    var normalized_rows: usize = 0;
+    for (mono.types.types.items) |content| {
+        const span = switch (content) {
+            .record => |fields| fields,
+            else => continue,
+        };
+        const fields = mono.types.fieldSpan(span);
+        if (fields.len != 2) continue;
+        if (fields[0].name == a_name and fields[1].name == b_name) {
+            normalized_rows += 1;
+        } else if (fields[0].name == b_name and fields[1].name == a_name) {
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    try std.testing.expect(normalized_rows > 0);
 }
 
 test "direct call wrapper is inlined when inline mode is enabled" {

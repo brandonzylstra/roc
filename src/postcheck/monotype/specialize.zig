@@ -1,8 +1,11 @@
 //! Monotype specialization worklist.
 
 const std = @import("std");
+const check = @import("check");
 const Ast = @import("ast.zig");
 const Type = @import("type.zig");
+
+const names = check.CheckedNames;
 
 /// Monotype function template paired with its requested function type.
 pub const Spec = struct {
@@ -33,8 +36,146 @@ pub const Queue = struct {
     }
 };
 
+/// Result of reserving or reusing a specialization record.
+pub const ReserveResult = struct {
+    spec: Ast.SpecId,
+    created: bool,
+};
+
+/// Direct specialization reservation table keyed by callable identity and type digest.
+pub const SpecBuilder = struct {
+    allocator: std.mem.Allocator,
+    names: *const names.NameStore,
+    types: *const Type.Store,
+    records: std.ArrayList(Ast.SpecRecord),
+    lookup: std.AutoHashMap(SpecLookupDigest, std.ArrayList(Ast.SpecId)),
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        name_store: *const names.NameStore,
+        type_store: *const Type.Store,
+    ) SpecBuilder {
+        return .{
+            .allocator = allocator,
+            .names = name_store,
+            .types = type_store,
+            .records = .empty,
+            .lookup = std.AutoHashMap(SpecLookupDigest, std.ArrayList(Ast.SpecId)).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *SpecBuilder) void {
+        var lists = self.lookup.valueIterator();
+        while (lists.next()) |list| list.deinit(self.allocator);
+        self.lookup.deinit();
+        self.records.deinit(self.allocator);
+    }
+
+    pub fn reserve(
+        self: *SpecBuilder,
+        identity: Ast.SpecIdentity,
+        fn_id: Ast.FnId,
+    ) std.mem.Allocator.Error!ReserveResult {
+        const lookup_digest = SpecLookupDigest.from(identity);
+        const gop = try self.lookup.getOrPut(lookup_digest);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+
+        for (gop.value_ptr.items) |spec_id| {
+            const record = self.records.items[@intFromEnum(spec_id)];
+            if (!std.meta.eql(record.identity.callable, identity.callable)) continue;
+            if (!digestEql(record.identity.source_fn_ty_digest, identity.source_fn_ty_digest)) continue;
+            if (!digestEql(record.identity.mono_fn_ty_digest, identity.mono_fn_ty_digest)) continue;
+            if (!try self.types.typeEql(self.names, record.identity.mono_fn_ty, identity.mono_fn_ty)) continue;
+            return .{ .spec = spec_id, .created = false };
+        }
+
+        const spec_id: Ast.SpecId = @enumFromInt(@as(u32, @intCast(self.records.items.len)));
+        try self.records.append(self.allocator, .{
+            .identity = identity,
+            .fn_id = fn_id,
+            .status = .reserved,
+        });
+        errdefer _ = self.records.pop();
+        try gop.value_ptr.append(self.allocator, spec_id);
+        return .{ .spec = spec_id, .created = true };
+    }
+
+    pub fn markLowering(self: *SpecBuilder, spec: Ast.SpecId) void {
+        self.recordPtr(spec).status = .lowering;
+    }
+
+    pub fn markReady(self: *SpecBuilder, spec: Ast.SpecId, fn_id: Ast.FnId) void {
+        const record = self.recordPtr(spec);
+        record.fn_id = fn_id;
+        record.status = .ready;
+    }
+
+    fn recordPtr(self: *SpecBuilder, spec: Ast.SpecId) *Ast.SpecRecord {
+        const index = @intFromEnum(spec);
+        if (index >= self.records.items.len) @import("../common.zig").invariant("Monotype spec builder referenced a missing record");
+        return &self.records.items[index];
+    }
+};
+
+const SpecLookupDigest = struct {
+    callable_digest: [32]u8,
+    source_digest: [32]u8,
+    mono_digest: [32]u8,
+
+    fn from(identity: Ast.SpecIdentity) SpecLookupDigest {
+        return .{
+            .callable_digest = callableDigest(identity.callable),
+            .source_digest = identity.source_fn_ty_digest.bytes,
+            .mono_digest = identity.mono_fn_ty_digest.bytes,
+        };
+    }
+};
+
 fn specEql(left: Spec, right: Spec) bool {
     return Ast.fnTemplateIdentityEql(left.fn_def, right.fn_def) and left.ty == right.ty;
+}
+
+fn callableDigest(callable: Ast.CallableIdentity) [32]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    switch (callable) {
+        .proc_template => |template| {
+            writeBytes(&hasher, "proc_template");
+            hasher.update(&template.module.bytes);
+            writeU32(&hasher, template.proc_base);
+            writeU32(&hasher, template.template);
+        },
+        .nested_site => |site| {
+            writeBytes(&hasher, "nested_site");
+            hasher.update(&site.module.bytes);
+            writeU32(&hasher, site.owner_proc_base);
+            writeU32(&hasher, site.owner_template);
+            hasher.update(&site.owner_fn_digest.bytes);
+            writeU32(&hasher, site.site);
+        },
+        .hosted => |hosted| {
+            writeBytes(&hasher, "hosted");
+            writeU32(&hasher, @intFromEnum(hosted));
+        },
+        .generated => |generated| {
+            writeBytes(&hasher, "generated");
+            writeU32(&hasher, @intFromEnum(generated));
+        },
+    }
+    return hasher.finalResult();
+}
+
+fn digestEql(left: names.TypeDigest, right: names.TypeDigest) bool {
+    return std.mem.eql(u8, left.bytes[0..], right.bytes[0..]);
+}
+
+fn writeBytes(hasher: *std.crypto.hash.sha2.Sha256, bytes: []const u8) void {
+    writeU32(hasher, @intCast(bytes.len));
+    hasher.update(bytes);
+}
+
+fn writeU32(hasher: *std.crypto.hash.sha2.Sha256, value: u32) void {
+    const little = std.mem.nativeToLittle(u32, value);
+    hasher.update(std.mem.asBytes(&little));
 }
 
 test "monotype specialize declarations are referenced" {
@@ -74,6 +215,75 @@ test "monotype specialize queue coalesces equivalent checked function type ids" 
     try std.testing.expectEqual(@as(usize, 1), queue.entries.items.len);
 }
 
+test "monotype spec builder reuses exact specialization identities" {
+    var name_store = names.NameStore.init(std.testing.allocator);
+    defer name_store.deinit();
+
+    var type_store = Type.Store.init(std.testing.allocator);
+    defer type_store.deinit();
+
+    const unit_ty = try type_store.add(.zst);
+    const identity = testSpecIdentity(unit_ty, digestWithFirstByte(1), digestWithFirstByte(2));
+
+    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store);
+    defer builder.deinit();
+
+    const requested_fn: Ast.FnId = @enumFromInt(1);
+    const duplicate_request_fn: Ast.FnId = @enumFromInt(2);
+    const first = try builder.reserve(identity, requested_fn);
+    const second = try builder.reserve(identity, duplicate_request_fn);
+
+    try std.testing.expect(first.created);
+    try std.testing.expect(!second.created);
+    try std.testing.expectEqual(first.spec, second.spec);
+    try std.testing.expectEqual(@as(usize, 1), builder.records.items.len);
+
+    builder.markLowering(first.spec);
+    try std.testing.expectEqual(Ast.SpecStatus.lowering, builder.records.items[@intFromEnum(first.spec)].status);
+    builder.markReady(first.spec, @enumFromInt(3));
+    try std.testing.expectEqual(Ast.SpecStatus.ready, builder.records.items[@intFromEnum(first.spec)].status);
+    try std.testing.expectEqual(@as(Ast.FnId, @enumFromInt(3)), builder.records.items[@intFromEnum(first.spec)].fn_id);
+}
+
+test "monotype spec builder uses exact type equality after digest match" {
+    var name_store = names.NameStore.init(std.testing.allocator);
+    defer name_store.deinit();
+
+    var type_store = Type.Store.init(std.testing.allocator);
+    defer type_store.deinit();
+
+    const module_name = try name_store.internModuleName("Test");
+    const first_name = try name_store.internTypeName("First");
+    const second_name = try name_store.internTypeName("Second");
+
+    const first_ty = try type_store.add(.{ .named = .{
+        .named_type = .{ .module = .{}, .ty = @enumFromInt(1) },
+        .def = .{ .module_name = module_name, .type_name = first_name },
+        .kind = .alias,
+        .args = Type.Span.empty(),
+        .backing = null,
+    } });
+    const second_ty = try type_store.add(.{ .named = .{
+        .named_type = .{ .module = .{}, .ty = @enumFromInt(2) },
+        .def = .{ .module_name = module_name, .type_name = second_name },
+        .kind = .alias,
+        .args = Type.Span.empty(),
+        .backing = null,
+    } });
+
+    const forced_digest = digestWithFirstByte(9);
+    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store);
+    defer builder.deinit();
+
+    const first = try builder.reserve(testSpecIdentity(first_ty, digestWithFirstByte(1), forced_digest), @enumFromInt(1));
+    const second = try builder.reserve(testSpecIdentity(second_ty, digestWithFirstByte(1), forced_digest), @enumFromInt(2));
+
+    try std.testing.expect(first.created);
+    try std.testing.expect(second.created);
+    try std.testing.expect(first.spec != second.spec);
+    try std.testing.expectEqual(@as(usize, 2), builder.records.items.len);
+}
+
 fn testSpec(comptime proc_index: u32, comptime source_digest_byte: u8, comptime ty_index: u32) Spec {
     return testSpecWithSourceType(proc_index, source_digest_byte, ty_index, ty_index + 1);
 }
@@ -102,4 +312,21 @@ fn digestWithFirstByte(comptime byte: u8) @import("check").CheckedNames.TypeDige
     var digest: @import("check").CheckedNames.TypeDigest = .{};
     digest.bytes[0] = byte;
     return digest;
+}
+
+fn testSpecIdentity(
+    mono_fn_ty: Type.TypeId,
+    source_digest: names.TypeDigest,
+    mono_digest: names.TypeDigest,
+) Ast.SpecIdentity {
+    return .{
+        .callable = .{ .proc_template = .{
+            .module = .{},
+            .proc_base = 0,
+            .template = 1,
+        } },
+        .source_fn_ty_digest = source_digest,
+        .mono_fn_ty_digest = mono_digest,
+        .mono_fn_ty = mono_fn_ty,
+    };
 }

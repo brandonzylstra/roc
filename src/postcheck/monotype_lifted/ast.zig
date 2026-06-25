@@ -115,7 +115,10 @@ pub const RuntimeSchemaRequest = Mono.RuntimeSchemaRequest;
 pub fn callProcCallee(call: Mono.CallProc) FnId {
     return switch (call.callee) {
         .lifted => |fn_id| fn_id,
-        .func => Common.invariant("Monotype Lifted direct call still referenced a Monotype function id"),
+        .func => |slot| switch (slot) {
+            .local => Common.invariant("Monotype Lifted direct call still referenced a Monotype function id"),
+            .imported => Common.invariant("Monotype Lifted direct call still referenced an imported shard function"),
+        },
     };
 }
 

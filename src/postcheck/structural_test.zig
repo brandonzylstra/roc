@@ -125,6 +125,8 @@ test "Lifted functions own captures and consume Monotype expression storage" {
     try std.testing.expect(@hasField(Lifted.ExprData, "fn_ref"));
     try std.testing.expect(@hasField(Lifted.ExprData, "call_proc"));
     try std.testing.expect(@hasField(Lifted.ExprData, "call_value"));
+    try std.testing.expect(@hasField(Mono.FnSlot, "local"));
+    try std.testing.expect(@hasField(Mono.FnSlot, "imported"));
     try std.testing.expect(@hasField(Mono.ProcCallee, "func"));
     try std.testing.expect(@hasField(Mono.ProcCallee, "lifted"));
 

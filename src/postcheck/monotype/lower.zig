@@ -1,6 +1,7 @@
 //! Checked modules to Monotype IR.
 
 const std = @import("std");
+const zig_builtin = @import("builtin");
 const check = @import("check");
 const can = @import("can");
 const builtins = @import("builtins");
@@ -32,6 +33,25 @@ pub const Options = struct {
     /// Preserve source-level procedure names for consumers that present runtime
     /// diagnostics from lowered code.
     proc_debug_names: bool = false,
+    /// Optional deterministic counters for specialization-shape tests.
+    specialization_counters: ?*SpecializationCounters = null,
+};
+
+/// Deterministic counters used by specialization-shape tests.
+pub const SpecializationCounters = struct {
+    template_requests: u64 = 0,
+    template_hits: u64 = 0,
+    template_misses: u64 = 0,
+    nested_requests: u64 = 0,
+    nested_hits: u64 = 0,
+    nested_misses: u64 = 0,
+    template_lookup_candidates: u64 = 0,
+    nested_lookup_candidates: u64 = 0,
+    specialization_type_digest_requests: u64 = 0,
+    specialization_type_digest_cache_hits: u64 = 0,
+    specialization_type_digest_cache_misses: u64 = 0,
+    specialization_type_digest_nodes_visited: u64 = 0,
+    exact_type_checks: u64 = 0,
 };
 
 /// Lower checked modules and explicit roots into Monotype IR.
@@ -61,6 +81,11 @@ pub fn run(
     }
     for (roots.static_data_requests) |request| {
         try builder.lowerStaticDataRequest(request);
+    }
+
+    if (@import("builtin").mode == .Debug) {
+        verifyMonotypeTypeStore(&program);
+        verifyMonotypeCallTargets(&program);
     }
 
     program.next_symbol = builder.symbols.next;
@@ -235,6 +260,8 @@ const LoweredTemplateStatus = enum {
 /// from another graph can still arrive with the same request shape.
 const LoweredTemplate = struct {
     def: Ast.DefId,
+    fn_id: Ast.FnId,
+    spec: Ast.SpecId,
     request_fn_ty: Type.TypeId,
     request_digest: names.TypeDigest,
     solved_fn_ty: Type.TypeId,
@@ -251,8 +278,55 @@ const LoweredNestedStatus = enum {
 /// its body is being lowered or was lowered at.
 const LoweredNestedFn = struct {
     fn_id: Ast.FnId,
-    fn_ty: Type.TypeId,
+    spec: Ast.SpecId,
+    request_fn_ty: Type.TypeId,
+    request_digest: names.TypeDigest,
+    solved_fn_ty: Type.TypeId,
+    solved_digest: names.TypeDigest,
     status: LoweredNestedStatus,
+};
+
+const SpecLookupKind = enum {
+    request,
+    solved,
+};
+
+const TemplateSpecLookup = struct {
+    family: TemplateFamily,
+    kind: SpecLookupKind,
+    digest_bytes: [32]u8,
+
+    fn from(family: TemplateFamily, kind: SpecLookupKind, digest: names.TypeDigest) TemplateSpecLookup {
+        return .{
+            .family = family,
+            .kind = kind,
+            .digest_bytes = digest.bytes,
+        };
+    }
+};
+
+const NestedSpecLookup = struct {
+    family: NestedFnFamily,
+    kind: SpecLookupKind,
+    digest_bytes: [32]u8,
+
+    fn from(family: NestedFnFamily, kind: SpecLookupKind, digest: names.TypeDigest) NestedSpecLookup {
+        return .{
+            .family = family,
+            .kind = kind,
+            .digest_bytes = digest.bytes,
+        };
+    }
+};
+
+const LoweredTemplateMatch = struct {
+    index: usize,
+    match_ty: Type.TypeId,
+};
+
+const LoweredNestedMatch = struct {
+    index: usize,
+    match_ty: Type.TypeId,
 };
 
 const ReservedTemplate = struct {
@@ -345,14 +419,20 @@ const Builder = struct {
     root_view: checked.ImportedModuleView,
     program: *Ast.Program,
     proc_debug_names: bool,
+    counters: ?*SpecializationCounters,
     symbols: Common.SymbolGen = .{},
     type_cache: std.AutoHashMap(CheckedTypeAddress, Type.TypeId),
     /// Monotypes owned by the builder-global type cache. They are lowered
     /// without body evidence, so empty tag unions inside them are unresolved
     /// slots rather than solved uninhabited types.
     unsolved_monos: std.AutoHashMap(Type.TypeId, void),
-    lowered_templates: std.AutoHashMap(TemplateFamily, std.ArrayList(LoweredTemplate)),
-    lowered_nested_fns: std.AutoHashMap(NestedFnFamily, std.ArrayList(LoweredNestedFn)),
+    lowered_templates: std.ArrayList(LoweredTemplate),
+    lowered_template_by_fn: std.AutoHashMap(Ast.FnId, u32),
+    lowered_template_by_def: std.AutoHashMap(Ast.DefId, u32),
+    lowered_template_lookup: std.AutoHashMap(TemplateSpecLookup, std.ArrayList(u32)),
+    lowered_nested_fns: std.ArrayList(LoweredNestedFn),
+    lowered_nested_by_fn: std.AutoHashMap(Ast.FnId, u32),
+    lowered_nested_lookup: std.AutoHashMap(NestedSpecLookup, std.ArrayList(u32)),
     nested_site_cache: std.AutoHashMap(NestedSiteAddress, names.ProcSiteId),
     const_expr_cache: std.AutoHashMap(ConstExprAddress, Ast.ExprId),
     inspect_defs: std.AutoHashMap(GeneratedHelperDefAddress, GeneratedHelperDefEntry),
@@ -376,10 +456,16 @@ const Builder = struct {
             .root_view = checked.importedView(modules.root.module),
             .program = program,
             .proc_debug_names = options.proc_debug_names,
+            .counters = options.specialization_counters,
             .type_cache = std.AutoHashMap(CheckedTypeAddress, Type.TypeId).init(allocator),
             .unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(allocator),
-            .lowered_templates = std.AutoHashMap(TemplateFamily, std.ArrayList(LoweredTemplate)).init(allocator),
-            .lowered_nested_fns = std.AutoHashMap(NestedFnFamily, std.ArrayList(LoweredNestedFn)).init(allocator),
+            .lowered_templates = .empty,
+            .lowered_template_by_fn = std.AutoHashMap(Ast.FnId, u32).init(allocator),
+            .lowered_template_by_def = std.AutoHashMap(Ast.DefId, u32).init(allocator),
+            .lowered_template_lookup = std.AutoHashMap(TemplateSpecLookup, std.ArrayList(u32)).init(allocator),
+            .lowered_nested_fns = .empty,
+            .lowered_nested_by_fn = std.AutoHashMap(Ast.FnId, u32).init(allocator),
+            .lowered_nested_lookup = std.AutoHashMap(NestedSpecLookup, std.ArrayList(u32)).init(allocator),
             .nested_site_cache = std.AutoHashMap(NestedSiteAddress, names.ProcSiteId).init(allocator),
             .const_expr_cache = std.AutoHashMap(ConstExprAddress, Ast.ExprId).init(allocator),
             .inspect_defs = std.AutoHashMap(GeneratedHelperDefAddress, GeneratedHelperDefEntry).init(allocator),
@@ -408,18 +494,55 @@ const Builder = struct {
         self.inspect_defs.deinit();
         self.const_expr_cache.deinit();
         self.nested_site_cache.deinit();
-        var nested_lists = self.lowered_nested_fns.valueIterator();
-        while (nested_lists.next()) |list| {
+        var nested_lookup_lists = self.lowered_nested_lookup.valueIterator();
+        while (nested_lookup_lists.next()) |list| {
             list.deinit(self.allocator);
         }
-        self.lowered_nested_fns.deinit();
-        var template_lists = self.lowered_templates.valueIterator();
-        while (template_lists.next()) |list| {
+        self.lowered_nested_lookup.deinit();
+        self.lowered_nested_by_fn.deinit();
+        self.lowered_nested_fns.deinit(self.allocator);
+        var template_lookup_lists = self.lowered_template_lookup.valueIterator();
+        while (template_lookup_lists.next()) |list| {
             list.deinit(self.allocator);
         }
-        self.lowered_templates.deinit();
+        self.lowered_template_lookup.deinit();
+        self.lowered_template_by_def.deinit();
+        self.lowered_template_by_fn.deinit();
+        self.lowered_templates.deinit(self.allocator);
         self.unsolved_monos.deinit();
         self.type_cache.deinit();
+    }
+
+    fn count(self: *Builder, comptime field: []const u8) void {
+        if (comptime zig_builtin.mode == .Debug) {
+            if (self.counters) |counters| {
+                @field(counters, field) += 1;
+            }
+        }
+    }
+
+    fn countBy(self: *Builder, comptime field: []const u8, amount: usize) void {
+        if (comptime zig_builtin.mode == .Debug) {
+            if (self.counters) |counters| {
+                @field(counters, field) += @intCast(amount);
+            }
+        }
+    }
+
+    fn specializationTypeDigest(self: *Builder, ty: Type.TypeId) names.TypeDigest {
+        if (comptime zig_builtin.mode == .Debug) {
+            if (self.counters != null) {
+                self.count("specialization_type_digest_requests");
+                var stats: Type.Store.DigestStats = .{};
+                const digest = self.program.types.typeDigestCached(&self.program.names, ty, &stats);
+                self.countBy("specialization_type_digest_cache_hits", @intCast(stats.cache_hits));
+                self.countBy("specialization_type_digest_cache_misses", @intCast(stats.cache_misses));
+                self.countBy("specialization_type_digest_nodes_visited", @intCast(stats.nodes_visited));
+                return digest;
+            }
+        }
+
+        return self.program.types.typeDigestCached(&self.program.names, ty, null);
     }
 
     fn initHostedCatalog(self: *Builder) Allocator.Error!void {
@@ -824,7 +947,7 @@ const Builder = struct {
         const body = try self.program.addExpr(.{
             .ty = fn_data.ret,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = callee },
+                .callee = Ast.localProcCallee(callee),
                 .args = try self.program.addExprSpan(arg_exprs),
             } },
         });
@@ -986,7 +1109,7 @@ const Builder = struct {
         source_fn_key: names.TypeDigest,
         fn_ty: Type.TypeId,
     ) Allocator.Error!Ast.DefId {
-        return try self.lowerTemplateWithMonoFor(template_ref, source_ty_view, source_fn_ty, source_fn_key, fn_ty, null);
+        return try self.lowerTemplateWithMonoFor(template_ref, source_ty_view, source_fn_ty, source_fn_key, fn_ty, null, null);
     }
 
     /// Specializations of one template family are deduplicated by structural
@@ -1003,28 +1126,38 @@ const Builder = struct {
         source_fn_key: names.TypeDigest,
         fn_ty: Type.TypeId,
         requester: ?*InstGraph,
+        reserved_fn_id: ?Ast.FnId,
     ) Allocator.Error!Ast.DefId {
         const family = TemplateFamily.from(template_ref, source_fn_key);
-        const family_entry = try self.lowered_templates.getOrPut(family);
-        if (!family_entry.found_existing) family_entry.value_ptr.* = .empty;
-        const fn_ty_digest = self.program.types.typeDigest(&self.program.names, fn_ty);
+        self.count("template_requests");
+        const fn_ty_digest = self.specializationTypeDigest(fn_ty);
         var reserved_def: ?Ast.DefId = null;
         var lower_fn_ty = fn_ty;
-        for (family_entry.value_ptr.items) |*existing| {
-            var matched_ty: ?Type.TypeId = null;
-            if (existing.request_fn_ty == fn_ty) {
-                matched_ty = existing.request_fn_ty;
-            } else if (std.mem.eql(u8, existing.request_digest.bytes[0..], fn_ty_digest.bytes[0..])) {
-                matched_ty = existing.request_fn_ty;
+        if (reserved_fn_id) |fn_id| {
+            const index = self.lowered_template_by_fn.get(fn_id) orelse
+                Common.invariant("deferred Monotype procedure template request referenced a missing reservation");
+            const existing = &self.lowered_templates.items[index];
+            switch (existing.status) {
+                .ready,
+                .lowering,
+                => return existing.def,
+                .reserved => {
+                    reserved_def = existing.def;
+                    lower_fn_ty = existing.request_fn_ty;
+                    const current_digest = self.specializationTypeDigest(lower_fn_ty);
+                    if (!digestEql(existing.request_digest, current_digest)) {
+                        existing.request_digest = current_digest;
+                        self.program.specs.items[@intFromEnum(existing.spec)].identity.mono_fn_ty_digest = current_digest;
+                        try self.appendTemplateLookup(family, .request, current_digest, @intCast(index));
+                    }
+                    existing.status = .lowering;
+                    self.program.specs.items[@intFromEnum(existing.spec)].status = .lowering;
+                },
             }
-            if (matched_ty == null and existing.status == .ready) {
-                if (existing.solved_fn_ty == fn_ty) {
-                    matched_ty = existing.solved_fn_ty;
-                } else if (std.mem.eql(u8, existing.solved_digest.bytes[0..], fn_ty_digest.bytes[0..])) {
-                    matched_ty = existing.solved_fn_ty;
-                }
-            }
-            const match_ty = matched_ty orelse continue;
+        } else if (try self.findLoweredTemplate(family, fn_ty, fn_ty_digest)) |match| {
+            self.count("template_hits");
+            const existing = &self.lowered_templates.items[match.index];
+            const match_ty = match.match_ty;
             if (requester) |graph| {
                 if (match_ty != fn_ty) {
                     try graph.unify(try graph.importMono(fn_ty), try graph.importMono(match_ty));
@@ -1042,9 +1175,11 @@ const Builder = struct {
                     reserved_def = existing.def;
                     lower_fn_ty = existing.request_fn_ty;
                     existing.status = .lowering;
-                    break;
+                    self.program.specs.items[@intFromEnum(existing.spec)].status = .lowering;
                 },
             }
+        } else {
+            self.count("template_misses");
         }
 
         const view = self.moduleForDigest(names.procTemplateModuleDigest(template_ref));
@@ -1083,14 +1218,22 @@ const Builder = struct {
                 .body = .hosted,
                 .ret = self.functionShape(lower_fn_ty, "procedure template root type was not a function").ret,
             });
-            try family_entry.value_ptr.append(self.allocator, .{
+            const entry_index: u32 = @intCast(self.lowered_templates.items.len);
+            const request_digest = self.specializationTypeDigest(lower_fn_ty);
+            const spec = try self.addTemplateSpecRecord(template_ref, source_fn_key, lower_fn_ty, request_digest, fn_id, .lowering);
+            try self.lowered_templates.append(self.allocator, .{
                 .def = def_id,
+                .fn_id = fn_id,
+                .spec = spec,
                 .request_fn_ty = lower_fn_ty,
-                .request_digest = self.program.types.typeDigest(&self.program.names, lower_fn_ty),
+                .request_digest = request_digest,
                 .solved_fn_ty = lower_fn_ty,
-                .solved_digest = self.program.types.typeDigest(&self.program.names, lower_fn_ty),
+                .solved_digest = request_digest,
                 .status = .lowering,
             });
+            try self.lowered_template_by_fn.put(fn_id, entry_index);
+            try self.lowered_template_by_def.put(def_id, entry_index);
+            try self.appendTemplateLookup(family, .request, request_digest, entry_index);
             break :blk .{
                 .def = def_id,
                 .fn_id = fn_id,
@@ -1110,7 +1253,7 @@ const Builder = struct {
                     .body = .hosted,
                     .ret = fn_data.ret,
                 };
-                self.markTemplateReady(family, reservation.def, lower_fn_ty);
+                try self.markTemplateReady(family, reservation.def, lower_fn_ty);
                 return reservation.def;
             },
             .roc,
@@ -1175,7 +1318,7 @@ const Builder = struct {
             .body = .{ .roc = lowered.body },
             .ret = lowered.ret,
         };
-        self.markTemplateReady(family, reservation.def, live_fn_ty);
+        try self.markTemplateReady(family, reservation.def, live_fn_ty);
         try self.drainSpecRequests(graph);
         return reservation.def;
     }
@@ -1189,24 +1332,12 @@ const Builder = struct {
         requester: *InstGraph,
     ) Allocator.Error!ReservedTemplate {
         const family = TemplateFamily.from(template_ref, source_fn_key);
-        const family_entry = try self.lowered_templates.getOrPut(family);
-        if (!family_entry.found_existing) family_entry.value_ptr.* = .empty;
-        const fn_ty_digest = self.program.types.typeDigest(&self.program.names, fn_ty);
-        for (family_entry.value_ptr.items) |existing| {
-            var matched_ty: ?Type.TypeId = null;
-            if (existing.request_fn_ty == fn_ty) {
-                matched_ty = existing.request_fn_ty;
-            } else if (std.mem.eql(u8, existing.request_digest.bytes[0..], fn_ty_digest.bytes[0..])) {
-                matched_ty = existing.request_fn_ty;
-            }
-            if (matched_ty == null and existing.status == .ready) {
-                if (existing.solved_fn_ty == fn_ty) {
-                    matched_ty = existing.solved_fn_ty;
-                } else if (std.mem.eql(u8, existing.solved_digest.bytes[0..], fn_ty_digest.bytes[0..])) {
-                    matched_ty = existing.solved_fn_ty;
-                }
-            }
-            const match_ty = matched_ty orelse continue;
+        self.count("template_requests");
+        const fn_ty_digest = self.specializationTypeDigest(fn_ty);
+        if (try self.findLoweredTemplate(family, fn_ty, fn_ty_digest)) |match| {
+            self.count("template_hits");
+            const existing = self.lowered_templates.items[match.index];
+            const match_ty = match.match_ty;
             if (match_ty != fn_ty) {
                 try requester.unify(try requester.importMono(fn_ty), try requester.importMono(match_ty));
             }
@@ -1220,6 +1351,8 @@ const Builder = struct {
                     Common.invariant("reserved Monotype procedure template definition had no function id"),
                 .needs_lowering = existing.status == .reserved,
             };
+        } else {
+            self.count("template_misses");
         }
 
         const view = self.moduleForDigest(names.procTemplateModuleDigest(template_ref));
@@ -1236,31 +1369,106 @@ const Builder = struct {
             .body = .hosted,
             .ret = self.functionShape(fn_ty, "procedure template root type was not a function").ret,
         });
-        try family_entry.value_ptr.append(self.allocator, .{
+        const entry_index: u32 = @intCast(self.lowered_templates.items.len);
+        const spec = try self.addTemplateSpecRecord(template_ref, source_fn_key, fn_ty, fn_ty_digest, fn_id, .reserved);
+        try self.lowered_templates.append(self.allocator, .{
             .def = def_id,
+            .fn_id = fn_id,
+            .spec = spec,
             .request_fn_ty = fn_ty,
             .request_digest = fn_ty_digest,
             .solved_fn_ty = fn_ty,
             .solved_digest = fn_ty_digest,
             .status = .reserved,
         });
+        try self.lowered_template_by_fn.put(fn_id, entry_index);
+        try self.lowered_template_by_def.put(def_id, entry_index);
+        try self.appendTemplateLookup(family, .request, fn_ty_digest, entry_index);
         return .{
             .fn_id = fn_id,
             .needs_lowering = true,
         };
     }
 
-    fn markTemplateReady(self: *Builder, family: TemplateFamily, def: Ast.DefId, fn_ty: Type.TypeId) void {
-        const entries = self.lowered_templates.getPtr(family) orelse
-            Common.invariant("lowered procedure template family disappeared before completion");
-        for (entries.items) |*entry| {
-            if (entry.def != def) continue;
-            entry.solved_fn_ty = fn_ty;
-            entry.solved_digest = self.program.types.typeDigest(&self.program.names, fn_ty);
-            entry.status = .ready;
-            return;
+    fn markTemplateReady(self: *Builder, family: TemplateFamily, def: Ast.DefId, fn_ty: Type.TypeId) Allocator.Error!void {
+        const index = self.lowered_template_by_def.get(def) orelse
+            Common.invariant("lowered procedure template definition disappeared before completion");
+        const entry = &self.lowered_templates.items[index];
+        entry.solved_fn_ty = fn_ty;
+        entry.solved_digest = self.specializationTypeDigest(fn_ty);
+        try self.appendTemplateLookup(family, .solved, entry.solved_digest, index);
+        entry.status = .ready;
+        self.program.specs.items[@intFromEnum(entry.spec)].status = .ready;
+    }
+
+    fn appendTemplateLookup(
+        self: *Builder,
+        family: TemplateFamily,
+        kind: SpecLookupKind,
+        digest: names.TypeDigest,
+        index: u32,
+    ) Allocator.Error!void {
+        const lookup = TemplateSpecLookup.from(family, kind, digest);
+        const gop = try self.lowered_template_lookup.getOrPut(lookup);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.allocator, index);
+    }
+
+    fn findLoweredTemplate(
+        self: *Builder,
+        family: TemplateFamily,
+        requested_ty: Type.TypeId,
+        requested_digest: names.TypeDigest,
+    ) Allocator.Error!?LoweredTemplateMatch {
+        if (try self.findLoweredTemplateInLookup(family, .request, requested_ty, requested_digest)) |match| {
+            return match;
         }
-        Common.invariant("lowered procedure template definition disappeared before completion");
+        return try self.findLoweredTemplateInLookup(family, .solved, requested_ty, requested_digest);
+    }
+
+    fn findLoweredTemplateInLookup(
+        self: *Builder,
+        family: TemplateFamily,
+        kind: SpecLookupKind,
+        requested_ty: Type.TypeId,
+        requested_digest: names.TypeDigest,
+    ) Allocator.Error!?LoweredTemplateMatch {
+        const lookup = TemplateSpecLookup.from(family, kind, requested_digest);
+        const indices = self.lowered_template_lookup.get(lookup) orelse return null;
+        self.countBy("template_lookup_candidates", indices.items.len);
+        for (indices.items) |raw_index| {
+            const index: usize = @intCast(raw_index);
+            if (index >= self.lowered_templates.items.len) Common.invariant("lowered template lookup index was out of bounds");
+            const existing = self.lowered_templates.items[index];
+            const candidate_ty = switch (kind) {
+                .request => existing.request_fn_ty,
+                .solved => existing.solved_fn_ty,
+            };
+            const candidate_digest = switch (kind) {
+                .request => existing.request_digest,
+                .solved => existing.solved_digest,
+            };
+            if (kind == .solved and existing.status != .ready) continue;
+            if (!try self.specializationTypeMatches(candidate_ty, candidate_digest, requested_ty, requested_digest)) continue;
+            return .{
+                .index = index,
+                .match_ty = candidate_ty,
+            };
+        }
+        return null;
+    }
+
+    fn specializationTypeMatches(
+        self: *Builder,
+        existing_ty: Type.TypeId,
+        existing_digest: names.TypeDigest,
+        requested_ty: Type.TypeId,
+        requested_digest: names.TypeDigest,
+    ) Allocator.Error!bool {
+        if (existing_ty == requested_ty) return true;
+        if (!digestEql(existing_digest, requested_digest)) return false;
+        self.count("exact_type_checks");
+        return try self.program.types.typeEql(&self.program.names, existing_ty, requested_ty);
     }
 
     fn typedLocalsForArgs(self: *Builder, arg_tys: []const Type.TypeId) Allocator.Error!Ast.Span(Ast.TypedLocal) {
@@ -1304,6 +1512,57 @@ const Builder = struct {
             .source_fn_key = source_fn_key,
             .mono_fn_ty = mono_fn_ty,
         };
+    }
+
+    fn addTemplateSpecRecord(
+        self: *Builder,
+        template_ref: names.ProcTemplate,
+        source_fn_key: names.TypeDigest,
+        mono_fn_ty: Type.TypeId,
+        mono_fn_ty_digest: names.TypeDigest,
+        fn_id: Ast.FnId,
+        status: Ast.SpecStatus,
+    ) Allocator.Error!Ast.SpecId {
+        return try self.program.addSpec(.{
+            .identity = .{
+                .callable = .{ .proc_template = .{
+                    .module = names.procTemplateModuleDigest(template_ref),
+                    .proc_base = @intFromEnum(template_ref.proc_base),
+                    .template = @intFromEnum(template_ref.template),
+                } },
+                .source_fn_ty_digest = source_fn_key,
+                .mono_fn_ty_digest = mono_fn_ty_digest,
+                .mono_fn_ty = mono_fn_ty,
+            },
+            .fn_id = fn_id,
+            .status = status,
+        });
+    }
+
+    fn addNestedSpecRecord(
+        self: *Builder,
+        nested: Ast.NestedFn,
+        source_fn_key: names.TypeDigest,
+        mono_fn_ty: Type.TypeId,
+        mono_fn_ty_digest: names.TypeDigest,
+        fn_id: Ast.FnId,
+    ) Allocator.Error!Ast.SpecId {
+        return try self.program.addSpec(.{
+            .identity = .{
+                .callable = .{ .nested_site = .{
+                    .module = names.procTemplateModuleDigest(nested.owner),
+                    .owner_proc_base = @intFromEnum(nested.owner.proc_base),
+                    .owner_template = @intFromEnum(nested.owner.template),
+                    .owner_fn_digest = nested.context_fn_key,
+                    .site = @intFromEnum(nested.site),
+                } },
+                .source_fn_ty_digest = source_fn_key,
+                .mono_fn_ty_digest = mono_fn_ty_digest,
+                .mono_fn_ty = mono_fn_ty,
+            },
+            .fn_id = fn_id,
+            .status = .lowering,
+        });
     }
 
     fn registerProcDebugNameForTemplate(
@@ -1374,7 +1633,7 @@ const Builder = struct {
         try self.type_cache.put(address, reserved);
         try self.unsolved_monos.put(reserved, {});
         const lowered = try self.lowerTypePayload(view, checked_ty, view.types.payload(checked_ty));
-        self.program.types.types.items[@intFromEnum(reserved)] = lowered;
+        self.program.types.set(reserved, lowered);
         return reserved;
     }
 
@@ -2002,6 +2261,7 @@ const Builder = struct {
                 );
                 if (reserved.needs_lowering) {
                     try graph.deferred_templates.append(self.allocator, .{
+                        .fn_id = reserved.fn_id,
                         .template_ref = template_ref,
                         .module = source_ty_view.key,
                         .source_fn_ty = fn_template.source_fn_ty,
@@ -2058,6 +2318,7 @@ const Builder = struct {
         );
         if (reserved.needs_lowering) {
             try source_ctx.graph.deferred_templates.append(self.allocator, .{
+                .fn_id = reserved.fn_id,
                 .template_ref = template_ref,
                 .module = source_ctx.view.key,
                 .source_fn_ty = fn_template.source_fn_ty,
@@ -2147,32 +2408,51 @@ const Builder = struct {
             else => Common.invariant("local procedure specialization did not have a nested function identity"),
         };
         const family = NestedFnFamily.from(nested, fn_template.source_fn_key);
-        const family_entry = try self.lowered_nested_fns.getOrPut(family);
-        if (!family_entry.found_existing) family_entry.value_ptr.* = .empty;
-        const fn_ty_digest = self.program.types.typeDigest(&self.program.names, fn_template.mono_fn_ty);
-        for (family_entry.value_ptr.items) |existing| {
-            if (existing.fn_ty != fn_template.mono_fn_ty) {
-                const existing_digest = self.program.types.typeDigest(&self.program.names, existing.fn_ty);
-                if (!std.mem.eql(u8, existing_digest.bytes[0..], fn_ty_digest.bytes[0..])) continue;
+        self.count("nested_requests");
+        const fn_ty_digest = self.specializationTypeDigest(fn_template.mono_fn_ty);
+        if (try self.findLoweredNested(family, fn_template.mono_fn_ty, fn_ty_digest)) |match| {
+            self.count("nested_hits");
+            const existing = self.lowered_nested_fns.items[match.index];
+            const match_ty = match.match_ty;
+            var unified = false;
+            if (match_ty != fn_template.mono_fn_ty) {
                 try request.ctx.graph.unify(
                     try request.ctx.graph.importMono(fn_template.mono_fn_ty),
-                    try request.ctx.graph.importMono(existing.fn_ty),
+                    try request.ctx.graph.importMono(match_ty),
                 );
-                try request.ctx.graph.drainDirty();
+                unified = true;
             }
+            if (existing.status == .ready and existing.solved_fn_ty != fn_template.mono_fn_ty) {
+                try request.ctx.graph.unify(
+                    try request.ctx.graph.importMono(fn_template.mono_fn_ty),
+                    try request.ctx.graph.importMono(existing.solved_fn_ty),
+                );
+                unified = true;
+            }
+            if (unified) try request.ctx.graph.drainDirty();
             switch (existing.status) {
                 .ready,
                 .lowering,
                 => return existing.fn_id,
             }
+        } else {
+            self.count("nested_misses");
         }
 
         const fn_id = try self.program.addFn(fn_template);
-        try family_entry.value_ptr.append(self.allocator, .{
+        const entry_index: u32 = @intCast(self.lowered_nested_fns.items.len);
+        const spec = try self.addNestedSpecRecord(nested, fn_template.source_fn_key, fn_template.mono_fn_ty, fn_ty_digest, fn_id);
+        try self.lowered_nested_fns.append(self.allocator, .{
             .fn_id = fn_id,
-            .fn_ty = fn_template.mono_fn_ty,
+            .spec = spec,
+            .request_fn_ty = fn_template.mono_fn_ty,
+            .request_digest = fn_ty_digest,
+            .solved_fn_ty = fn_template.mono_fn_ty,
+            .solved_digest = fn_ty_digest,
             .status = .lowering,
         });
+        try self.lowered_nested_by_fn.put(fn_id, entry_index);
+        try self.appendNestedLookup(family, .request, fn_ty_digest, entry_index);
 
         try request.ctx.constrainTypeToMono(fn_template.source_fn_ty, fn_template.mono_fn_ty);
 
@@ -2193,20 +2473,76 @@ const Builder = struct {
             .body = lowered.body,
             .ret = lowered.ret,
         });
-        self.markNestedFnReady(family, fn_id, live_fn_ty);
+        try self.markNestedFnReady(family, fn_id, live_fn_ty);
         return fn_id;
     }
 
-    fn markNestedFnReady(self: *Builder, family: NestedFnFamily, fn_id: Ast.FnId, fn_ty: Type.TypeId) void {
-        const entries = self.lowered_nested_fns.getPtr(family) orelse
-            Common.invariant("lowered nested function family disappeared before completion");
-        for (entries.items) |*entry| {
-            if (entry.fn_id != fn_id) continue;
-            entry.fn_ty = fn_ty;
-            entry.status = .ready;
-            return;
+    fn markNestedFnReady(self: *Builder, family: NestedFnFamily, fn_id: Ast.FnId, fn_ty: Type.TypeId) Allocator.Error!void {
+        const index = self.lowered_nested_by_fn.get(fn_id) orelse
+            Common.invariant("lowered nested function disappeared before completion");
+        const entry = &self.lowered_nested_fns.items[index];
+        entry.solved_fn_ty = fn_ty;
+        entry.solved_digest = self.specializationTypeDigest(fn_ty);
+        try self.appendNestedLookup(family, .solved, entry.solved_digest, index);
+        entry.status = .ready;
+        self.program.specs.items[@intFromEnum(entry.spec)].status = .ready;
+    }
+
+    fn appendNestedLookup(
+        self: *Builder,
+        family: NestedFnFamily,
+        kind: SpecLookupKind,
+        digest: names.TypeDigest,
+        index: u32,
+    ) Allocator.Error!void {
+        const lookup = NestedSpecLookup.from(family, kind, digest);
+        const gop = try self.lowered_nested_lookup.getOrPut(lookup);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.allocator, index);
+    }
+
+    fn findLoweredNested(
+        self: *Builder,
+        family: NestedFnFamily,
+        requested_ty: Type.TypeId,
+        requested_digest: names.TypeDigest,
+    ) Allocator.Error!?LoweredNestedMatch {
+        if (try self.findLoweredNestedInLookup(family, .request, requested_ty, requested_digest)) |match| {
+            return match;
         }
-        Common.invariant("lowered nested function disappeared before completion");
+        return try self.findLoweredNestedInLookup(family, .solved, requested_ty, requested_digest);
+    }
+
+    fn findLoweredNestedInLookup(
+        self: *Builder,
+        family: NestedFnFamily,
+        kind: SpecLookupKind,
+        requested_ty: Type.TypeId,
+        requested_digest: names.TypeDigest,
+    ) Allocator.Error!?LoweredNestedMatch {
+        const lookup = NestedSpecLookup.from(family, kind, requested_digest);
+        const indices = self.lowered_nested_lookup.get(lookup) orelse return null;
+        self.countBy("nested_lookup_candidates", indices.items.len);
+        for (indices.items) |raw_index| {
+            const index: usize = @intCast(raw_index);
+            if (index >= self.lowered_nested_fns.items.len) Common.invariant("lowered nested lookup index was out of bounds");
+            const existing = self.lowered_nested_fns.items[index];
+            const candidate_ty = switch (kind) {
+                .request => existing.request_fn_ty,
+                .solved => existing.solved_fn_ty,
+            };
+            const candidate_digest = switch (kind) {
+                .request => existing.request_digest,
+                .solved => existing.solved_digest,
+            };
+            if (kind == .solved and existing.status != .ready) continue;
+            if (!try self.specializationTypeMatches(candidate_ty, candidate_digest, requested_ty, requested_digest)) continue;
+            return .{
+                .index = index,
+                .match_ty = candidate_ty,
+            };
+        }
+        return null;
     }
 
     /// Process the specialization body requests this specialization enqueued
@@ -2221,6 +2557,7 @@ const Builder = struct {
                 request.source_fn_key,
                 request.fn_ty,
                 graph,
+                request.fn_id,
             );
         }
     }
@@ -2883,7 +3220,7 @@ const Builder = struct {
 
         const args = [_]Ast.ExprId{value};
         const call = try self.program.addExpr(.{ .ty = str_ty, .data = .{ .call_proc = .{
-            .callee = .{ .func = self.defFnId(callee_def) },
+            .callee = Ast.localProcCallee(self.defFnId(callee_def)),
             .args = try self.program.addExprSpan(&args),
         } } });
         try self.drainSpecRequests(graph);
@@ -4786,7 +5123,7 @@ const BodyContext = struct {
         defer self.allocator.free(item_fields);
 
         for (item_fields, 0..) |*field, index| {
-            const label = try std.fmt.allocPrint(self.allocator, "field_{d}", .{index});
+            const label = try std.fmt.allocPrint(self.allocator, "field_{d:0>20}", .{index});
             defer self.allocator.free(label);
 
             field.* = .{
@@ -4794,12 +5131,14 @@ const BodyContext = struct {
                 .ty = field_handle_ty,
             };
         }
+        std.mem.sort(Type.Field, item_fields, &self.builder.program.names, recordFieldLessThan);
+        assertNoDuplicateRecordFields(&self.builder.program.names, item_fields, "generated FieldNames item backing fields duplicated");
 
         const items_ty = try self.builder.program.types.add(.{
             .record = try self.builder.program.types.addFields(item_fields),
         });
         const u64_ty = try self.builder.primitiveType(.u64);
-        const fields = [_]Type.Field{
+        var fields = [_]Type.Field{
             .{
                 .name = try self.builder.program.names.internRecordFieldLabel("items"),
                 .ty = items_ty,
@@ -4813,6 +5152,8 @@ const BodyContext = struct {
                 .ty = u64_ty,
             },
         };
+        std.mem.sort(Type.Field, &fields, &self.builder.program.names, recordFieldLessThan);
+        assertNoDuplicateRecordFields(&self.builder.program.names, &fields, "generated FieldNames backing fields duplicated");
 
         return try self.builder.program.types.add(.{
             .record = try self.builder.program.types.addFields(&fields),
@@ -6228,7 +6569,7 @@ const BodyContext = struct {
         self: *BodyContext,
         index: usize,
     ) Allocator.Error!names.RecordFieldNameId {
-        const label = try std.fmt.allocPrint(self.allocator, "record_{d}", .{index});
+        const label = try std.fmt.allocPrint(self.allocator, "record_{d:0>20}", .{index});
         defer self.allocator.free(label);
         return try self.builder.program.names.internRecordFieldLabel(label);
     }
@@ -6237,7 +6578,7 @@ const BodyContext = struct {
         self: *BodyContext,
         index: usize,
     ) Allocator.Error!names.RecordFieldNameId {
-        const label = try std.fmt.allocPrint(self.allocator, "field_{d}", .{index});
+        const label = try std.fmt.allocPrint(self.allocator, "field_{d:0>20}", .{index});
         defer self.allocator.free(label);
         return try self.builder.program.names.internRecordFieldLabel(label);
     }
@@ -6261,6 +6602,8 @@ const BodyContext = struct {
                     .ty = str_ty,
                 };
             }
+            std.mem.sort(Type.Field, inner_fields, &self.builder.program.names, recordFieldLessThan);
+            assertNoDuplicateRecordFields(&self.builder.program.names, inner_fields, "generated parse tag-union inner backing fields duplicated");
 
             outer_fields[record_index] = .{
                 .name = try self.generatedParseTagUnionSpecBackingRecordFieldName(record_index),
@@ -6269,6 +6612,8 @@ const BodyContext = struct {
                 }),
             };
         }
+        std.mem.sort(Type.Field, outer_fields, &self.builder.program.names, recordFieldLessThan);
+        assertNoDuplicateRecordFields(&self.builder.program.names, outer_fields, "generated parse tag-union outer backing fields duplicated");
 
         return try self.builder.program.types.add(.{
             .record = try self.builder.program.types.addFields(outer_fields),
@@ -6497,7 +6842,7 @@ const BodyContext = struct {
             return try self.builder.program.addExpr(.{
                 .ty = ret_ty,
                 .data = .{ .call_proc = .{
-                    .callee = .{ .func = try self.methodTargetCalleeWithMono(parse_lookup, parse_mono_ty) },
+                    .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(parse_lookup, parse_mono_ty)),
                     .args = try self.builder.program.addExprSpan(&parse_args),
                 } },
             });
@@ -6540,7 +6885,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = ret_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, final_spec_expr, state_expr }),
             } },
         });
@@ -6672,7 +7017,7 @@ const BodyContext = struct {
         const step_expr = try self.builder.program.addExpr(.{
             .ty = step_try_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{
                     encoding_expr,
                     try self.builder.localExpr(fields_local, fields_ty),
@@ -7325,7 +7670,7 @@ const BodyContext = struct {
         const skip_expr = try self.builder.program.addExpr(.{
             .ty = skip_try_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, try self.builder.localExpr(rest_local, state_ty) }),
             } },
         });
@@ -7432,7 +7777,7 @@ const BodyContext = struct {
         const parser_expr = try self.builder.program.addExpr(.{
             .ty = runtime_fn_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{encoding_expr}),
             } },
         });
@@ -8046,7 +8391,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = str_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, field_expr }),
             } },
         });
@@ -8126,7 +8471,7 @@ const BodyContext = struct {
             return .{
                 .ret_ty = fn_data.ret,
                 .data = .{ .call_proc = .{
-                    .callee = .{ .func = callee },
+                    .callee = Ast.localProcCallee(callee),
                     .args = try self.lowerExprSpanAtTypes(call.args, self.builder.program.types.span(fn_data.args)),
                 } },
             };
@@ -10400,7 +10745,7 @@ const BodyContext = struct {
         const fn_data = self.builder.functionShape(callable_mono_ty, "checked dispatch target had a non-function type");
         const args = try arg_ctx.lowerDispatchOperandsAtTypes(plan.argsSlice(self.view.static_dispatch_plans), self.builder.program.types.span(fn_data.args), pre_lowered);
         return .{ .call_proc = .{
-            .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+            .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
             .args = args,
         } };
     }
@@ -10846,7 +11191,7 @@ const BodyContext = struct {
         const encoder_expr = try self.builder.program.addExpr(.{
             .ty = runtime_fn_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ value_expr, encoding_expr }),
             } },
         });
@@ -10879,7 +11224,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = ret_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(arg_exprs),
             } },
         });
@@ -11365,7 +11710,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = err_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&args),
                 .is_cold = true,
             } },
@@ -11400,7 +11745,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = err_ty,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&args),
             } },
         });
@@ -11653,7 +11998,7 @@ const BodyContext = struct {
         const callable_mono_ty = try self.methodTargetMonoTypeFromArgs(lookup, &arg_tys, ctx.result_ty);
         const args = D.callArgs(operand);
         return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .call_proc = .{
-            .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty) },
+            .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
             .args = try self.builder.program.addExprSpan(&args),
         } } });
     }
@@ -13590,7 +13935,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = fn_data.ret,
             .data = .{ .call_proc = .{
-                .callee = .{ .func = try self.methodTargetCalleeWithMono(lookup, target_mono_ty) },
+                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, target_mono_ty)),
                 .args = try self.builder.program.addExprSpan(args),
             } },
         });
@@ -14644,7 +14989,7 @@ const BodyContext = struct {
                 const callable_mono_ty = try self.methodTargetMonoTypeFromArgs(lookup, &arg_tys, bool_ty);
                 const callee = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty);
                 return try self.builder.program.addExpr(.{ .ty = bool_ty, .data = .{ .call_proc = .{
-                    .callee = .{ .func = callee },
+                    .callee = Ast.localProcCallee(callee),
                     .args = try self.builder.program.addExprSpan(&.{ scrutinee, expected }),
                 } } });
             }
@@ -15600,6 +15945,36 @@ fn branchCount(branches: anytype) usize {
 
 fn moduleBytesEqual(a: [32]u8, b: [32]u8) bool {
     return std.mem.eql(u8, a[0..], b[0..]);
+}
+
+fn digestEql(a: names.TypeDigest, b: names.TypeDigest) bool {
+    return std.mem.eql(u8, a.bytes[0..], b.bytes[0..]);
+}
+
+fn verifyMonotypeTypeStore(program: *const Ast.Program) void {
+    if (program.types.verify(&program.names)) |err| switch (err) {
+        .type_digest_count_mismatch => Common.invariant("Monotype type digest section length differed from type node count"),
+        .type_span_out_of_bounds => Common.invariant("Monotype type span was out of bounds"),
+        .field_span_out_of_bounds => Common.invariant("Monotype field span was out of bounds"),
+        .tag_span_out_of_bounds => Common.invariant("Monotype tag span was out of bounds"),
+        .declared_field_span_out_of_bounds => Common.invariant("Monotype declared field span was out of bounds"),
+        .type_ref_out_of_bounds => Common.invariant("Monotype type reference was out of bounds"),
+        .record_fields_not_sorted => Common.invariant("Monotype record fields were not normalized"),
+        .tag_union_tags_not_sorted => Common.invariant("Monotype tag union variants were not normalized"),
+    };
+}
+
+fn verifyMonotypeCallTargets(program: *const Ast.Program) void {
+    if (program.view().verifyCallTargets()) |err| switch (err) {
+        .local_fn_out_of_bounds => Common.invariant("Monotype direct call referenced a missing local function"),
+        .local_fn_type_out_of_bounds => Common.invariant("Monotype direct call referenced a local function with a missing function type"),
+        .local_fn_type_not_function => Common.invariant("Monotype direct call referenced a local function with a non-function type"),
+        .local_fn_definition_arity_mismatch => Common.invariant("Monotype local function definition arity differed from its function type"),
+        .local_call_arity_mismatch => Common.invariant("Monotype direct call arity differed from the callee function type"),
+        .imported_fn_out_of_bounds => Common.invariant("Monotype direct call referenced a missing imported function table entry"),
+        .imported_local_fn_out_of_bounds => Common.invariant("Monotype imported function table referenced a missing local function"),
+        .lifted_fn_before_lifting => Common.invariant("Monotype direct call referenced a lifted function before Monotype lifting"),
+    };
 }
 
 fn sameTypeDef(left: Type.TypeDef, right: Type.TypeDef) bool {

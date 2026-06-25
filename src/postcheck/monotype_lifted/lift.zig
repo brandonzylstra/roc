@@ -376,7 +376,10 @@ const Lifter = struct {
             },
             .call_proc => |call| {
                 const fn_id = switch (call.callee) {
-                    .func => |mono_fn_id| self.liftedFn(mono_fn_id),
+                    .func => |slot| switch (slot) {
+                        .local => |mono_fn_id| self.liftedFn(mono_fn_id),
+                        .imported => Common.invariant("imported Monotype function reached lifting before shard resolution"),
+                    },
                     .lifted => |fn_id| fn_id,
                 };
                 for (self.output.exprSpan(call.args)) |arg| try self.rewriteExpr(arg);
@@ -778,7 +781,10 @@ const CaptureSet = struct {
             },
             .call_proc => |call| {
                 switch (call.callee) {
-                    .func => |mono_fn_id| try self.collectFnCaptures(self.lifter.liftedFn(mono_fn_id), bound),
+                    .func => |slot| switch (slot) {
+                        .local => |mono_fn_id| try self.collectFnCaptures(self.lifter.liftedFn(mono_fn_id), bound),
+                        .imported => Common.invariant("imported Monotype function reached capture solving before shard resolution"),
+                    },
                     .lifted => |fn_id| try self.collectFnCaptures(fn_id, bound),
                 }
                 for (input.exprSpan(call.args)) |arg| try self.collectExpr(arg, bound);

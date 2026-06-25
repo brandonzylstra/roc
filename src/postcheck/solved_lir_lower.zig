@@ -4909,6 +4909,7 @@ fn cloneMonoTypeStore(allocator: std.mem.Allocator, source: *const MonoType.Stor
     return .{
         .allocator = allocator,
         .types = try cloneArrayList(MonoType.Content, allocator, &source.types),
+        .type_digests = try cloneArrayList(?check.CheckedNames.TypeDigest, allocator, &source.type_digests),
         .spans = try cloneArrayList(MonoType.TypeId, allocator, &source.spans),
         .fields = try cloneArrayList(MonoType.Field, allocator, &source.fields),
         .tags = try cloneArrayList(MonoType.Tag, allocator, &source.tags),

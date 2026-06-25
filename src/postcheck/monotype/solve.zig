@@ -12,6 +12,7 @@ const std = @import("std");
 const check = @import("check");
 
 const Common = @import("../common.zig");
+const Ast = @import("ast.zig");
 const Type = @import("type.zig");
 
 const Allocator = std.mem.Allocator;
@@ -25,6 +26,7 @@ const Ident = @import("base").Ident;
 /// final types keeps specialization keys stable: two requests whose types
 /// would later converge to one digest must resolve to one lowered body.
 pub const DeferredTemplate = struct {
+    fn_id: Ast.FnId,
     template_ref: names.ProcTemplate,
     module: checked.ModuleId,
     source_fn_ty: checked.CheckedTypeId,
@@ -1295,7 +1297,7 @@ pub const InstGraph = struct {
             .erased => |digest| .{ .erased = digest },
             .zst => .zst,
         };
-        types.types.items[@intFromEnum(ty)] = filled;
+        types.set(ty, filled);
     }
 
     fn monoSlice(self: *InstGraph, nodes_slice: []const NodeId) Allocator.Error![]Type.TypeId {
