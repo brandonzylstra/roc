@@ -1268,10 +1268,21 @@ test "issue 9802 same-type map2 specialization counters are bounded" {
 
     const counters = try monotypeCountersForModule(allocator, source);
 
-    try std.testing.expect(counters.template_requests > 0);
-    try std.testing.expect(counters.template_hits > 0);
-    try std.testing.expect(counters.template_lookup_candidates <= counters.template_requests);
-    try std.testing.expect(counters.specialization_type_digest_cache_hits > 0);
+    try std.testing.expectEqual(postcheck.Monotype.Lower.SpecializationCounters{
+        .template_requests = 53,
+        .template_hits = 22,
+        .template_misses = 5,
+        .nested_requests = 8,
+        .nested_hits = 0,
+        .nested_misses = 8,
+        .template_lookup_candidates = 22,
+        .nested_lookup_candidates = 0,
+        .specialization_type_digest_requests = 79,
+        .specialization_type_digest_cache_hits = 194,
+        .specialization_type_digest_cache_misses = 153,
+        .specialization_type_digest_nodes_visited = 153,
+        .exact_type_checks = 22,
+    }, counters);
 }
 
 test "issue 9802 growing-structural map2 specialization counters are bounded" {
@@ -1305,11 +1316,21 @@ test "issue 9802 growing-structural map2 specialization counters are bounded" {
 
     const counters = try monotypeCountersForModule(allocator, source);
 
-    try std.testing.expect(counters.template_requests > 0);
-    try std.testing.expect(counters.template_misses > 0);
-    try std.testing.expect(counters.template_lookup_candidates <= counters.template_requests);
-    try std.testing.expect(counters.specialization_type_digest_cache_hits > 0);
-    try std.testing.expect(counters.specialization_type_digest_nodes_visited <= counters.specialization_type_digest_cache_misses * 8);
+    try std.testing.expectEqual(postcheck.Monotype.Lower.SpecializationCounters{
+        .template_requests = 29,
+        .template_hits = 5,
+        .template_misses = 10,
+        .nested_requests = 6,
+        .nested_hits = 0,
+        .nested_misses = 6,
+        .template_lookup_candidates = 5,
+        .nested_lookup_candidates = 0,
+        .specialization_type_digest_requests = 61,
+        .specialization_type_digest_cache_hits = 258,
+        .specialization_type_digest_cache_misses = 273,
+        .specialization_type_digest_nodes_visited = 273,
+        .exact_type_checks = 5,
+    }, counters);
 }
 
 test "imported and local generic specialization counters reuse closed types" {
