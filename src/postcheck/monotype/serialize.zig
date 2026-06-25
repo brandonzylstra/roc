@@ -861,6 +861,33 @@ pub fn buildImage(
     return try image.toOwnedSlice(allocator);
 }
 
+/// Filesystem errors possible while atomically writing a completed cache image.
+pub const AtomicWriteError = std.Io.Dir.CreateFileAtomicError ||
+    std.Io.Writer.Error ||
+    std.Io.File.SyncError ||
+    std.Io.File.Atomic.ReplaceError;
+
+/// Write a completed specialization cache image through an atomic replacement.
+///
+/// The destination path is replaced only after all bytes are written, flushed,
+/// and synced to the temporary file.
+pub fn writeImageAtomically(
+    dir: std.Io.Dir,
+    io: std.Io,
+    sub_path: []const u8,
+    image: []const u8,
+) AtomicWriteError!void {
+    var atomic = try dir.createFileAtomic(io, sub_path, .{ .replace = true });
+    defer atomic.deinit(io);
+
+    var write_buffer: [4096]u8 = undefined;
+    var writer = atomic.file.writer(io, &write_buffer);
+    try writer.interface.writeAll(image);
+    try writer.interface.flush();
+    try atomic.file.sync(io);
+    try atomic.replace(io);
+}
+
 /// Compute the validity id for a specialization cache file.
 pub fn computeValidityId(inputs: ValidityInputs) [32]u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
@@ -1521,6 +1548,19 @@ test "monotype specialization cache writes deterministic aligned section image" 
     try std.testing.expectEqualSlices(u8, names_payload, try view.sectionBytes(header.names));
     try std.testing.expectEqualSlices(u32, fn_values[0..], try view.sectionTyped(u32, header.fns));
     try std.testing.expectEqualSlices(u8, expr_payload, try view.sectionBytes(header.exprs));
+}
+
+test "monotype specialization cache atomically replaces completed image" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "cache.bin", .data = "old" });
+    try writeImageAtomically(tmp.dir, io, "cache.bin", "new-cache-image");
+
+    const loaded = try tmp.dir.readFileAlloc(io, "cache.bin", std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(loaded);
+    try std.testing.expectEqualSlices(u8, "new-cache-image", loaded);
 }
 
 test "monotype specialization cache maps typed top-level sections" {
