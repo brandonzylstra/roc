@@ -142,6 +142,18 @@ fn lowerMonotypeModule(
     allocator: Allocator,
     source: []const u8,
 ) TestError!MonotypeSource {
+    return lowerMonotypeModuleWithOptions(allocator, source, .{});
+}
+
+const LowerMonotypeOptions = struct {
+    specialization_cache: postcheck.Monotype.Lower.SpecializationCacheControl = .{},
+};
+
+fn lowerMonotypeModuleWithOptions(
+    allocator: Allocator,
+    source: []const u8,
+    options: LowerMonotypeOptions,
+) TestError!MonotypeSource {
     var resources = try helpers.parseAndCanonicalizeProgramWithBuiltin(allocator, .module, source, &.{}, try sharedPrePublishedBuiltin());
     errdefer helpers.cleanupParseAndCanonical(allocator, resources);
 
@@ -166,7 +178,7 @@ fn lowerMonotypeModule(
             .imports = import_views,
         },
         .{ .requests = resources.checked_artifact.root_requests.requests },
-        .{},
+        .{ .specialization_cache = options.specialization_cache },
     );
     errdefer mono.deinit();
 
@@ -211,6 +223,43 @@ fn monotypeCountersForModuleWithImports(
     defer mono.deinit();
 
     return counters;
+}
+
+fn expectEquivalentMonotypeProgramViews(lhs: postcheck.Monotype.Ast.ProgramView, rhs: postcheck.Monotype.Ast.ProgramView) error{TestExpectedEqual}!void {
+    try std.testing.expectEqual(lhs.next_symbol, rhs.next_symbol);
+
+    try std.testing.expectEqualSlices(postcheck.Monotype.Type.Content, lhs.types.types, rhs.types.types);
+    try std.testing.expectEqualSlices(?check.CheckedNames.TypeDigest, lhs.types.type_digests, rhs.types.type_digests);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Type.TypeId, lhs.types.spans, rhs.types.spans);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Type.Field, lhs.types.fields, rhs.types.fields);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Type.Tag, lhs.types.tags, rhs.types.tags);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Type.DeclaredField, lhs.types.declared_fields, rhs.types.declared_fields);
+
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.SpecRecord, lhs.specs, rhs.specs);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.ImportedFn, lhs.imported_fns, rhs.imported_fns);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.Fn, lhs.fns, rhs.fns);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.Def, lhs.defs, rhs.defs);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.NestedDef, lhs.nested_defs, rhs.nested_defs);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.Expr, lhs.exprs, rhs.exprs);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.Pat, lhs.pats, rhs.pats);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.Stmt, lhs.stmts, rhs.stmts);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.Local, lhs.locals, rhs.locals);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.ExprId, lhs.expr_ids, rhs.expr_ids);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.PatId, lhs.pat_ids, rhs.pat_ids);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.TypedLocal, lhs.typed_locals, rhs.typed_locals);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.StmtId, lhs.stmt_ids, rhs.stmt_ids);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.FieldExpr, lhs.field_exprs, rhs.field_exprs);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.RecordDestruct, lhs.record_destructs, rhs.record_destructs);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.StrPatternStep, lhs.str_pattern_steps, rhs.str_pattern_steps);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.Branch, lhs.branches, rhs.branches);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.IfBranch, lhs.if_branches, rhs.if_branches);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.Root, lhs.roots, rhs.roots);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.LayoutRequest, lhs.layout_requests, rhs.layout_requests);
+    try std.testing.expectEqualSlices(postcheck.Monotype.Ast.RuntimeSchemaRequest, lhs.runtime_schema_requests, rhs.runtime_schema_requests);
+    try std.testing.expectEqualSlices(base.SourceLoc, lhs.expr_locs, rhs.expr_locs);
+    try std.testing.expectEqualSlices(base.Region, lhs.expr_regions, rhs.expr_regions);
+    try std.testing.expectEqualSlices(base.SourceLoc, lhs.stmt_locs, rhs.stmt_locs);
+    try std.testing.expectEqualSlices(base.Region, lhs.stmt_regions, rhs.stmt_regions);
 }
 
 fn lowerModuleWithDebugEffects(
@@ -1371,6 +1420,31 @@ test "imported and local generic specialization counters reuse closed types" {
     try std.testing.expect(counters.template_misses >= 2);
     try std.testing.expect(counters.template_hits >= 2);
     try std.testing.expect(counters.template_lookup_candidates <= counters.template_requests);
+}
+
+test "disabling monotype specialization cache does not change monotype output" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\module [main]
+        \\
+        \\identity : a -> a
+        \\identity = |value| value
+        \\
+        \\main : { n : U64, flag : Bool }
+        \\main = {
+        \\    { n: identity(1), flag: identity(Bool.True) }
+        \\}
+    ;
+
+    var default = try lowerMonotypeModule(allocator, source);
+    defer default.deinit(allocator);
+
+    var disabled = try lowerMonotypeModuleWithOptions(allocator, source, .{
+        .specialization_cache = .disabled,
+    });
+    defer disabled.deinit(allocator);
+
+    try expectEquivalentMonotypeProgramViews(default.mono.view(), disabled.mono.view());
 }
 
 test "nested function specializations keep equal types at different sites distinct" {

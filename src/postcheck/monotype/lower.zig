@@ -28,11 +28,24 @@ const names = check.CheckedNames;
 const static_dispatch = check.StaticDispatchRegistry;
 const Ident = base.Ident;
 
+/// Internal control surface for Monotype specialization cache integration.
+pub const SpecializationCacheControl = struct {
+    /// Load valid specialization cache shards before fresh lowering starts.
+    read: bool = true,
+    /// Write a verified specialization cache image after successful lowering.
+    write: bool = true,
+
+    /// Disable both cache reads and writes for debugging and equivalence tests.
+    pub const disabled: SpecializationCacheControl = .{ .read = false, .write = false };
+};
+
 /// Options used while lowering checked modules into Monotype IR.
 pub const Options = struct {
     /// Preserve source-level procedure names for consumers that present runtime
     /// diagnostics from lowered code.
     proc_debug_names: bool = false,
+    /// Control Monotype specialization cache reads and writes.
+    specialization_cache: SpecializationCacheControl = .{},
     /// Optional deterministic counters for specialization-shape tests.
     specialization_counters: ?*SpecializationCounters = null,
 };
@@ -419,6 +432,7 @@ const Builder = struct {
     root_view: checked.ImportedModuleView,
     program: *Ast.Program,
     proc_debug_names: bool,
+    specialization_cache: SpecializationCacheControl,
     counters: ?*SpecializationCounters,
     symbols: Common.SymbolGen = .{},
     type_cache: std.AutoHashMap(CheckedTypeAddress, Type.TypeId),
@@ -456,6 +470,7 @@ const Builder = struct {
             .root_view = checked.importedView(modules.root.module),
             .program = program,
             .proc_debug_names = options.proc_debug_names,
+            .specialization_cache = options.specialization_cache,
             .counters = options.specialization_counters,
             .type_cache = std.AutoHashMap(CheckedTypeAddress, Type.TypeId).init(allocator),
             .unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(allocator),
