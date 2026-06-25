@@ -168,11 +168,31 @@ pub const Store = struct {
         return .{ .start = start, .len = @intCast(values.len) };
     }
 
+    /// Normalize record fields by label text before appending a durable span.
+    pub fn addRecordFields(self: *Store, name_store: *const names.NameStore, values: []const Field) std.mem.Allocator.Error!Span {
+        if (values.len == 0) return .empty();
+        const normalized = try self.allocator.dupe(Field, values);
+        defer self.allocator.free(normalized);
+        std.mem.sort(Field, normalized, name_store, recordFieldLessThan);
+        assertNoDuplicateRecordFields(name_store, normalized);
+        return try self.addFields(normalized);
+    }
+
     pub fn addTags(self: *Store, values: []const Tag) std.mem.Allocator.Error!Span {
         if (values.len == 0) return .empty();
         const start: u32 = @intCast(self.tags.items.len);
         try self.tags.appendSlice(self.allocator, values);
         return .{ .start = start, .len = @intCast(values.len) };
+    }
+
+    /// Normalize tag-union variants by label text before appending a durable span.
+    pub fn addTagVariants(self: *Store, name_store: *const names.NameStore, values: []const Tag) std.mem.Allocator.Error!Span {
+        if (values.len == 0) return .empty();
+        const normalized = try self.allocator.dupe(Tag, values);
+        defer self.allocator.free(normalized);
+        std.mem.sort(Tag, normalized, name_store, tagLessThan);
+        assertNoDuplicateTags(name_store, normalized);
+        return try self.addTags(normalized);
     }
 
     pub fn add(self: *Store, content: Content) std.mem.Allocator.Error!TypeId {
@@ -1203,25 +1223,15 @@ pub const Interner = struct {
     }
 
     pub fn internRecord(self: *Interner, raw_fields: []const Field) std.mem.Allocator.Error!TypeId {
-        const fields = try self.allocator.dupe(Field, raw_fields);
-        defer self.allocator.free(fields);
-        std.mem.sort(Field, fields, self.name_store, recordFieldLessThan);
-        assertNoDuplicateRecordFields(self.name_store, fields);
-
         const mark_ = self.store.mark();
-        const span_ = try self.store.addFields(fields);
+        const span_ = try self.store.addRecordFields(self.name_store, raw_fields);
         const ty = try self.store.add(.{ .record = span_ });
         return try self.internCandidate(mark_, ty);
     }
 
     pub fn internTagUnion(self: *Interner, raw_tags: []const Tag) std.mem.Allocator.Error!TypeId {
-        const tags_ = try self.allocator.dupe(Tag, raw_tags);
-        defer self.allocator.free(tags_);
-        std.mem.sort(Tag, tags_, self.name_store, tagLessThan);
-        assertNoDuplicateTags(self.name_store, tags_);
-
         const mark_ = self.store.mark();
-        const span_ = try self.store.addTags(tags_);
+        const span_ = try self.store.addTagVariants(self.name_store, raw_tags);
         const ty = try self.store.add(.{ .tag_union = span_ });
         return try self.internCandidate(mark_, ty);
     }

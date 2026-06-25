@@ -1246,8 +1246,6 @@ pub const InstGraph = struct {
                         .payloads = try self.monoSlice(tag.payloads),
                     });
                 }
-                std.mem.sort(PendingTag, tags.items, self.name_store, pendingTagLessThan);
-                assertNoDuplicatePendingTags(self.name_store, tags.items, "instantiation produced a tag row with duplicate tags");
                 const existing = switch (previous) {
                     .tag_union => |span| span,
                     else => null,
@@ -1265,8 +1263,6 @@ pub const InstGraph = struct {
                         .ty = try self.monoFor(field.ty),
                     });
                 }
-                std.mem.sort(Type.Field, fields.items, self.name_store, recordFieldLessThan);
-                assertNoDuplicateRecordFields(self.name_store, fields.items, "instantiation produced a record row with duplicate fields");
                 const existing = switch (previous) {
                     .record => |span| span,
                     else => null,
@@ -1325,10 +1321,15 @@ pub const InstGraph = struct {
         fields: []const Type.Field,
         existing: ?Type.Span,
     ) Allocator.Error!Type.Span {
+        const normalized = try self.allocator.dupe(Type.Field, fields);
+        defer self.allocator.free(normalized);
+        std.mem.sort(Type.Field, normalized, self.name_store, recordFieldLessThan);
+        assertNoDuplicateRecordFields(self.name_store, normalized, "instantiation produced a record row with duplicate fields");
+
         if (existing) |span| {
-            if (recordSpanEql(self.types.fieldSpan(span), fields)) return span;
+            if (recordSpanEql(self.types.fieldSpan(span), normalized)) return span;
         }
-        return try self.types.addFields(fields);
+        return try self.types.addFields(normalized);
     }
 
     const PendingTag = struct {
@@ -1342,14 +1343,19 @@ pub const InstGraph = struct {
         tags: []const PendingTag,
         existing: ?Type.Span,
     ) Allocator.Error!Type.Span {
+        const normalized = try self.allocator.dupe(PendingTag, tags);
+        defer self.allocator.free(normalized);
+        std.mem.sort(PendingTag, normalized, self.name_store, pendingTagLessThan);
+        assertNoDuplicatePendingTags(self.name_store, normalized, "instantiation produced a tag row with duplicate tags");
+
         if (existing) |span| {
-            if (tagSpanEql(self.types, self.types.tagSpan(span), tags)) return span;
+            if (tagSpanEql(self.types, self.types.tagSpan(span), normalized)) return span;
         }
 
         var materialized = std.ArrayList(Type.Tag).empty;
         defer materialized.deinit(self.allocator);
-        try materialized.ensureTotalCapacity(self.allocator, tags.len);
-        for (tags) |tag| {
+        try materialized.ensureTotalCapacity(self.allocator, normalized.len);
+        for (normalized) |tag| {
             materialized.appendAssumeCapacity(.{
                 .name = tag.name,
                 .checked_name = tag.checked_name,

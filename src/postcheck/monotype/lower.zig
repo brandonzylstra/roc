@@ -17,10 +17,6 @@ const NodeId = solve.NodeId;
 const InstTag = solve.InstTag;
 const InstField = solve.InstField;
 const InstBacking = solve.InstBacking;
-const tagLessThan = solve.tagLessThan;
-const recordFieldLessThan = solve.recordFieldLessThan;
-const assertNoDuplicateTags = solve.assertNoDuplicateTags;
-const assertNoDuplicateRecordFields = solve.assertNoDuplicateRecordFields;
 
 const Allocator = std.mem.Allocator;
 const checked = check.CheckedModule;
@@ -1893,7 +1889,7 @@ const Builder = struct {
                 .ty = try self.lowerType(view, field.ty),
             };
         }
-        return .{ .record = try self.program.types.addFields(lowered) };
+        return .{ .record = try self.program.types.addRecordFields(&self.program.names, lowered) };
     }
 
     fn lowerRecordRow(
@@ -1934,10 +1930,7 @@ const Builder = struct {
             }
         }
 
-        std.mem.sort(Type.Field, fields.items, &self.program.names, recordFieldLessThan);
-        assertNoDuplicateRecordFields(&self.program.names, fields.items, "checked record row had duplicate fields at Monotype lowering");
-
-        return .{ .record = try self.program.types.addFields(fields.items) };
+        return .{ .record = try self.program.types.addRecordFields(&self.program.names, fields.items) };
     }
 
     fn appendRecordFields(
@@ -1988,10 +1981,7 @@ const Builder = struct {
             }
         }
 
-        std.mem.sort(Type.Tag, tags.items, &self.program.names, tagLessThan);
-        assertNoDuplicateTags(&self.program.names, tags.items, "checked tag row had duplicate tags at Monotype lowering");
-
-        return .{ .tag_union = try self.program.types.addTags(tags.items) };
+        return .{ .tag_union = try self.program.types.addTagVariants(&self.program.names, tags.items) };
     }
 
     fn appendTags(
@@ -5146,11 +5136,8 @@ const BodyContext = struct {
                 .ty = field_handle_ty,
             };
         }
-        std.mem.sort(Type.Field, item_fields, &self.builder.program.names, recordFieldLessThan);
-        assertNoDuplicateRecordFields(&self.builder.program.names, item_fields, "generated FieldNames item backing fields duplicated");
-
         const items_ty = try self.builder.program.types.add(.{
-            .record = try self.builder.program.types.addFields(item_fields),
+            .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, item_fields),
         });
         const u64_ty = try self.builder.primitiveType(.u64);
         var fields = [_]Type.Field{
@@ -5167,11 +5154,8 @@ const BodyContext = struct {
                 .ty = u64_ty,
             },
         };
-        std.mem.sort(Type.Field, &fields, &self.builder.program.names, recordFieldLessThan);
-        assertNoDuplicateRecordFields(&self.builder.program.names, &fields, "generated FieldNames backing fields duplicated");
-
         return try self.builder.program.types.add(.{
-            .record = try self.builder.program.types.addFields(&fields),
+            .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, &fields),
         });
     }
 
@@ -5192,7 +5176,7 @@ const BodyContext = struct {
         };
 
         return try self.builder.program.types.add(.{
-            .record = try self.builder.program.types.addFields(&fields),
+            .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, &fields),
         });
     }
 
@@ -6617,21 +6601,16 @@ const BodyContext = struct {
                     .ty = str_ty,
                 };
             }
-            std.mem.sort(Type.Field, inner_fields, &self.builder.program.names, recordFieldLessThan);
-            assertNoDuplicateRecordFields(&self.builder.program.names, inner_fields, "generated parse tag-union inner backing fields duplicated");
-
             outer_fields[record_index] = .{
                 .name = try self.generatedParseTagUnionSpecBackingRecordFieldName(record_index),
                 .ty = try self.builder.program.types.add(.{
-                    .record = try self.builder.program.types.addFields(inner_fields),
+                    .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, inner_fields),
                 }),
             };
         }
-        std.mem.sort(Type.Field, outer_fields, &self.builder.program.names, recordFieldLessThan);
-        assertNoDuplicateRecordFields(&self.builder.program.names, outer_fields, "generated parse tag-union outer backing fields duplicated");
 
         return try self.builder.program.types.add(.{
-            .record = try self.builder.program.types.addFields(outer_fields),
+            .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, outer_fields),
         });
     }
 
@@ -7816,7 +7795,7 @@ const BodyContext = struct {
             .{ .name = rest_name, .ty = rest_ty },
             .{ .name = value_name, .ty = value_ty },
         };
-        return try self.builder.program.types.add(.{ .record = try self.builder.program.types.addFields(&fields) });
+        return try self.builder.program.types.add(.{ .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, &fields) });
     }
 
     fn parseResultOk(
@@ -7875,18 +7854,18 @@ const BodyContext = struct {
             .{ .name = field_name_name, .ty = field_handle_ty },
             .{ .name = rest_name, .ty = state_ty },
         };
-        const field_payload_ty = try self.builder.program.types.add(.{ .record = try self.builder.program.types.addFields(&field_fields) });
+        const field_payload_ty = try self.builder.program.types.add(.{ .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, &field_fields) });
 
         const try_field_fields = [_]Type.Field{
             .{ .name = name_name, .ty = str_ty },
             .{ .name = rest_name, .ty = state_ty },
         };
-        const try_field_payload_ty = try self.builder.program.types.add(.{ .record = try self.builder.program.types.addFields(&try_field_fields) });
+        const try_field_payload_ty = try self.builder.program.types.add(.{ .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, &try_field_fields) });
 
         const rest_fields = [_]Type.Field{
             .{ .name = rest_name, .ty = state_ty },
         };
-        const rest_payload_ty = try self.builder.program.types.add(.{ .record = try self.builder.program.types.addFields(&rest_fields) });
+        const rest_payload_ty = try self.builder.program.types.add(.{ .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, &rest_fields) });
 
         const continue_name = try self.builder.program.names.internTagLabel("Continue");
         const done_name = try self.builder.program.names.internTagLabel("Done");
@@ -7920,7 +7899,7 @@ const BodyContext = struct {
                 .payloads = try self.builder.program.types.addSpan(&[_]Type.TypeId{try_field_payload_ty}),
             },
         };
-        return try self.builder.program.types.add(.{ .tag_union = try self.builder.program.types.addTags(&tags) });
+        return try self.builder.program.types.add(.{ .tag_union = try self.builder.program.types.addTagVariants(&self.builder.program.names, &tags) });
     }
 
     fn recordEventFieldHandleTemplate(self: *BodyContext, event_ty: Type.TypeId) Allocator.Error!Type.TypeId {
@@ -11416,7 +11395,7 @@ const BodyContext = struct {
         }
         if (!found_ok or !found_err) Common.invariant("Try backing type did not contain Ok and Err tags");
 
-        const backing_ty = try self.builder.program.types.add(.{ .tag_union = try self.builder.program.types.addTags(tags) });
+        const backing_ty = try self.builder.program.types.add(.{ .tag_union = try self.builder.program.types.addTagVariants(&self.builder.program.names, tags) });
         const args = [_]Type.TypeId{ ok_ty, err_ty };
         return try self.cloneNamedTypeWithArgs(template_try_ty, &args, backing_ty);
     }
@@ -12842,7 +12821,7 @@ const BodyContext = struct {
             .{ .name = len_name, .ty = u64_ty },
             .{ .name = start_name, .ty = u64_ty },
         };
-        const ty = try self.builder.program.types.add(.{ .record = try self.builder.program.types.addFields(&fields) });
+        const ty = try self.builder.program.types.add(.{ .record = try self.builder.program.types.addRecordFields(&self.builder.program.names, &fields) });
         const exprs = [_]Ast.FieldExpr{
             .{ .name = len_name, .value = len },
             .{ .name = start_name, .value = start },
