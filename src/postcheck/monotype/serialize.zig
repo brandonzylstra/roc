@@ -924,6 +924,11 @@ pub fn computeCompilerLayoutHash() [32]u8 {
 
     writeLayout(&hasher, FileSlice);
     writeLayout(&hasher, SpecializationCacheHeader);
+
+    writeHashBytes(&hasher, "typed-section-layouts");
+    writeMappedSectionLayouts(&hasher);
+
+    writeHashBytes(&hasher, "nested-record-layouts");
     writeLayout(&hasher, checked_names.TypeDigest);
 
     writeLayout(&hasher, Type.TypeId);
@@ -959,6 +964,20 @@ pub fn computeCompilerLayoutHash() [32]u8 {
     writeLayout(&hasher, Base.Region);
 
     return hasher.finalResult();
+}
+
+fn writeMappedSectionLayouts(hasher: *std.crypto.hash.sha2.Sha256) void {
+    inline for (@typeInfo(MappedSections).@"struct".fields) |field| {
+        const Pointer = @typeInfo(field.type).pointer;
+        if (Pointer.size != .slice) @compileError("mapped cache section field is not a slice");
+
+        writeHashBytes(hasher, field.name);
+        if (Pointer.child == u8) {
+            writeHashBytes(hasher, "raw-bytes");
+        } else {
+            writeLayout(hasher, Pointer.child);
+        }
+    }
 }
 
 fn sections(header: *const SpecializationCacheHeader) [SECTION_COUNT]FileSlice {
