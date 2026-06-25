@@ -867,6 +867,9 @@ pub const AtomicWriteError = std.Io.Dir.CreateFileAtomicError ||
     std.Io.File.SyncError ||
     std.Io.File.Atomic.ReplaceError;
 
+/// Filesystem and cache-validation errors from writing a verified cache image.
+pub const VerifiedAtomicWriteError = AtomicWriteError || CacheError;
+
 /// Write a completed specialization cache image through an atomic replacement.
 ///
 /// The destination path is replaced only after all bytes are written, flushed,
@@ -886,6 +889,30 @@ pub fn writeImageAtomically(
     try writer.interface.flush();
     try atomic.file.sync(io);
     try atomic.replace(io);
+}
+
+/// Verify a completed specialization cache image before atomically writing it.
+pub fn writeVerifiedImageAtomically(
+    dir: std.Io.Dir,
+    io: std.Io,
+    sub_path: []const u8,
+    image: []const u8,
+    expected_layout_hash: [32]u8,
+    expected_validity_id: [32]u8,
+    shard_id: u32,
+    name_store: *const checked_names.NameStore,
+    loaded_shards: []const LoadedShard,
+    resolved_imports: []ResolvedImportedFn,
+) VerifiedAtomicWriteError!void {
+    if (image.len < @sizeOf(SpecializationCacheHeader)) return error.InvalidSpecializationCacheFile;
+
+    var header: SpecializationCacheHeader = undefined;
+    @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(SpecializationCacheHeader)]);
+    const mapped = try viewMappedFile(&header, image.ptr, image.len, expected_layout_hash, expected_validity_id, shard_id);
+    const program = try mappedProgramView(mapped);
+    _ = try program.verifyAndResolveImports(name_store, loaded_shards, resolved_imports);
+
+    try writeImageAtomically(dir, io, sub_path, image);
 }
 
 /// Compute the validity id for a specialization cache file.
@@ -1561,6 +1588,77 @@ test "monotype specialization cache atomically replaces completed image" {
     const loaded = try tmp.dir.readFileAlloc(io, "cache.bin", std.testing.allocator, .limited(1024));
     defer std.testing.allocator.free(loaded);
     try std.testing.expectEqualSlices(u8, "new-cache-image", loaded);
+}
+
+test "monotype specialization cache verifies image before atomic write" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var name_store = checked_names.NameStore.init(allocator);
+    defer name_store.deinit();
+
+    const type_nodes = [_]Type.Content{.zst};
+    const type_digests = [_]checked_names.TypeDigest{.{}};
+    const valid_image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+        .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(type_nodes[0..]) },
+        .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests[0..]) },
+    });
+    defer allocator.free(valid_image);
+
+    var resolved: [0]ResolvedImportedFn = .{};
+    try writeVerifiedImageAtomically(
+        tmp.dir,
+        io,
+        "cache.bin",
+        valid_image,
+        zeroHash(),
+        zeroHash(),
+        0,
+        &name_store,
+        &.{},
+        resolved[0..],
+    );
+    {
+        const loaded = try tmp.dir.readFileAlloc(io, "cache.bin", allocator, .limited(4096));
+        defer allocator.free(loaded);
+        try std.testing.expectEqualSlices(u8, valid_image, loaded);
+    }
+
+    const first_type_index: u32 = std.math.minInt(u32);
+    const unit_ty: Type.TypeId = @enumFromInt(first_type_index);
+    const bad_exprs = [_]Ast.Expr{.{
+        .ty = unit_ty,
+        .data = .{ .list = .{ .start = 0, .len = 1 } },
+    }};
+    const corrupt_image = try buildImage(allocator, zeroHash(), zeroHash(), &.{
+        .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(type_nodes[0..]) },
+        .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests[0..]) },
+        .{ .id = .exprs, .bytes = std.mem.sliceAsBytes(bad_exprs[0..]) },
+    });
+    defer allocator.free(corrupt_image);
+
+    try std.testing.expectError(
+        error.CorruptSpecializationCacheFile,
+        writeVerifiedImageAtomically(
+            tmp.dir,
+            io,
+            "cache.bin",
+            corrupt_image,
+            zeroHash(),
+            zeroHash(),
+            0,
+            &name_store,
+            &.{},
+            resolved[0..],
+        ),
+    );
+    {
+        const loaded = try tmp.dir.readFileAlloc(io, "cache.bin", allocator, .limited(4096));
+        defer allocator.free(loaded);
+        try std.testing.expectEqualSlices(u8, valid_image, loaded);
+    }
 }
 
 test "monotype specialization cache maps typed top-level sections" {
