@@ -234,6 +234,17 @@ test "Monotype lifting mutates only callable expression nodes in place" {
     try expectContains(lower_fn, "@memset(self.stmt_map, null);");
 }
 
+test "Lambda Solved consumes lifted program through a read-only view" {
+    const lifted_ast_source = @embedFile("monotype_lifted/ast.zig");
+    try expectContains(lifted_ast_source, "pub const ProgramView = struct");
+    try expectContains(lifted_ast_source, "pub fn view(self: *const Program) ProgramView");
+
+    const solve_source = @embedFile("lambda_solved/solve.zig");
+    try expectContains(solve_source, "lifted: Lifted.ProgramView");
+    try expectContains(solve_source, "const lifted = program.lifted.view();");
+    try std.testing.expect(std.mem.find(u8, solve_source, "self.program.lifted.") == null);
+}
+
 test "post-check invariant helper is failure-only" {
     const fn_info = @typeInfo(@TypeOf(Common.invariant)).@"fn";
     try std.testing.expect(fn_info.return_type.? == noreturn);

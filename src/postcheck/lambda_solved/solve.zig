@@ -47,6 +47,7 @@ pub fn run(
 const Solver = struct {
     allocator: Allocator,
     program: *Ast.Program,
+    lifted: Lifted.ProgramView,
     local_tys: []?Type.TypeVarId,
     expr_tys: []?Type.TypeVarId,
     pat_tys: []?Type.TypeVarId,
@@ -63,25 +64,28 @@ const Solver = struct {
     };
 
     fn init(allocator: Allocator, program: *Ast.Program) Allocator.Error!Solver {
-        const local_tys = try allocator.alloc(?Type.TypeVarId, program.lifted.locals.items.len);
+        const lifted = program.lifted.view();
+
+        const local_tys = try allocator.alloc(?Type.TypeVarId, lifted.locals.len);
         errdefer allocator.free(local_tys);
         @memset(local_tys, null);
 
-        const expr_tys = try allocator.alloc(?Type.TypeVarId, program.lifted.exprs.items.len);
+        const expr_tys = try allocator.alloc(?Type.TypeVarId, lifted.exprs.len);
         errdefer allocator.free(expr_tys);
         @memset(expr_tys, null);
 
-        const expr_done = try allocator.alloc(bool, program.lifted.exprs.items.len);
+        const expr_done = try allocator.alloc(bool, lifted.exprs.len);
         errdefer allocator.free(expr_done);
         @memset(expr_done, false);
 
-        const pat_tys = try allocator.alloc(?Type.TypeVarId, program.lifted.pats.items.len);
+        const pat_tys = try allocator.alloc(?Type.TypeVarId, lifted.pats.len);
         errdefer allocator.free(pat_tys);
         @memset(pat_tys, null);
 
         return .{
             .allocator = allocator,
             .program = program,
+            .lifted = lifted,
             .local_tys = local_tys,
             .expr_tys = expr_tys,
             .pat_tys = pat_tys,
@@ -105,14 +109,14 @@ const Solver = struct {
     }
 
     fn solve(self: *Solver) Allocator.Error!void {
-        for (self.program.lifted.locals.items, 0..) |local, index| {
+        for (self.lifted.locals, 0..) |local, index| {
             self.local_tys[index] = try self.lowerTypeFresh(local.ty);
         }
 
-        try self.program.fn_tys.ensureTotalCapacity(self.allocator, self.program.lifted.fns.items.len);
-        try self.program.defs.ensureTotalCapacity(self.allocator, self.program.lifted.fns.items.len);
+        try self.program.fn_tys.ensureTotalCapacity(self.allocator, self.lifted.fns.len);
+        try self.program.defs.ensureTotalCapacity(self.allocator, self.lifted.fns.len);
 
-        for (self.program.lifted.fns.items) |fn_| {
+        for (self.lifted.fns) |fn_| {
             const fn_ty = try self.functionType(fn_);
             try self.program.fn_tys.append(self.allocator, fn_ty);
             try self.program.defs.append(self.allocator, .{
@@ -125,13 +129,13 @@ const Solver = struct {
             });
         }
 
-        for (self.program.lifted.fns.items, 0..) |fn_, index| {
+        for (self.lifted.fns, 0..) |fn_, index| {
             const fn_id: Lifted.FnId = @enumFromInt(@as(u32, @intCast(index)));
             try self.solveFn(fn_id, fn_);
         }
 
-        try self.program.layout_requests.ensureTotalCapacity(self.allocator, self.program.lifted.layout_requests.items.len);
-        for (self.program.lifted.layout_requests.items) |request| {
+        try self.program.layout_requests.ensureTotalCapacity(self.allocator, self.lifted.layout_requests.len);
+        for (self.lifted.layout_requests) |request| {
             const ty = if (request.fn_id) |fn_id|
                 self.fnRetType(fn_id)
             else
@@ -144,8 +148,8 @@ const Solver = struct {
             });
         }
 
-        try self.program.runtime_schema_requests.ensureTotalCapacity(self.allocator, self.program.lifted.runtime_schema_requests.items.len);
-        for (self.program.lifted.runtime_schema_requests.items) |request| {
+        try self.program.runtime_schema_requests.ensureTotalCapacity(self.allocator, self.lifted.runtime_schema_requests.len);
+        for (self.lifted.runtime_schema_requests) |request| {
             const ty = try self.lowerTypeFresh(request.ty);
             try self.markErasedCallablesReachedByType(ty);
             try self.program.runtime_schema_requests.append(self.allocator, .{
@@ -158,13 +162,13 @@ const Solver = struct {
 
         try self.program.expr_tys.ensureTotalCapacity(self.allocator, self.expr_tys.len);
         for (self.expr_tys, 0..) |maybe_ty, index| {
-            const ty = maybe_ty orelse try self.lowerTypeFresh(self.program.lifted.exprs.items[index].ty);
+            const ty = maybe_ty orelse try self.lowerTypeFresh(self.lifted.exprs[index].ty);
             try self.program.expr_tys.append(self.allocator, self.program.types.root(ty));
         }
 
         try self.program.pat_tys.ensureTotalCapacity(self.allocator, self.pat_tys.len);
         for (self.pat_tys, 0..) |maybe_ty, index| {
-            const ty = maybe_ty orelse try self.lowerTypeFresh(self.program.lifted.pats.items[index].ty);
+            const ty = maybe_ty orelse try self.lowerTypeFresh(self.lifted.pats[index].ty);
             try self.program.pat_tys.append(self.allocator, self.program.types.root(ty));
         }
 
@@ -183,22 +187,22 @@ const Solver = struct {
     }
 
     fn functionType(self: *Solver, fn_: Lifted.Fn) Allocator.Error!Type.TypeVarId {
-        const arg_locals = self.program.lifted.typedLocalSpan(fn_.args);
+        const arg_locals = self.lifted.typedLocalSpan(fn_.args);
         const args = try self.allocator.alloc(Type.TypeVarId, arg_locals.len);
         defer self.allocator.free(args);
         for (arg_locals, 0..) |arg, i| {
-            const local = self.program.lifted.locals.items[@intFromEnum(arg.local)];
+            const local = self.lifted.locals[@intFromEnum(arg.local)];
             if (@import("builtin").mode == .Debug and local.ty != arg.ty) {
                 Common.invariant("Lambda Solved function argument type differed from its local type");
             }
             args[i] = self.localTy(arg.local);
         }
 
-        const capture_locals = self.program.lifted.typedLocalSpan(fn_.captures);
+        const capture_locals = self.lifted.typedLocalSpan(fn_.captures);
         const captures = try self.allocator.alloc(Type.Capture, capture_locals.len);
         defer self.allocator.free(captures);
         for (capture_locals, 0..) |capture, i| {
-            const local = self.program.lifted.locals.items[@intFromEnum(capture.local)];
+            const local = self.lifted.locals[@intFromEnum(capture.local)];
             captures[i] = .{
                 .local = capture.local,
                 .symbol = local.symbol,
@@ -240,7 +244,7 @@ const Solver = struct {
             else => Common.invariant("Lambda Solved function table contains a non-function type"),
         };
 
-        const arg_locals = self.program.lifted.typedLocalSpan(fn_.args);
+        const arg_locals = self.lifted.typedLocalSpan(fn_.args);
         if (func.args.count() != arg_locals.len) Common.invariant("Lambda Solved function arity changed after registration");
         for (arg_locals, 0..) |arg, i| {
             try self.unify(self.program.types.spanItem(func.args, i), self.localTy(arg.local));
@@ -369,7 +373,7 @@ const Solver = struct {
         if (self.expr_done[index]) return expected;
         self.expr_done[index] = true;
 
-        const expr = self.program.lifted.exprs.items[index];
+        const expr = self.lifted.exprs[index];
         switch (expr.data) {
             .local => |local| try self.unify(expected, self.localTy(local)),
             .unit,
@@ -385,13 +389,13 @@ const Solver = struct {
             => {},
             .list => |items| {
                 const elem_ty = try self.listElem(expected);
-                for (self.program.lifted.exprSpan(items)) |child| {
+                for (self.lifted.exprSpan(items)) |child| {
                     _ = try self.expectExpr(child, elem_ty);
                 }
             },
             .tuple => |items| {
                 const item_tys = try self.tupleItemsSpan(expected);
-                const children = self.program.lifted.exprSpan(items);
+                const children = self.lifted.exprSpan(items);
                 if (item_tys.count() != children.len) Common.invariant("tuple expression arity differs from its checked type");
                 for (children, 0..) |child, i| {
                     const item_ty = self.program.types.spanItem(item_tys, i);
@@ -399,13 +403,13 @@ const Solver = struct {
                 }
             },
             .record => |fields| {
-                for (self.program.lifted.fieldExprSpan(fields)) |field| {
+                for (self.lifted.fieldExprSpan(fields)) |field| {
                     _ = try self.expectExpr(field.value, try self.recordField(expected, field.name));
                 }
             },
             .tag => |tag| {
                 const payload_tys = try self.tagPayloadsSpan(expected, tag.name);
-                const payloads = self.program.lifted.exprSpan(tag.payloads);
+                const payloads = self.lifted.exprSpan(tag.payloads);
                 if (payload_tys.count() != payloads.len) Common.invariant("tag expression payload arity differs from its checked type");
                 for (payloads, 0..) |payload, i| {
                     const expected_payload_ty = self.program.types.spanItem(payload_tys, i);
@@ -435,7 +439,7 @@ const Solver = struct {
             .fn_ref => |fn_id| try self.unify(expected, self.program.fn_tys.items[@intFromEnum(fn_id)]),
             .call_value => |call| {
                 const func = try self.functionShape(try self.inferExpr(call.callee));
-                const args = self.program.lifted.exprSpan(call.args);
+                const args = self.lifted.exprSpan(call.args);
                 if (func.args.count() != args.len) Common.invariant("value call arity differs from its checked type");
                 try self.unify(expected, func.ret);
                 for (args, 0..) |arg, i| {
@@ -445,7 +449,7 @@ const Solver = struct {
             .call_proc => |call| {
                 const callee = Lifted.callProcCallee(call);
                 const func = try self.functionShape(self.program.fn_tys.items[@intFromEnum(callee)]);
-                const args = self.program.lifted.exprSpan(call.args);
+                const args = self.lifted.exprSpan(call.args);
                 if (func.args.count() != args.len) Common.invariant("procedure call arity differs from its checked type");
                 try self.unify(expected, func.ret);
                 for (args, 0..) |arg, i| {
@@ -453,7 +457,7 @@ const Solver = struct {
                 }
             },
             .low_level => |call| {
-                const args = self.program.lifted.exprSpan(call.args);
+                const args = self.lifted.exprSpan(call.args);
                 const arg_tys = try self.allocator.alloc(Type.TypeVarId, args.len);
                 defer self.allocator.free(arg_tys);
                 for (args, 0..) |arg, i| {
@@ -485,14 +489,14 @@ const Solver = struct {
             },
             .match_ => |match| {
                 const scrutinee_ty = try self.inferExpr(match.scrutinee);
-                for (self.program.lifted.branchSpan(match.branches)) |branch| {
+                for (self.lifted.branchSpan(match.branches)) |branch| {
                     try self.bindPattern(branch.pat, scrutinee_ty);
                     if (branch.guard) |guard| _ = try self.inferExpr(guard);
                     _ = try self.expectExpr(branch.body, expected);
                 }
             },
             .if_ => |if_| {
-                for (self.program.lifted.ifBranchSpan(if_.branches)) |branch| {
+                for (self.lifted.ifBranchSpan(if_.branches)) |branch| {
                     _ = try self.inferExpr(branch.cond);
                     _ = try self.expectExpr(branch.body, expected);
                 }
@@ -512,7 +516,7 @@ const Solver = struct {
                 };
                 var ok_ty: ?Type.TypeVarId = null;
                 for (tags) |tag| {
-                    if (!std.mem.eql(u8, self.program.lifted.names.tagLabelText(tag.name), "Ok")) continue;
+                    if (!std.mem.eql(u8, self.lifted.names.tagLabelText(tag.name), "Ok")) continue;
                     const payloads = self.program.types.span(tag.payloads);
                     if (payloads.len != 1) Common.invariant("try_sequence Ok tag had unexpected payload arity");
                     ok_ty = payloads[0];
@@ -529,7 +533,7 @@ const Solver = struct {
                 };
                 var ok_ty: ?Type.TypeVarId = null;
                 for (tags) |tag| {
-                    if (!std.mem.eql(u8, self.program.lifted.names.tagLabelText(tag.name), "Ok")) continue;
+                    if (!std.mem.eql(u8, self.lifted.names.tagLabelText(tag.name), "Ok")) continue;
                     const payloads = self.program.types.span(tag.payloads);
                     if (payloads.len != 1) Common.invariant("try_record_sequence Ok tag had unexpected payload arity");
                     ok_ty = payloads[0];
@@ -541,12 +545,12 @@ const Solver = struct {
                 _ = try self.expectExpr(sequence.ok_body, expected);
             },
             .block => |block| {
-                for (self.program.lifted.stmtSpan(block.statements)) |stmt| try self.inferStmt(stmt);
+                for (self.lifted.stmtSpan(block.statements)) |stmt| try self.inferStmt(stmt);
                 _ = try self.expectExpr(block.final_expr, expected);
             },
             .loop_ => |loop| {
-                const params = self.program.lifted.typedLocalSpan(loop.params);
-                const initials = self.program.lifted.exprSpan(loop.initial_values);
+                const params = self.lifted.typedLocalSpan(loop.params);
+                const initials = self.lifted.exprSpan(loop.initial_values);
                 if (params.len != initials.len) Common.invariant("loop parameter count differs from initial value count");
                 const param_tys = try self.allocator.alloc(Type.TypeVarId, params.len);
                 defer self.allocator.free(param_tys);
@@ -567,7 +571,7 @@ const Solver = struct {
             },
             .continue_ => |continue_| {
                 const params = self.currentLoopParams();
-                const values = self.program.lifted.exprSpan(continue_.values);
+                const values = self.lifted.exprSpan(continue_.values);
                 if (params.count() != values.len) Common.invariant("continue value count differs from loop parameter count");
                 for (values, 0..) |value, i| {
                     const param_ty = self.program.types.spanItem(params, i);
@@ -585,9 +589,9 @@ const Solver = struct {
     }
 
     fn inferStmt(self: *Solver, stmt_id: Lifted.StmtId) Allocator.Error!void {
-        switch (self.program.lifted.stmts.items[@intFromEnum(stmt_id)]) {
+        switch (self.lifted.stmts[@intFromEnum(stmt_id)]) {
             .uninitialized => |pat| {
-                const pat_ty = try self.lowerTypeFresh(self.program.lifted.pats.items[@intFromEnum(pat)].ty);
+                const pat_ty = try self.lowerTypeFresh(self.lifted.pats[@intFromEnum(pat)].ty);
                 try self.bindPattern(pat, pat_ty);
             },
             .let_ => |let_| {
@@ -604,7 +608,7 @@ const Solver = struct {
     }
 
     fn bindPattern(self: *Solver, pat_id: Lifted.PatId, value_ty: Type.TypeVarId) Allocator.Error!void {
-        const pat = self.program.lifted.pats.items[@intFromEnum(pat_id)];
+        const pat = self.lifted.pats[@intFromEnum(pat_id)];
         const pat_ty = try self.expectPat(pat_id, value_ty);
         switch (pat.data) {
             .bind => |local| try self.unify(self.localTy(local), pat_ty),
@@ -616,7 +620,7 @@ const Solver = struct {
             .str_lit,
             => {},
             .str_pattern => |str| {
-                for (self.program.lifted.strPatternStepSpan(str.steps)) |step| {
+                for (self.lifted.strPatternStepSpan(str.steps)) |step| {
                     if (step.capture) |capture| {
                         try self.bindPattern(capture, pat_ty);
                     }
@@ -627,13 +631,13 @@ const Solver = struct {
                 try self.bindPattern(as.pattern, pat_ty);
             },
             .record => |fields| {
-                for (self.program.lifted.recordDestructSpan(fields)) |field| {
+                for (self.lifted.recordDestructSpan(fields)) |field| {
                     try self.bindPattern(field.pattern, try self.recordField(pat_ty, field.name));
                 }
             },
             .tuple => |items| {
                 const item_tys = try self.tupleItemsSpan(pat_ty);
-                const pats = self.program.lifted.patSpan(items);
+                const pats = self.lifted.patSpan(items);
                 if (item_tys.count() != pats.len) Common.invariant("tuple pattern arity differs from its checked type");
                 for (pats, 0..) |child, i| {
                     const item_ty = self.program.types.spanItem(item_tys, i);
@@ -642,7 +646,7 @@ const Solver = struct {
             },
             .list => |list| {
                 const elem_ty = try self.listElem(pat_ty);
-                for (self.program.lifted.patSpan(list.patterns)) |child| {
+                for (self.lifted.patSpan(list.patterns)) |child| {
                     try self.bindPattern(child, elem_ty);
                 }
                 // A captured rest is itself a list with the same element type.
@@ -650,7 +654,7 @@ const Solver = struct {
             },
             .tag => |tag| {
                 const payload_tys = try self.tagPayloadsSpan(pat_ty, tag.name);
-                const payloads = self.program.lifted.patSpan(tag.payloads);
+                const payloads = self.lifted.patSpan(tag.payloads);
                 if (payload_tys.count() != payloads.len) Common.invariant("tag pattern payload arity differs from its checked type");
                 for (payloads, 0..) |child, i| {
                     const payload_ty = self.program.types.spanItem(payload_tys, i);
@@ -678,7 +682,7 @@ const Solver = struct {
         const index = @intFromEnum(expr_id);
         if (self.expr_tys[index]) |ty| return ty;
 
-        const expr = self.program.lifted.exprs.items[index];
+        const expr = self.lifted.exprs[index];
         const ty = switch (expr.data) {
             .local => |local| self.localTy(local),
             .fn_ref => |fn_id| self.program.fn_tys.items[@intFromEnum(fn_id)],
@@ -696,7 +700,7 @@ const Solver = struct {
             return self.program.types.root(ty);
         }
 
-        const expr = self.program.lifted.exprs.items[index];
+        const expr = self.lifted.exprs[index];
         const ty = switch (expr.data) {
             .local => |local| self.localTy(local),
             .fn_ref => |fn_id| self.program.fn_tys.items[@intFromEnum(fn_id)],
@@ -714,7 +718,7 @@ const Solver = struct {
             return self.program.types.root(ty);
         }
 
-        const pat = self.program.lifted.pats.items[index];
+        const pat = self.lifted.pats[index];
         const ty = switch (pat.data) {
             .bind => |local| self.localTy(local),
             .as => |as| self.localTy(as.local),
@@ -854,7 +858,7 @@ const Solver = struct {
         return switch (try self.shapeContent(ty)) {
             .record => |fields| {
                 for (self.program.types.fieldSpan(fields)) |field| {
-                    if (std.mem.eql(u8, self.program.lifted.names.recordFieldLabelText(field.name), label)) return field.ty;
+                    if (std.mem.eql(u8, self.lifted.names.recordFieldLabelText(field.name), label)) return field.ty;
                 }
                 Common.invariant("low-level record result was missing a required field");
             },
@@ -1313,7 +1317,7 @@ const Solver = struct {
                 const field_slice = self.program.types.fieldSpan(fields);
                 writeU32(hasher, @intCast(field_slice.len));
                 for (field_slice) |field| {
-                    writeBytes(hasher, self.program.lifted.names.recordFieldLabelText(field.name));
+                    writeBytes(hasher, self.lifted.names.recordFieldLabelText(field.name));
                     try self.writeSolvedTypeDigest(hasher, field.ty, active);
                 }
             },
@@ -1322,15 +1326,15 @@ const Solver = struct {
                 const tag_slice = self.program.types.tagSpan(tags);
                 writeU32(hasher, @intCast(tag_slice.len));
                 for (tag_slice) |tag| {
-                    writeBytes(hasher, self.program.lifted.names.tagLabelText(tag.name));
+                    writeBytes(hasher, self.lifted.names.tagLabelText(tag.name));
                     try self.writeSolvedTypeSpanDigest(hasher, tag.payloads, active);
                 }
             },
             .named => |named| {
                 writeBytes(hasher, "named");
                 hasher.update(&named.named_type.module.bytes);
-                writeBytes(hasher, self.program.lifted.names.moduleNameText(named.def.module_name));
-                writeBytes(hasher, self.program.lifted.names.typeNameText(named.def.type_name));
+                writeBytes(hasher, self.lifted.names.moduleNameText(named.def.module_name));
+                writeBytes(hasher, self.lifted.names.typeNameText(named.def.type_name));
                 writeBytes(hasher, @tagName(named.kind));
                 if (named.builtin_owner) |owner| {
                     writeBytes(hasher, "builtin");
@@ -1400,7 +1404,7 @@ const TypeCloner = struct {
         if (self.map.get(ty)) |cached| return cached;
         const reserved = try self.solver.program.types.add(.unbound);
         try self.map.put(ty, reserved);
-        self.solver.program.types.set(reserved, try self.lowerContent(self.solver.program.lifted.types.get(ty)));
+        self.solver.program.types.set(reserved, try self.lowerContent(self.solver.lifted.types.get(ty)));
         return reserved;
     }
 
@@ -1408,7 +1412,7 @@ const TypeCloner = struct {
     /// declared-field store into the Lambda Solved store. Named entries copy the
     /// shared field-name id; padding entries re-lower their reserved type.
     fn lowerDeclaredOrder(self: *TypeCloner, span: MonoType.Span) Allocator.Error!Type.Span {
-        const source = self.solver.program.lifted.types.declaredFieldSpan(span);
+        const source = self.solver.lifted.types.declaredFieldSpan(span);
         if (source.len == 0) return Type.Span.empty();
         const lowered = try self.solver.allocator.alloc(Type.DeclaredField, source.len);
         defer self.solver.allocator.free(lowered);
@@ -1429,14 +1433,14 @@ const TypeCloner = struct {
             .list => |elem| .{ .list = try self.lower(elem) },
             .box => |elem| .{ .box = try self.lower(elem) },
             .tuple => |items| blk: {
-                const lowered = try self.lowerTypeSpan(self.solver.program.lifted.types.span(items));
+                const lowered = try self.lowerTypeSpan(self.solver.lifted.types.span(items));
                 defer self.solver.allocator.free(lowered);
                 break :blk .{ .tuple = try self.solver.program.types.addSpan(lowered) };
             },
             .record => |fields| blk: {
                 const lowered = try self.solver.allocator.alloc(Type.Field, fields.len);
                 defer self.solver.allocator.free(lowered);
-                for (self.solver.program.lifted.types.fieldSpan(fields), 0..) |field, i| {
+                for (self.solver.lifted.types.fieldSpan(fields), 0..) |field, i| {
                     lowered[i] = .{
                         .name = field.name,
                         .ty = try self.lower(field.ty),
@@ -1447,8 +1451,8 @@ const TypeCloner = struct {
             .tag_union => |tags| blk: {
                 const lowered = try self.solver.allocator.alloc(Type.Tag, tags.len);
                 defer self.solver.allocator.free(lowered);
-                for (self.solver.program.lifted.types.tagSpan(tags), 0..) |tag, i| {
-                    const payloads = try self.lowerTypeSpan(self.solver.program.lifted.types.span(tag.payloads));
+                for (self.solver.lifted.types.tagSpan(tags), 0..) |tag, i| {
+                    const payloads = try self.lowerTypeSpan(self.solver.lifted.types.span(tag.payloads));
                     defer self.solver.allocator.free(payloads);
                     lowered[i] = .{
                         .name = tag.name,
@@ -1459,7 +1463,7 @@ const TypeCloner = struct {
                 break :blk .{ .tag_union = try self.solver.program.types.addTags(lowered) };
             },
             .named => |named| blk: {
-                const args = try self.lowerTypeSpan(self.solver.program.lifted.types.span(named.args));
+                const args = try self.lowerTypeSpan(self.solver.lifted.types.span(named.args));
                 defer self.solver.allocator.free(args);
                 break :blk .{ .named = .{
                     .named_type = named.named_type,
@@ -1475,7 +1479,7 @@ const TypeCloner = struct {
                 } };
             },
             .func => |fn_ty| blk: {
-                const args = try self.lowerTypeSpan(self.solver.program.lifted.types.span(fn_ty.args));
+                const args = try self.lowerTypeSpan(self.solver.lifted.types.span(fn_ty.args));
                 defer self.solver.allocator.free(args);
                 break :blk .{ .func = .{
                     .args = try self.solver.program.types.addSpan(args),
@@ -1504,7 +1508,7 @@ const TypeCloner = struct {
         while (true) {
             if (seen.contains(current)) return current;
             try seen.put(current, {});
-            switch (self.solver.program.lifted.types.get(current)) {
+            switch (self.solver.lifted.types.get(current)) {
                 .named => |named| {
                     if (named.kind != .alias and !sameMonoTypeDef(named.def, owner_def)) return current;
                     const next = named.backing orelse return current;
