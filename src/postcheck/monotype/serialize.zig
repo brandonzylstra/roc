@@ -13,7 +13,6 @@ const Ast = @import("ast.zig");
 const Type = @import("type.zig");
 const checked = check.CheckedModule;
 const checked_names = check.CheckedNames;
-const CheckedModuleData = @field(checked, "CheckedModule" ++ "Arti" ++ "f" ++ "act");
 
 /// Magic bytes at the start of a specialization cache file.
 pub const MAGIC: [8]u8 = .{ 'R', 'O', 'C', 'S', 'P', 'E', 'C', 0 };
@@ -84,6 +83,20 @@ pub const SectionPayload = struct {
 pub const ValidityConfig = struct {
     proc_debug_names: bool = false,
     builtin_data_id: ?[32]u8 = null,
+};
+
+/// Explicit input set for Monotype specialization cache validity.
+///
+/// This deliberately names the checked modules actually read by the stored
+/// specializations instead of accepting the whole checked-module lowering
+/// context. The cache writer is responsible for recording this deterministic
+/// module id list while building or loading specializations.
+pub const ValidityInputs = struct {
+    root_module: checked.ModuleId,
+    consumed_module_ids: []const checked.ModuleId = &.{},
+    roots: Common.RootRequests = .{},
+    config: ValidityConfig = .{},
+    specs: []const Ast.SpecRecord = &.{},
 };
 
 /// Offset and length of one section in a specialization cache file.
@@ -543,66 +556,46 @@ pub fn buildImage(
     return try image.toOwnedSlice(allocator);
 }
 
-/// Compute the validity id for a cache file without stored spec records.
-pub fn computeValidityId(
-    modules: Common.CheckedModules,
-    roots: Common.RootRequests,
-    config: ValidityConfig,
-) [32]u8 {
-    return computeValidityIdWithSpecs(modules, roots, config, &.{});
-}
-
-/// Compute the validity id for a cache file including stored spec identities.
-pub fn computeValidityIdWithSpecs(
-    modules: Common.CheckedModules,
-    roots: Common.RootRequests,
-    config: ValidityConfig,
-    specs: []const Ast.SpecRecord,
-) [32]u8 {
+/// Compute the validity id for a specialization cache file.
+pub fn computeValidityId(inputs: ValidityInputs) [32]u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     writeHashBytes(&hasher, "roc-monotype-specialization-cache-validity");
     writeHashU32(&hasher, FORMAT_VERSION);
 
     writeHashBytes(&hasher, "config");
-    writeHashBool(&hasher, config.proc_debug_names);
-    writeHashOptionalBytes32(&hasher, config.builtin_data_id);
+    writeHashBool(&hasher, inputs.config.proc_debug_names);
+    writeHashOptionalBytes32(&hasher, inputs.config.builtin_data_id);
 
     writeHashBytes(&hasher, "root-module");
-    writeModuleId(&hasher, modules.root.module.key);
+    writeModuleId(&hasher, inputs.root_module);
 
-    writeHashBytes(&hasher, "import-modules");
-    writeHashU32(&hasher, @intCast(modules.imports.len));
-    for (modules.imports) |module| {
-        writeModuleId(&hasher, module.key);
-    }
-
-    writeHashBytes(&hasher, "relation-modules");
-    writeHashU32(&hasher, @intCast(modules.root.relation_modules.len));
-    for (modules.root.relation_modules) |module| {
-        writeModuleId(&hasher, module.key);
+    writeHashBytes(&hasher, "consumed-modules");
+    writeHashU32(&hasher, @intCast(inputs.consumed_module_ids.len));
+    for (inputs.consumed_module_ids) |module| {
+        writeModuleId(&hasher, module);
     }
 
     writeHashBytes(&hasher, "root-requests");
-    writeHashU32(&hasher, @intCast(roots.requests.len));
-    for (roots.requests) |request| {
+    writeHashU32(&hasher, @intCast(inputs.roots.requests.len));
+    for (inputs.roots.requests) |request| {
         writeRootRequest(&hasher, request);
     }
 
     writeHashBytes(&hasher, "layout-requests");
-    writeHashU32(&hasher, @intCast(roots.layout_requests.len));
-    for (roots.layout_requests) |ty| {
+    writeHashU32(&hasher, @intCast(inputs.roots.layout_requests.len));
+    for (inputs.roots.layout_requests) |ty| {
         writeCheckedTypeId(&hasher, ty);
     }
 
     writeHashBytes(&hasher, "static-data-requests");
-    writeHashU32(&hasher, @intCast(roots.static_data_requests.len));
-    for (roots.static_data_requests) |request| {
+    writeHashU32(&hasher, @intCast(inputs.roots.static_data_requests.len));
+    for (inputs.roots.static_data_requests) |request| {
         writeProvidedDataExport(&hasher, request.data);
     }
 
     writeHashBytes(&hasher, "spec-records");
-    writeHashU32(&hasher, @intCast(specs.len));
-    for (specs) |spec| {
+    writeHashU32(&hasher, @intCast(inputs.specs.len));
+    for (inputs.specs) |spec| {
         writeSpecRecord(&hasher, spec);
     }
 
@@ -1663,16 +1656,7 @@ test "monotype specialization cache writer rejects duplicate sections" {
 }
 
 test "monotype specialization cache validity includes module ids roots and config" {
-    var root_checked_module: CheckedModuleData = undefined;
-    root_checked_module.key = testModuleId(1);
-    var roots_table: checked.RootRequestTable = .{};
-
-    const modules = Common.CheckedModules{
-        .root = .{
-            .module = &root_checked_module,
-            .roots = &roots_table,
-        },
-    };
+    const root_module = testModuleId(1);
 
     const request = checked.RootRequest{
         .order = 0,
@@ -1687,59 +1671,52 @@ test "monotype specialization cache validity includes module ids roots and confi
     const empty_roots = Common.RootRequests{};
     const requested_roots = Common.RootRequests{ .requests = &.{request} };
 
-    const empty = computeValidityId(modules, empty_roots, .{});
-    const requested = computeValidityId(modules, requested_roots, .{});
+    const empty = computeValidityId(.{
+        .root_module = root_module,
+        .roots = empty_roots,
+    });
+    const requested = computeValidityId(.{
+        .root_module = root_module,
+        .roots = requested_roots,
+    });
     try std.testing.expect(!std.mem.eql(u8, empty[0..], requested[0..]));
 
-    const debug_names = computeValidityId(modules, empty_roots, .{ .proc_debug_names = true });
+    const debug_names = computeValidityId(.{
+        .root_module = root_module,
+        .roots = empty_roots,
+        .config = .{ .proc_debug_names = true },
+    });
     try std.testing.expect(!std.mem.eql(u8, empty[0..], debug_names[0..]));
 
-    root_checked_module.key = testModuleId(2);
-    const different_root = computeValidityId(modules, empty_roots, .{});
+    var builtin_data_id = [_]u8{0} ** 32;
+    builtin_data_id[0] = 1;
+    const builtin_data = computeValidityId(.{
+        .root_module = root_module,
+        .roots = empty_roots,
+        .config = .{ .builtin_data_id = builtin_data_id },
+    });
+    try std.testing.expect(!std.mem.eql(u8, empty[0..], builtin_data[0..]));
+
+    const different_root = computeValidityId(.{
+        .root_module = testModuleId(2),
+        .roots = empty_roots,
+    });
     try std.testing.expect(!std.mem.eql(u8, empty[0..], different_root[0..]));
 }
 
-test "monotype specialization cache validity includes imported module ids" {
-    var root_checked_module: CheckedModuleData = undefined;
-    root_checked_module.key = testModuleId(1);
-    var roots_table: checked.RootRequestTable = .{};
+test "monotype specialization cache validity includes consumed checked module ids" {
+    const root_module = testModuleId(1);
+    const consumed = [_]checked.ModuleId{testModuleId(3)};
 
-    var imported: checked.ImportedModuleView = undefined;
-    imported.key = testModuleId(3);
-    const imports = [_]checked.ImportedModuleView{imported};
-
-    const without_import = Common.CheckedModules{
-        .root = .{
-            .module = &root_checked_module,
-            .roots = &roots_table,
-        },
-    };
-    const with_import = Common.CheckedModules{
-        .root = .{
-            .module = &root_checked_module,
-            .roots = &roots_table,
-        },
-        .imports = imports[0..],
-    };
-
-    const roots = Common.RootRequests{};
-    const first = computeValidityId(without_import, roots, .{});
-    const second = computeValidityId(with_import, roots, .{});
+    const first = computeValidityId(.{ .root_module = root_module });
+    const second = computeValidityId(.{
+        .root_module = root_module,
+        .consumed_module_ids = consumed[0..],
+    });
     try std.testing.expect(!std.mem.eql(u8, first[0..], second[0..]));
 }
 
 test "monotype specialization cache validity includes stored specialization identities" {
-    var root_checked_module: CheckedModuleData = undefined;
-    root_checked_module.key = testModuleId(1);
-    var roots_table: checked.RootRequestTable = .{};
-
-    const modules = Common.CheckedModules{
-        .root = .{
-            .module = &root_checked_module,
-            .roots = &roots_table,
-        },
-    };
-
     var first_source_digest: checked_names.TypeDigest = .{};
     first_source_digest.bytes[0] = 1;
     var second_source_digest: checked_names.TypeDigest = .{};
@@ -1766,10 +1743,15 @@ test "monotype specialization cache validity includes stored specialization iden
     var second_spec = first_spec;
     second_spec.identity.source_fn_ty_digest = second_source_digest;
 
-    const roots = Common.RootRequests{};
-    const no_specs = computeValidityIdWithSpecs(modules, roots, .{}, &.{});
-    const first = computeValidityIdWithSpecs(modules, roots, .{}, &.{first_spec});
-    const second = computeValidityIdWithSpecs(modules, roots, .{}, &.{second_spec});
+    const no_specs = computeValidityId(.{ .root_module = testModuleId(1) });
+    const first = computeValidityId(.{
+        .root_module = testModuleId(1),
+        .specs = &.{first_spec},
+    });
+    const second = computeValidityId(.{
+        .root_module = testModuleId(1),
+        .specs = &.{second_spec},
+    });
 
     try std.testing.expect(!std.mem.eql(u8, no_specs[0..], first[0..]));
     try std.testing.expect(!std.mem.eql(u8, first[0..], second[0..]));
