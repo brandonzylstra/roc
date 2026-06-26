@@ -1190,6 +1190,186 @@ pub const DurableView = struct {
     }
 };
 
+/// Exact structural equality for closed Monotype types that live in two
+/// different type stores. Type ids are interpreted only against the view they
+/// came from; equality follows the same identity rules as `Store.typeEql`.
+pub fn typeEqlAcrossStores(
+    allocator: std.mem.Allocator,
+    name_store: *const names.NameStore,
+    lhs_view: anytype,
+    lhs: TypeId,
+    rhs_view: anytype,
+    rhs: TypeId,
+) std.mem.Allocator.Error!bool {
+    var visited = std.AutoHashMap(u64, void).init(allocator);
+    defer visited.deinit();
+    return try typeEqlAcrossStoresInner(name_store, lhs_view, lhs, rhs_view, rhs, &visited);
+}
+
+fn typeEqlAcrossStoresInner(
+    name_store: *const names.NameStore,
+    lhs_view: anytype,
+    raw_lhs: TypeId,
+    rhs_view: anytype,
+    raw_rhs: TypeId,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    const lhs_content = lhs_view.get(raw_lhs);
+    if (lhs_content == .named and lhs_content.named.kind == .alias) {
+        if (lhs_content.named.backing) |backing| {
+            return try typeEqlAcrossStoresInner(name_store, lhs_view, backing.ty, rhs_view, raw_rhs, visited);
+        }
+    }
+
+    const rhs_content = rhs_view.get(raw_rhs);
+    if (rhs_content == .named and rhs_content.named.kind == .alias) {
+        if (rhs_content.named.backing) |backing| {
+            return try typeEqlAcrossStoresInner(name_store, lhs_view, raw_lhs, rhs_view, backing.ty, visited);
+        }
+    }
+
+    const pair = directionalTypePair(raw_lhs, raw_rhs);
+    const gop = try visited.getOrPut(pair);
+    if (gop.found_existing) return true;
+
+    return switch (lhs_content) {
+        .primitive => |lhs_primitive| switch (rhs_content) {
+            .primitive => |rhs_primitive| lhs_primitive == rhs_primitive,
+            else => false,
+        },
+        .named => |lhs_named| switch (rhs_content) {
+            .named => |rhs_named| try namedTypeEqlAcrossStores(name_store, lhs_view, lhs_named, rhs_view, rhs_named, visited),
+            else => false,
+        },
+        .record => |lhs_fields| switch (rhs_content) {
+            .record => |rhs_fields| try fieldSpanEqlAcrossStores(name_store, lhs_view, lhs_fields, rhs_view, rhs_fields, visited),
+            else => false,
+        },
+        .tuple => |lhs_items| switch (rhs_content) {
+            .tuple => |rhs_items| try typeSpanEqlAcrossStores(name_store, lhs_view, lhs_items, rhs_view, rhs_items, visited),
+            else => false,
+        },
+        .tag_union => |lhs_tags| switch (rhs_content) {
+            .tag_union => |rhs_tags| try tagSpanEqlAcrossStores(name_store, lhs_view, lhs_tags, rhs_view, rhs_tags, visited),
+            else => false,
+        },
+        .list => |lhs_elem| switch (rhs_content) {
+            .list => |rhs_elem| try typeEqlAcrossStoresInner(name_store, lhs_view, lhs_elem, rhs_view, rhs_elem, visited),
+            else => false,
+        },
+        .box => |lhs_elem| switch (rhs_content) {
+            .box => |rhs_elem| try typeEqlAcrossStoresInner(name_store, lhs_view, lhs_elem, rhs_view, rhs_elem, visited),
+            else => false,
+        },
+        .func => |lhs_func| switch (rhs_content) {
+            .func => |rhs_func| blk: {
+                if (!try typeSpanEqlAcrossStores(name_store, lhs_view, lhs_func.args, rhs_view, rhs_func.args, visited)) break :blk false;
+                break :blk try typeEqlAcrossStoresInner(name_store, lhs_view, lhs_func.ret, rhs_view, rhs_func.ret, visited);
+            },
+            else => false,
+        },
+        .erased => |lhs_digest| switch (rhs_content) {
+            .erased => |rhs_digest| std.mem.eql(u8, lhs_digest.bytes[0..], rhs_digest.bytes[0..]),
+            else => false,
+        },
+        .zst => rhs_content == .zst,
+    };
+}
+
+fn namedTypeEqlAcrossStores(
+    name_store: *const names.NameStore,
+    lhs_view: anytype,
+    lhs: NamedContent,
+    rhs_view: anytype,
+    rhs: NamedContent,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    if (lhs.kind != rhs.kind) return false;
+    if (!std.mem.eql(u8, lhs.named_type.module.bytes[0..], rhs.named_type.module.bytes[0..])) return false;
+    if (!std.mem.eql(u8, name_store.moduleNameText(lhs.def.module_name), name_store.moduleNameText(rhs.def.module_name))) return false;
+    if (lhs.def.source_decl != rhs.def.source_decl) return false;
+    if (lhs.def.source_decl == null and
+        !std.mem.eql(u8, name_store.typeNameText(lhs.def.type_name), name_store.typeNameText(rhs.def.type_name)))
+    {
+        return false;
+    }
+    if (lhs.builtin_owner != rhs.builtin_owner) return false;
+    if (!try typeSpanEqlAcrossStores(name_store, lhs_view, lhs.args, rhs_view, rhs.args, visited)) return false;
+
+    if (lhs.kind == .alias) {
+        const lhs_backing = lhs.backing orelse return rhs.backing == null;
+        const rhs_backing = rhs.backing orelse return false;
+        return try typeEqlAcrossStoresInner(name_store, lhs_view, lhs_backing.ty, rhs_view, rhs_backing.ty, visited);
+    }
+
+    if (lhs.builtin_owner) |owner| {
+        if (owner == .fields) {
+            const lhs_backing = lhs.backing orelse return rhs.backing == null;
+            const rhs_backing = rhs.backing orelse return false;
+            return try typeEqlAcrossStoresInner(name_store, lhs_view, lhs_backing.ty, rhs_view, rhs_backing.ty, visited);
+        }
+    }
+
+    return true;
+}
+
+fn typeSpanEqlAcrossStores(
+    name_store: *const names.NameStore,
+    lhs_view: anytype,
+    lhs_span: Span,
+    rhs_view: anytype,
+    rhs_span: Span,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    const lhs = lhs_view.span(lhs_span);
+    const rhs = rhs_view.span(rhs_span);
+    if (lhs.len != rhs.len) return false;
+    for (lhs, rhs) |lhs_ty, rhs_ty| {
+        if (!try typeEqlAcrossStoresInner(name_store, lhs_view, lhs_ty, rhs_view, rhs_ty, visited)) return false;
+    }
+    return true;
+}
+
+fn fieldSpanEqlAcrossStores(
+    name_store: *const names.NameStore,
+    lhs_view: anytype,
+    lhs_span: Span,
+    rhs_view: anytype,
+    rhs_span: Span,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    const lhs = lhs_view.fieldSpan(lhs_span);
+    const rhs = rhs_view.fieldSpan(rhs_span);
+    if (lhs.len != rhs.len) return false;
+    for (lhs, rhs) |lhs_field, rhs_field| {
+        if (!std.mem.eql(u8, name_store.recordFieldLabelText(lhs_field.name), name_store.recordFieldLabelText(rhs_field.name))) return false;
+        if (!try typeEqlAcrossStoresInner(name_store, lhs_view, lhs_field.ty, rhs_view, rhs_field.ty, visited)) return false;
+    }
+    return true;
+}
+
+fn tagSpanEqlAcrossStores(
+    name_store: *const names.NameStore,
+    lhs_view: anytype,
+    lhs_span: Span,
+    rhs_view: anytype,
+    rhs_span: Span,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    const lhs = lhs_view.tagSpan(lhs_span);
+    const rhs = rhs_view.tagSpan(rhs_span);
+    if (lhs.len != rhs.len) return false;
+    for (lhs, rhs) |lhs_tag, rhs_tag| {
+        if (!std.mem.eql(u8, name_store.tagLabelText(lhs_tag.name), name_store.tagLabelText(rhs_tag.name))) return false;
+        if (!try typeSpanEqlAcrossStores(name_store, lhs_view, lhs_tag.payloads, rhs_view, rhs_tag.payloads, visited)) return false;
+    }
+    return true;
+}
+
+fn directionalTypePair(lhs: TypeId, rhs: TypeId) u64 {
+    return (@as(u64, @intFromEnum(lhs)) << 32) | @as(u64, @intFromEnum(rhs));
+}
+
 /// Mutable builder for immutable Monotype type nodes.
 ///
 /// The interner is child-first for acyclic types: callers provide
@@ -2114,6 +2294,67 @@ test "monotype type equality treats aliases as their backing" {
 
     try std.testing.expect(try store.typeEql(&name_store, str, aliased));
     try std.testing.expect(!try store.typeEql(&name_store, str, nominal));
+}
+
+test "monotype type equality compares exact types across stores" {
+    const allocator = std.testing.allocator;
+
+    var name_store = names.NameStore.init(allocator);
+    defer name_store.deinit();
+
+    var current = Store.init(allocator);
+    defer current.deinit();
+    var loaded = Store.init(allocator);
+    defer loaded.deinit();
+
+    const field_name = try name_store.internRecordFieldLabel("value");
+    const module_name = try name_store.internModuleName("Test");
+    const type_name = try name_store.internTypeName("Alias");
+
+    const current_unit = try current.add(.zst);
+    const current_fields = try current.addFields(&.{.{ .name = field_name, .ty = current_unit }});
+    const current_record = try current.add(.{ .record = current_fields });
+    const current_args = try current.addSpan(&.{current_record});
+    const current_fn = try current.add(.{ .func = .{
+        .args = current_args,
+        .ret = current_unit,
+    } });
+    const current_alias = try current.add(.{ .named = .{
+        .named_type = .{ .module = .{}, .ty = @enumFromInt(1) },
+        .def = .{ .module_name = module_name, .type_name = type_name },
+        .kind = .alias,
+        .args = Span.empty(),
+        .backing = .{ .ty = current_record, .use = .inspectable },
+    } });
+
+    _ = try loaded.add(.{ .primitive = .str });
+    const loaded_unit = try loaded.add(.zst);
+    const loaded_fields = try loaded.addFields(&.{.{ .name = field_name, .ty = loaded_unit }});
+    const loaded_record = try loaded.add(.{ .record = loaded_fields });
+    const loaded_args = try loaded.addSpan(&.{loaded_record});
+    const loaded_fn = try loaded.add(.{ .func = .{
+        .args = loaded_args,
+        .ret = loaded_unit,
+    } });
+
+    const loaded_view = loaded.view();
+    const loaded_digests = try allocator.alloc(names.TypeDigest, loaded_view.types.len);
+    defer allocator.free(loaded_digests);
+    for (loaded_digests, 0..) |*digest, index| {
+        digest.* = loaded.typeDigest(&name_store, @enumFromInt(@as(u32, @intCast(index))));
+    }
+    const loaded_durable = DurableView{
+        .types = loaded_view.types,
+        .type_digests = loaded_digests,
+        .spans = loaded_view.spans,
+        .fields = loaded_view.fields,
+        .tags = loaded_view.tags,
+        .declared_fields = loaded_view.declared_fields,
+    };
+
+    try std.testing.expect(try typeEqlAcrossStores(allocator, &name_store, current.view(), current_fn, loaded_durable, loaded_fn));
+    try std.testing.expect(try typeEqlAcrossStores(allocator, &name_store, current.view(), current_alias, loaded_durable, loaded_record));
+    try std.testing.expect(!try typeEqlAcrossStores(allocator, &name_store, current.view(), current_fn, loaded_durable, loaded_record));
 }
 
 test "monotype type equality rejects digest-equal aliases without backing" {
