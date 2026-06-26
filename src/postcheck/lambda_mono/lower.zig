@@ -65,6 +65,7 @@ fn movedSolvedView(source: *const Solved.Program, moved: *const Ast.Program) Sol
             .names = &moved.names,
             .next_symbol = source.lifted.next_symbol,
             .types = source.lifted.types.view(),
+            .imported_fns = source.lifted.imported_fns.items,
             .fns = source.lifted.fns.items,
             .exprs = source.lifted.exprs.items,
             .pats = source.lifted.pats.items,

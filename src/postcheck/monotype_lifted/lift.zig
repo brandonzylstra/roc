@@ -22,6 +22,8 @@ pub fn run(
     owned.names = @import("check").CheckedNames.NameStore.init(allocator);
     var types = owned.types;
     owned.types = @import("../monotype/type.zig").Store.init(allocator);
+    var imported_fns = owned.imported_fns;
+    owned.imported_fns = .empty;
     var exprs = owned.exprs;
     owned.exprs = .empty;
     var pats = owned.pats;
@@ -73,6 +75,7 @@ pub fn run(
         allocator,
         name_store,
         types,
+        imported_fns,
         exprs,
         pats,
         stmts,
@@ -99,6 +102,7 @@ pub fn run(
     );
     name_store = undefined;
     types = undefined;
+    imported_fns = undefined;
     exprs = undefined;
     pats = undefined;
     stmts = undefined;
@@ -417,16 +421,16 @@ const Lifter = struct {
                 for (self.output.exprSpan(call.args)) |arg| try self.rewriteExpr(arg);
             },
             .call_proc => |call| {
-                const fn_id = switch (call.callee) {
+                const callee: Mono.ProcCallee = switch (call.callee) {
                     .func => |slot| switch (slot) {
-                        .local => |mono_fn_id| self.liftedFn(mono_fn_id),
-                        .imported => Common.invariant("imported Monotype function reached lifting before shard resolution"),
+                        .local => |mono_fn_id| .{ .lifted = self.liftedFn(mono_fn_id) },
+                        .imported => |imported| .{ .func = .{ .imported = imported } },
                     },
-                    .lifted => |fn_id| fn_id,
+                    .lifted => |fn_id| .{ .lifted = fn_id },
                 };
                 for (self.output.exprSpan(call.args)) |arg| try self.rewriteExpr(arg);
                 expr.data = .{ .call_proc = .{
-                    .callee = .{ .lifted = fn_id },
+                    .callee = callee,
                     .args = call.args,
                     .is_cold = call.is_cold,
                 } };
@@ -825,7 +829,7 @@ const CaptureSet = struct {
                 switch (call.callee) {
                     .func => |slot| switch (slot) {
                         .local => |mono_fn_id| try self.collectFnCaptures(self.lifter.liftedFn(mono_fn_id), bound),
-                        .imported => Common.invariant("imported Monotype function reached capture solving before shard resolution"),
+                        .imported => {},
                     },
                     .lifted => |fn_id| try self.collectFnCaptures(fn_id, bound),
                 }
@@ -1015,6 +1019,44 @@ fn shapeContent(types: *const MonoType.Store, ty: MonoType.TypeId) MonoType.Cont
             },
             else => |content| return content,
         }
+    }
+}
+
+test "monotype lifting preserves imported direct call slots" {
+    const allocator = std.testing.allocator;
+    var mono = Mono.Program.init(allocator);
+    errdefer mono.deinit();
+
+    const unit_ty = try mono.types.add(.zst);
+    const imported = try mono.addImportedFn(.{
+        .shard = @enumFromInt(1),
+        .fn_id = @enumFromInt(1),
+    });
+    const body = try mono.addExpr(.{ .ty = unit_ty, .data = .{ .call_proc = .{
+        .callee = Mono.importedProcCallee(imported),
+        .args = Mono.Span(Mono.ExprId).empty(),
+    } } });
+    try mono.defs.append(allocator, .{
+        .symbol = @enumFromInt(1),
+        .args = Mono.Span(Mono.TypedLocal).empty(),
+        .body = .{ .roc = body },
+        .ret = unit_ty,
+    });
+
+    var lifted = try run(allocator, mono);
+    defer lifted.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), lifted.imported_fns.items.len);
+    const call = switch (lifted.exprs.items[@intFromEnum(body)].data) {
+        .call_proc => |call| call,
+        else => return error.TestUnexpectedResult,
+    };
+    switch (call.callee) {
+        .func => |slot| switch (slot) {
+            .imported => |actual| try std.testing.expectEqual(imported, actual),
+            .local => return error.TestUnexpectedResult,
+        },
+        .lifted => return error.TestUnexpectedResult,
     }
 }
 

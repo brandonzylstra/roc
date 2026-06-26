@@ -4789,6 +4789,7 @@ fn cloneLiftedProgram(allocator: std.mem.Allocator, program: *const Lifted.Progr
         .names = name_store,
         .next_symbol = program.next_symbol,
         .types = types,
+        .imported_fns = try cloneArrayList(Lifted.ImportedFn, allocator, &program.imported_fns),
         .fns = try cloneArrayList(Lifted.Fn, allocator, &program.fns),
         .exprs = try cloneArrayList(Lifted.Expr, allocator, &program.exprs),
         .pats = try cloneArrayList(Lifted.Pat, allocator, &program.pats),

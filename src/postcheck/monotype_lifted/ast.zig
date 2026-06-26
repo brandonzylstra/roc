@@ -110,6 +110,10 @@ pub const LayoutRequest = struct {
 
 /// Runtime schema requested for a named runtime value shape.
 pub const RuntimeSchemaRequest = Mono.RuntimeSchemaRequest;
+/// Function imported from another Monotype shard.
+pub const ImportedFn = Mono.ImportedFn;
+/// Identifier for an imported function table entry.
+pub const ImportedFnId = Mono.ImportedFnId;
 
 /// Read-only Monotype Lifted program view.
 ///
@@ -120,6 +124,7 @@ pub const ProgramView = struct {
     names: *const names.NameStore,
     next_symbol: u32,
     types: Type.Store.View,
+    imported_fns: []const ImportedFn,
     fns: []const Fn,
     exprs: []const Expr,
     pats: []const Pat,
@@ -315,6 +320,7 @@ pub const Program = struct {
     names: names.NameStore,
     next_symbol: u32,
     types: Type.Store,
+    imported_fns: std.ArrayList(ImportedFn),
     fns: std.ArrayList(Fn),
     exprs: std.ArrayList(Expr),
     pats: std.ArrayList(Pat),
@@ -358,6 +364,7 @@ pub const Program = struct {
         allocator: std.mem.Allocator,
         name_store: names.NameStore,
         types: Type.Store,
+        imported_fns: std.ArrayList(ImportedFn),
         exprs: std.ArrayList(Expr),
         pats: std.ArrayList(Pat),
         stmts: std.ArrayList(Stmt),
@@ -387,6 +394,7 @@ pub const Program = struct {
             .names = name_store,
             .next_symbol = next_symbol,
             .types = types,
+            .imported_fns = imported_fns,
             .fns = .empty,
             .exprs = exprs,
             .pats = pats,
@@ -453,6 +461,7 @@ pub const Program = struct {
         self.pats.deinit(self.allocator);
         self.exprs.deinit(self.allocator);
         self.fns.deinit(self.allocator);
+        self.imported_fns.deinit(self.allocator);
         self.types.deinit();
         self.names.deinit();
     }
@@ -462,6 +471,7 @@ pub const Program = struct {
             .names = &self.names,
             .next_symbol = self.next_symbol,
             .types = self.types.view(),
+            .imported_fns = self.imported_fns.items,
             .fns = self.fns.items,
             .exprs = self.exprs.items,
             .pats = self.pats.items,
