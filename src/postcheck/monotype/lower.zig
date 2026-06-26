@@ -3306,7 +3306,8 @@ const Builder = struct {
         defer self.active_graph = saved_graph;
         var target_ctx = try BodyContext.init(self.allocator, self, lookup.view, template, graph);
         defer target_ctx.deinit();
-        const callable_mono_ty = try target_ctx.instantiateTargetCallTypeFromMonoArgs(lookup.target.callable_ty, &.{value_ty}, str_ty);
+        const callable_node = try target_ctx.instantiateTargetCallNodeFromMonoArgs(lookup.target.callable_ty, &.{value_ty}, str_ty);
+        const callable_mono_ty = try graph.sealNode(callable_node);
         const callee_def = try self.lowerTemplateWithMono(
             template,
             lookup.view,
@@ -8813,6 +8814,16 @@ const BodyContext = struct {
         arg_tys: []const Type.TypeId,
         ret_ty: Type.TypeId,
     ) Allocator.Error!Type.TypeId {
+        const fn_node = try self.instantiateTargetCallNodeFromMonoArgs(source_fn_ty, arg_tys, ret_ty);
+        return try self.graph.monoFor(fn_node);
+    }
+
+    fn instantiateTargetCallNodeFromMonoArgs(
+        self: *BodyContext,
+        source_fn_ty: checked.CheckedTypeId,
+        arg_tys: []const Type.TypeId,
+        ret_ty: Type.TypeId,
+    ) Allocator.Error!NodeId {
         const function = self.checkedFunctionType(source_fn_ty);
         if (function.args.len != arg_tys.len) {
             Common.invariant("checked synthetic dispatch target arity differs from its function type");
@@ -8823,7 +8834,7 @@ const BodyContext = struct {
         }
         try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(ret_ty));
         try self.graph.drainDirty();
-        return try self.graph.monoFor(fn_node);
+        return fn_node;
     }
 
     fn instantiateTargetCallTypeFromMonoArgsPreservingArgs(
