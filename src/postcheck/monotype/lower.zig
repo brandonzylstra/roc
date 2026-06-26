@@ -3765,6 +3765,659 @@ const DraftTypeCell = union(enum) {
     }
 };
 
+const DraftExprId = enum(u32) { _ };
+const DraftPatId = enum(u32) { _ };
+const DraftStmtId = enum(u32) { _ };
+const DraftLocalId = enum(u32) { _ };
+const DraftFnId = enum(u32) { _ };
+const DraftDefId = enum(u32) { _ };
+const DraftNestedDefId = enum(u32) { _ };
+const DraftComptimeSiteId = enum(u32) { _ };
+const DraftStringLiteralId = enum(u32) { _ };
+
+fn DraftSpan(comptime _: type) type {
+    return extern struct {
+        start: u32,
+        len: u32,
+
+        fn empty() @This() {
+            return .{ .start = 0, .len = 0 };
+        }
+    };
+}
+
+const DraftFnTemplate = struct {
+    fn_def: Ast.FnDef,
+    source_fn_ty: checked.CheckedTypeId,
+    source_fn_key: names.TypeDigest,
+    mono_fn_ty: DraftTypeCell,
+};
+
+const DraftFn = struct {
+    source: DraftFnTemplate,
+};
+
+const DraftLocal = struct {
+    id: DraftLocalId,
+    symbol: Common.Symbol,
+    ty: DraftTypeCell,
+    binder: ?checked.PatternBinderId = null,
+    capture_id: ?u32 = null,
+};
+
+const DraftTypedLocal = struct {
+    local: DraftLocalId,
+    ty: DraftTypeCell,
+};
+
+const DraftFieldExpr = struct {
+    name: names.RecordFieldNameId,
+    value: DraftExprId,
+};
+
+const DraftTagExpr = struct {
+    name: names.TagNameId,
+    payloads: DraftSpan(DraftExprId),
+};
+
+const DraftLambdaExpr = struct {
+    fn_id: DraftFnId,
+    args: DraftSpan(DraftTypedLocal),
+    body: DraftExprId,
+};
+
+const DraftCallValue = struct {
+    callee: DraftExprId,
+    args: DraftSpan(DraftExprId),
+};
+
+const DraftFnSlot = union(enum(u8)) {
+    local: DraftFnId,
+    imported: Ast.ImportedFnId,
+};
+
+const DraftProcCallee = union(enum(u8)) {
+    func: DraftFnSlot,
+    lifted: Ast.LiftedFnId,
+};
+
+const DraftCallProc = struct {
+    callee: DraftProcCallee,
+    args: DraftSpan(DraftExprId),
+    is_cold: bool = false,
+};
+
+const DraftLowLevelCall = struct {
+    op: can.CIR.Expr.LowLevel,
+    args: DraftSpan(DraftExprId),
+};
+
+const DraftMatchExpr = struct {
+    scrutinee: DraftExprId,
+    branches: DraftSpan(DraftBranch),
+    comptime_site: ?DraftComptimeSiteId = null,
+};
+
+const DraftIfExpr = struct {
+    branches: DraftSpan(DraftIfBranch),
+    final_else: DraftExprId,
+};
+
+const DraftInitializedPayloadSwitch = struct {
+    cond: DraftExprId,
+    cond_mask: u64 = 1,
+    payload: DraftLocalId,
+    uninitialized_is_cold: bool = false,
+    initialized: DraftExprId,
+    uninitialized: DraftExprId,
+};
+
+const DraftTrySequence = struct {
+    try_expr: DraftExprId,
+    ok_local: DraftLocalId,
+    err_is_cold: bool = false,
+    ok_body: DraftExprId,
+};
+
+const DraftTryRecordSequence = struct {
+    try_expr: DraftExprId,
+    value_local: DraftLocalId,
+    value_field: names.RecordFieldNameId,
+    rest_local: DraftLocalId,
+    rest_field: names.RecordFieldNameId,
+    err_is_cold: bool = false,
+    ok_body: DraftExprId,
+};
+
+const DraftBlockExpr = struct {
+    statements: DraftSpan(DraftStmtId),
+    final_expr: DraftExprId,
+};
+
+const DraftLoopExpr = struct {
+    params: DraftSpan(DraftTypedLocal),
+    initial_values: DraftSpan(DraftExprId),
+    body: DraftExprId,
+};
+
+const DraftContinueExpr = struct {
+    values: DraftSpan(DraftExprId),
+};
+
+const DraftComptimeBranchTaken = struct {
+    site: DraftComptimeSiteId,
+    branch_index: u32,
+    body: DraftExprId,
+};
+
+const DraftExpectErrExpr = struct {
+    msg: DraftExprId,
+    region: base.Region,
+};
+
+const DraftExpr = struct {
+    ty: DraftTypeCell,
+    data: DraftExprData,
+};
+
+const DraftExprData = union(enum(u8)) {
+    local: DraftLocalId,
+    unit,
+    int_lit: can.CIR.IntValue,
+    frac_f32_lit: f32,
+    frac_f64_lit: f64,
+    dec_lit: builtins.dec.RocDec,
+    str_lit: DraftStringLiteralId,
+    list: DraftSpan(DraftExprId),
+    tuple: DraftSpan(DraftExprId),
+    record: DraftSpan(DraftFieldExpr),
+    tag: DraftTagExpr,
+    nominal: DraftExprId,
+    let_: struct {
+        bind: DraftPatId,
+        value: DraftExprId,
+        rest: DraftExprId,
+        comptime_site: ?DraftComptimeSiteId = null,
+    },
+    lambda: DraftLambdaExpr,
+    def_ref: DraftDefId,
+    fn_def: DraftFnId,
+    fn_ref: Ast.LiftedFnId,
+    call_value: DraftCallValue,
+    call_proc: DraftCallProc,
+    low_level: DraftLowLevelCall,
+    field_access: struct {
+        receiver: DraftExprId,
+        field: names.RecordFieldNameId,
+    },
+    tuple_access: struct {
+        tuple: DraftExprId,
+        elem_index: u32,
+    },
+    structural_eq: struct {
+        lhs: DraftExprId,
+        rhs: DraftExprId,
+        negated: bool,
+    },
+    structural_hash: struct {
+        value: DraftExprId,
+        hasher: DraftExprId,
+    },
+    match_: DraftMatchExpr,
+    if_: DraftIfExpr,
+    uninitialized,
+    uninitialized_payload: struct {
+        condition: DraftLocalId,
+        mask: u64 = 1,
+    },
+    if_initialized_payload: DraftInitializedPayloadSwitch,
+    try_sequence: DraftTrySequence,
+    try_record_sequence: DraftTryRecordSequence,
+    block: DraftBlockExpr,
+    loop_: DraftLoopExpr,
+    break_: ?DraftExprId,
+    continue_: DraftContinueExpr,
+    return_: DraftExprId,
+    crash: DraftStringLiteralId,
+    comptime_branch_taken: DraftComptimeBranchTaken,
+    comptime_exhaustiveness_failed: DraftComptimeSiteId,
+    dbg: DraftExprId,
+    expect_err: DraftExpectErrExpr,
+    expect: DraftExprId,
+};
+
+const DraftPat = struct {
+    ty: DraftTypeCell,
+    data: DraftPatData,
+};
+
+const DraftPatData = union(enum(u8)) {
+    bind: DraftLocalId,
+    wildcard,
+    as: struct {
+        pattern: DraftPatId,
+        local: DraftLocalId,
+    },
+    record: DraftSpan(DraftRecordDestruct),
+    tuple: DraftSpan(DraftPatId),
+    list: DraftListPattern,
+    tag: struct {
+        name: names.TagNameId,
+        payloads: DraftSpan(DraftPatId),
+    },
+    nominal: DraftPatId,
+    int_lit: can.CIR.IntValue,
+    dec_lit: builtins.dec.RocDec,
+    frac_f32_lit: f32,
+    frac_f64_lit: f64,
+    str_lit: DraftStringLiteralId,
+    str_pattern: DraftStrPattern,
+};
+
+const DraftStrPattern = struct {
+    prefix: DraftStringLiteralId,
+    steps: DraftSpan(DraftStrPatternStep),
+    end: Ast.StrPatternEnd,
+};
+
+const DraftStrPatternStep = struct {
+    capture: ?DraftPatId,
+    delimiter: DraftStringLiteralId,
+};
+
+const DraftRecordDestruct = struct {
+    name: names.RecordFieldNameId,
+    pattern: DraftPatId,
+};
+
+const DraftListPattern = struct {
+    patterns: DraftSpan(DraftPatId),
+    rest: ?DraftListRestPattern,
+};
+
+const DraftListRestPattern = struct {
+    index: u32,
+    pattern: ?DraftPatId,
+};
+
+const DraftBranch = struct {
+    pat: DraftPatId,
+    guard: ?DraftExprId = null,
+    body: DraftExprId,
+};
+
+const DraftIfBranch = struct {
+    cond: DraftExprId,
+    body: DraftExprId,
+};
+
+const DraftStmt = union(enum(u8)) {
+    uninitialized: DraftPatId,
+    let_: struct {
+        pat: DraftPatId,
+        value: DraftExprId,
+        recursive: bool = false,
+        comptime_site: ?DraftComptimeSiteId = null,
+    },
+    expr: DraftExprId,
+    expect: DraftExprId,
+    dbg: DraftExprId,
+    return_: DraftExprId,
+    crash: DraftStringLiteralId,
+};
+
+const DraftFnBody = union(enum(u8)) {
+    roc: DraftExprId,
+    hosted,
+};
+
+const DraftDef = struct {
+    symbol: Common.Symbol,
+    fn_def: ?DraftFnTemplate = null,
+    fn_id: ?DraftFnId = null,
+    args: DraftSpan(DraftTypedLocal),
+    body: DraftFnBody,
+    ret: DraftTypeCell,
+};
+
+const DraftNestedDef = struct {
+    symbol: Common.Symbol,
+    fn_def: DraftFnTemplate,
+    fn_id: DraftFnId,
+    args: DraftSpan(DraftTypedLocal),
+    body: DraftExprId,
+    ret: DraftTypeCell,
+};
+
+const DraftRoot = struct {
+    def: DraftDefId,
+    request: checked.RootRequest,
+};
+
+const DraftLayoutRequest = struct {
+    checked_type: checked.CheckedTypeId,
+    ty: DraftTypeCell,
+    def: ?DraftDefId = null,
+};
+
+const DraftRuntimeSchemaRequest = struct {
+    def: Type.TypeDef,
+    ty: DraftTypeCell,
+};
+
+const DraftDeclaredField = union(enum(u8)) {
+    named: names.RecordFieldNameId,
+    padding: DraftTypeCell,
+};
+
+const DraftComptimeSite = struct {
+    kind: Ast.ComptimeSiteKind,
+    region: base.Region,
+    checked_site: ?checked.CheckedExhaustivenessSiteId = null,
+    branch_regions: DraftSpan(base.Region) = .empty(),
+};
+
+const DraftStringLiteral = struct {
+    backing: DraftSpan(u8),
+    offset: u32,
+    len: u32,
+};
+
+const BodyDraftStore = struct {
+    allocator: Allocator,
+    fns: std.ArrayList(DraftFn),
+    defs: std.ArrayList(DraftDef),
+    nested_defs: std.ArrayList(DraftNestedDef),
+    exprs: std.ArrayList(DraftExpr),
+    pats: std.ArrayList(DraftPat),
+    stmts: std.ArrayList(DraftStmt),
+    locals: std.ArrayList(DraftLocal),
+    expr_ids: std.ArrayList(DraftExprId),
+    pat_ids: std.ArrayList(DraftPatId),
+    typed_locals: std.ArrayList(DraftTypedLocal),
+    stmt_ids: std.ArrayList(DraftStmtId),
+    field_exprs: std.ArrayList(DraftFieldExpr),
+    record_destructs: std.ArrayList(DraftRecordDestruct),
+    str_pattern_steps: std.ArrayList(DraftStrPatternStep),
+    declared_fields: std.ArrayList(DraftDeclaredField),
+    branches: std.ArrayList(DraftBranch),
+    if_branches: std.ArrayList(DraftIfBranch),
+    string_literals: std.ArrayList(DraftStringLiteral),
+    string_bytes: std.ArrayList(u8),
+    proc_debug_names: std.ArrayList(Ast.ProcDebugName),
+    roots: std.ArrayList(DraftRoot),
+    layout_requests: std.ArrayList(DraftLayoutRequest),
+    runtime_schema_requests: std.ArrayList(DraftRuntimeSchemaRequest),
+    comptime_sites: std.ArrayList(DraftComptimeSite),
+    branch_regions: std.ArrayList(base.Region),
+    source_files: std.ArrayList(DraftSpan(u8)),
+    local_names: std.ArrayList(DraftSpan(u8)),
+    source_text_bytes: std.ArrayList(u8),
+    expr_locs: std.ArrayList(base.SourceLoc),
+    expr_regions: std.ArrayList(base.Region),
+    stmt_locs: std.ArrayList(base.SourceLoc),
+    stmt_regions: std.ArrayList(base.Region),
+
+    fn init(allocator: Allocator) BodyDraftStore {
+        return .{
+            .allocator = allocator,
+            .fns = .empty,
+            .defs = .empty,
+            .nested_defs = .empty,
+            .exprs = .empty,
+            .pats = .empty,
+            .stmts = .empty,
+            .locals = .empty,
+            .expr_ids = .empty,
+            .pat_ids = .empty,
+            .typed_locals = .empty,
+            .stmt_ids = .empty,
+            .field_exprs = .empty,
+            .record_destructs = .empty,
+            .str_pattern_steps = .empty,
+            .declared_fields = .empty,
+            .branches = .empty,
+            .if_branches = .empty,
+            .string_literals = .empty,
+            .string_bytes = .empty,
+            .proc_debug_names = .empty,
+            .roots = .empty,
+            .layout_requests = .empty,
+            .runtime_schema_requests = .empty,
+            .comptime_sites = .empty,
+            .branch_regions = .empty,
+            .source_files = .empty,
+            .local_names = .empty,
+            .source_text_bytes = .empty,
+            .expr_locs = .empty,
+            .expr_regions = .empty,
+            .stmt_locs = .empty,
+            .stmt_regions = .empty,
+        };
+    }
+
+    fn deinit(self: *BodyDraftStore) void {
+        self.stmt_regions.deinit(self.allocator);
+        self.stmt_locs.deinit(self.allocator);
+        self.expr_regions.deinit(self.allocator);
+        self.expr_locs.deinit(self.allocator);
+        self.source_text_bytes.deinit(self.allocator);
+        self.local_names.deinit(self.allocator);
+        self.source_files.deinit(self.allocator);
+        self.branch_regions.deinit(self.allocator);
+        self.comptime_sites.deinit(self.allocator);
+        self.runtime_schema_requests.deinit(self.allocator);
+        self.layout_requests.deinit(self.allocator);
+        self.roots.deinit(self.allocator);
+        self.proc_debug_names.deinit(self.allocator);
+        self.string_bytes.deinit(self.allocator);
+        self.string_literals.deinit(self.allocator);
+        self.if_branches.deinit(self.allocator);
+        self.branches.deinit(self.allocator);
+        self.declared_fields.deinit(self.allocator);
+        self.str_pattern_steps.deinit(self.allocator);
+        self.record_destructs.deinit(self.allocator);
+        self.field_exprs.deinit(self.allocator);
+        self.stmt_ids.deinit(self.allocator);
+        self.typed_locals.deinit(self.allocator);
+        self.pat_ids.deinit(self.allocator);
+        self.expr_ids.deinit(self.allocator);
+        self.locals.deinit(self.allocator);
+        self.stmts.deinit(self.allocator);
+        self.pats.deinit(self.allocator);
+        self.exprs.deinit(self.allocator);
+        self.nested_defs.deinit(self.allocator);
+        self.defs.deinit(self.allocator);
+        self.fns.deinit(self.allocator);
+    }
+
+    fn addExpr(self: *BodyDraftStore, expr: DraftExpr) Allocator.Error!DraftExprId {
+        const id: DraftExprId = @enumFromInt(@as(u32, @intCast(self.exprs.items.len)));
+        try self.exprs.append(self.allocator, expr);
+        return id;
+    }
+
+    fn addFn(self: *BodyDraftStore, fn_: DraftFn) Allocator.Error!DraftFnId {
+        const id: DraftFnId = @enumFromInt(@as(u32, @intCast(self.fns.items.len)));
+        try self.fns.append(self.allocator, fn_);
+        return id;
+    }
+
+    fn addDef(self: *BodyDraftStore, def: DraftDef) Allocator.Error!DraftDefId {
+        const id: DraftDefId = @enumFromInt(@as(u32, @intCast(self.defs.items.len)));
+        try self.defs.append(self.allocator, def);
+        return id;
+    }
+
+    fn addNestedDef(self: *BodyDraftStore, def: DraftNestedDef) Allocator.Error!DraftNestedDefId {
+        const id: DraftNestedDefId = @enumFromInt(@as(u32, @intCast(self.nested_defs.items.len)));
+        try self.nested_defs.append(self.allocator, def);
+        return id;
+    }
+
+    fn addPat(self: *BodyDraftStore, pat: DraftPat) Allocator.Error!DraftPatId {
+        const id: DraftPatId = @enumFromInt(@as(u32, @intCast(self.pats.items.len)));
+        try self.pats.append(self.allocator, pat);
+        return id;
+    }
+
+    fn addStmt(self: *BodyDraftStore, stmt: DraftStmt) Allocator.Error!DraftStmtId {
+        const id: DraftStmtId = @enumFromInt(@as(u32, @intCast(self.stmts.items.len)));
+        try self.stmts.append(self.allocator, stmt);
+        return id;
+    }
+
+    fn addLocal(self: *BodyDraftStore, symbol: Common.Symbol, ty: DraftTypeCell, binder: ?checked.PatternBinderId) Allocator.Error!DraftLocalId {
+        const id: DraftLocalId = @enumFromInt(@as(u32, @intCast(self.locals.items.len)));
+        try self.locals.append(self.allocator, .{
+            .id = id,
+            .symbol = symbol,
+            .ty = ty,
+            .binder = binder,
+        });
+        try self.local_names.append(self.allocator, .empty());
+        return id;
+    }
+
+    fn addExprSpan(self: *BodyDraftStore, ids: []const DraftExprId) Allocator.Error!DraftSpan(DraftExprId) {
+        const start: u32 = @intCast(self.expr_ids.items.len);
+        try self.expr_ids.appendSlice(self.allocator, ids);
+        return .{ .start = start, .len = @intCast(ids.len) };
+    }
+
+    fn addPatSpan(self: *BodyDraftStore, ids: []const DraftPatId) Allocator.Error!DraftSpan(DraftPatId) {
+        const start: u32 = @intCast(self.pat_ids.items.len);
+        try self.pat_ids.appendSlice(self.allocator, ids);
+        return .{ .start = start, .len = @intCast(ids.len) };
+    }
+
+    fn addTypedLocalSpan(self: *BodyDraftStore, values: []const DraftTypedLocal) Allocator.Error!DraftSpan(DraftTypedLocal) {
+        const start: u32 = @intCast(self.typed_locals.items.len);
+        try self.typed_locals.appendSlice(self.allocator, values);
+        return .{ .start = start, .len = @intCast(values.len) };
+    }
+
+    fn addStmtSpan(self: *BodyDraftStore, ids: []const DraftStmtId) Allocator.Error!DraftSpan(DraftStmtId) {
+        const start: u32 = @intCast(self.stmt_ids.items.len);
+        try self.stmt_ids.appendSlice(self.allocator, ids);
+        return .{ .start = start, .len = @intCast(ids.len) };
+    }
+
+    fn addFieldExprSpan(self: *BodyDraftStore, values: []const DraftFieldExpr) Allocator.Error!DraftSpan(DraftFieldExpr) {
+        const start: u32 = @intCast(self.field_exprs.items.len);
+        try self.field_exprs.appendSlice(self.allocator, values);
+        return .{ .start = start, .len = @intCast(values.len) };
+    }
+
+    fn addRecordDestructSpan(self: *BodyDraftStore, values: []const DraftRecordDestruct) Allocator.Error!DraftSpan(DraftRecordDestruct) {
+        const start: u32 = @intCast(self.record_destructs.items.len);
+        try self.record_destructs.appendSlice(self.allocator, values);
+        return .{ .start = start, .len = @intCast(values.len) };
+    }
+
+    fn addBranchSpan(self: *BodyDraftStore, values: []const DraftBranch) Allocator.Error!DraftSpan(DraftBranch) {
+        const start: u32 = @intCast(self.branches.items.len);
+        try self.branches.appendSlice(self.allocator, values);
+        return .{ .start = start, .len = @intCast(values.len) };
+    }
+
+    fn addIfBranchSpan(self: *BodyDraftStore, values: []const DraftIfBranch) Allocator.Error!DraftSpan(DraftIfBranch) {
+        const start: u32 = @intCast(self.if_branches.items.len);
+        try self.if_branches.appendSlice(self.allocator, values);
+        return .{ .start = start, .len = @intCast(values.len) };
+    }
+
+    fn addStrPatternStepSpan(self: *BodyDraftStore, values: []const DraftStrPatternStep) Allocator.Error!DraftSpan(DraftStrPatternStep) {
+        const start: u32 = @intCast(self.str_pattern_steps.items.len);
+        try self.str_pattern_steps.appendSlice(self.allocator, values);
+        return .{ .start = start, .len = @intCast(values.len) };
+    }
+
+    fn addDeclaredFieldSpan(self: *BodyDraftStore, values: []const DraftDeclaredField) Allocator.Error!DraftSpan(DraftDeclaredField) {
+        const start: u32 = @intCast(self.declared_fields.items.len);
+        try self.declared_fields.appendSlice(self.allocator, values);
+        return .{ .start = start, .len = @intCast(values.len) };
+    }
+
+    fn addStringBytes(self: *BodyDraftStore, bytes: []const u8) Allocator.Error!DraftSpan(u8) {
+        const start: u32 = @intCast(self.string_bytes.items.len);
+        try self.string_bytes.appendSlice(self.allocator, bytes);
+        return .{ .start = start, .len = @intCast(bytes.len) };
+    }
+
+    fn addStringLiteral(self: *BodyDraftStore, text: []const u8) Allocator.Error!DraftStringLiteralId {
+        const id: DraftStringLiteralId = @enumFromInt(@as(u32, @intCast(self.string_literals.items.len)));
+        const backing = try self.addStringBytes(text);
+        try self.string_literals.append(self.allocator, .{
+            .backing = backing,
+            .offset = 0,
+            .len = @intCast(text.len),
+        });
+        return id;
+    }
+
+    fn addBranchRegionSpan(self: *BodyDraftStore, regions: []const base.Region) Allocator.Error!DraftSpan(base.Region) {
+        const start: u32 = @intCast(self.branch_regions.items.len);
+        try self.branch_regions.appendSlice(self.allocator, regions);
+        return .{ .start = start, .len = @intCast(regions.len) };
+    }
+
+    fn addComptimeSite(
+        self: *BodyDraftStore,
+        kind: Ast.ComptimeSiteKind,
+        region: base.Region,
+        checked_site: ?checked.CheckedExhaustivenessSiteId,
+        branch_regions: []const base.Region,
+    ) Allocator.Error!DraftComptimeSiteId {
+        const id: DraftComptimeSiteId = @enumFromInt(@as(u32, @intCast(self.comptime_sites.items.len)));
+        const branch_region_span = try self.addBranchRegionSpan(branch_regions);
+        try self.comptime_sites.append(self.allocator, .{
+            .kind = kind,
+            .region = region,
+            .checked_site = checked_site,
+            .branch_regions = branch_region_span,
+        });
+        return id;
+    }
+
+    fn addSourceText(self: *BodyDraftStore, text: []const u8) Allocator.Error!DraftSpan(u8) {
+        const start: u32 = @intCast(self.source_text_bytes.items.len);
+        try self.source_text_bytes.appendSlice(self.allocator, text);
+        return .{ .start = start, .len = @intCast(text.len) };
+    }
+
+    fn addSourceFile(self: *BodyDraftStore, name: []const u8) Allocator.Error!u32 {
+        const id: u32 = @intCast(self.source_files.items.len);
+        const text = try self.addSourceText(name);
+        try self.source_files.append(self.allocator, text);
+        return id;
+    }
+
+    fn setLocalName(self: *BodyDraftStore, id: DraftLocalId, name: []const u8) Allocator.Error!void {
+        if (name.len == 0) return;
+        self.local_names.items[@intFromEnum(id)] = try self.addSourceText(name);
+    }
+
+    fn addProcDebugName(self: *BodyDraftStore, symbol: Common.Symbol, name: names.ExportNameId) Allocator.Error!void {
+        try self.proc_debug_names.append(self.allocator, .{
+            .symbol = symbol,
+            .name = name,
+        });
+    }
+
+    fn addRoot(self: *BodyDraftStore, root: DraftRoot) Allocator.Error!void {
+        try self.roots.append(self.allocator, root);
+    }
+
+    fn addLayoutRequest(self: *BodyDraftStore, request: DraftLayoutRequest) Allocator.Error!void {
+        try self.layout_requests.append(self.allocator, request);
+    }
+
+    fn addRuntimeSchemaRequest(self: *BodyDraftStore, request: DraftRuntimeSchemaRequest) Allocator.Error!void {
+        try self.runtime_schema_requests.append(self.allocator, request);
+    }
+};
+
 const BodyDraft = struct {
     specs_start: usize,
     fns_start: usize,
@@ -16575,6 +17228,85 @@ test "draft sealed type cell validation distinguishes closed snapshots from grap
     const graph_view_cell: DraftTypeCell = .{ .sealed = graph_view };
     try std.testing.expect(try graph_view_cell.sealedHasGraphViews(graph));
     try std.testing.expect(!try DraftTypeCell.fromGraphNode(try graph.newNode(.{ .primitive = .bool })).sealedHasGraphViews(graph));
+}
+
+test "body draft store appends draft-local ids spans and type cells" {
+    const gpa = std.testing.allocator;
+
+    var type_store = Type.Store.init(gpa);
+    defer type_store.deinit();
+
+    var name_store = names.NameStore.init(gpa);
+    defer name_store.deinit();
+
+    var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
+    defer unsolved_monos.deinit();
+
+    const graph = try InstGraph.create(gpa, &type_store, &name_store, &unsolved_monos);
+    defer graph.destroy();
+
+    var draft = BodyDraftStore.init(gpa);
+    defer draft.deinit();
+
+    const ty = DraftTypeCell.fromGraphNode(try graph.newNode(.{ .primitive = .u64 }));
+    const local = try draft.addLocal(@enumFromInt(0), ty, null);
+    const pat = try draft.addPat(.{ .ty = ty, .data = .{ .bind = local } });
+    const expr = try draft.addExpr(.{ .ty = ty, .data = .{ .local = local } });
+    const expr_span = try draft.addExprSpan(&.{expr});
+    const pat_span = try draft.addPatSpan(&.{pat});
+    const typed_local_span = try draft.addTypedLocalSpan(&.{.{ .local = local, .ty = ty }});
+    const field_name = try name_store.internRecordFieldLabel("field");
+    const field_span = try draft.addFieldExprSpan(&.{.{ .name = field_name, .value = expr }});
+    const destruct_span = try draft.addRecordDestructSpan(&.{.{ .name = field_name, .pattern = pat }});
+    const branch_span = try draft.addBranchSpan(&.{.{ .pat = pat, .body = expr }});
+    const if_branch_span = try draft.addIfBranchSpan(&.{.{ .cond = expr, .body = expr }});
+    const literal = try draft.addStringLiteral("literal");
+    const str_step_span = try draft.addStrPatternStepSpan(&.{.{ .capture = pat, .delimiter = literal }});
+    const declared_field_span = try draft.addDeclaredFieldSpan(&.{
+        .{ .named = field_name },
+        .{ .padding = ty },
+    });
+    const site = try draft.addComptimeSite(.if_, base.Region.zero(), null, &.{base.Region.zero()});
+    const source_file = try draft.addSourceFile("module.roc");
+    try draft.setLocalName(local, "value");
+    const stmt = try draft.addStmt(.{ .let_ = .{
+        .pat = pat,
+        .value = expr,
+        .rest = expr,
+        .comptime_site = site,
+    } });
+    const stmt_span = try draft.addStmtSpan(&.{stmt});
+
+    try std.testing.expectEqual(@as(usize, 1), draft.locals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), draft.pats.items.len);
+    try std.testing.expectEqual(@as(usize, 1), draft.exprs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), draft.stmts.items.len);
+    try std.testing.expectEqual(@as(u32, 0), expr_span.start);
+    try std.testing.expectEqual(@as(u32, 1), expr_span.len);
+    try std.testing.expectEqual(@as(u32, 0), pat_span.start);
+    try std.testing.expectEqual(@as(u32, 1), pat_span.len);
+    try std.testing.expectEqual(@as(u32, 0), typed_local_span.start);
+    try std.testing.expectEqual(@as(u32, 1), typed_local_span.len);
+    try std.testing.expectEqual(@as(u32, 0), stmt_span.start);
+    try std.testing.expectEqual(@as(u32, 1), stmt_span.len);
+    try std.testing.expectEqual(@as(u32, 0), field_span.start);
+    try std.testing.expectEqual(@as(u32, 1), field_span.len);
+    try std.testing.expectEqual(@as(u32, 0), destruct_span.start);
+    try std.testing.expectEqual(@as(u32, 1), destruct_span.len);
+    try std.testing.expectEqual(@as(u32, 0), branch_span.start);
+    try std.testing.expectEqual(@as(u32, 1), branch_span.len);
+    try std.testing.expectEqual(@as(u32, 0), if_branch_span.start);
+    try std.testing.expectEqual(@as(u32, 1), if_branch_span.len);
+    try std.testing.expectEqual(@as(u32, 0), str_step_span.start);
+    try std.testing.expectEqual(@as(u32, 1), str_step_span.len);
+    try std.testing.expectEqual(@as(u32, 0), declared_field_span.start);
+    try std.testing.expectEqual(@as(u32, 2), declared_field_span.len);
+    try std.testing.expectEqual(@as(usize, 1), draft.string_literals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), draft.comptime_sites.items.len);
+    try std.testing.expectEqual(@as(u32, 0), source_file);
+    try std.testing.expectEqual(@as(usize, 1), draft.source_files.items.len);
+    try std.testing.expectEqual(@as(usize, 1), draft.local_names.items.len);
+    try std.testing.expect(draft.local_names.items[@intFromEnum(local)].len != 0);
 }
 
 test "record parser presence words cover fields wider than one u64" {

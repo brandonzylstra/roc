@@ -180,20 +180,20 @@ immutable `TypeId`s after the graph is closed.
       graph opened.
 - [x] Add debug checks that `DraftTypeCell.sealed` is used only for closed types
       with no active graph-view children.
-- [ ] Add a `BodyDraftStore` that mirrors final Monotype body sections:
+- [x] Add a `BodyDraftStore` that mirrors final Monotype body sections:
       functions, definitions, nested definitions, expressions, patterns,
       statements, locals, typed locals, ids, side-pool spans, layout requests,
       runtime schema requests, roots, and compile-time metadata.
-- [ ] Make draft ids distinct from final `Ast.*Id`s so an active draft cannot be
+- [x] Make draft ids distinct from final `Ast.*Id`s so an active draft cannot be
       accidentally consumed by Monotype Lifted, Lambda Solved, LIR, or cache
       serialization.
-- [ ] Introduce draft expression, pattern, local, typed-local, function-template,
+- [x] Introduce draft expression, pattern, local, typed-local, function-template,
       definition, nested-definition, layout-request, and runtime-schema-request
       records whose type-bearing fields store `DraftTypeCell`.
-- [ ] Keep non-type fields in draft records in the same normalized order and
+- [x] Keep non-type fields in draft records in the same normalized order and
       representation as the final Monotype records, so sealing is a mechanical
       copy plus type/id/span translation.
-- [ ] Add draft side-pool builders for expression ids, pattern ids, statement
+- [x] Add draft side-pool builders for expression ids, pattern ids, statement
       ids, typed locals, record fields, tag payloads, declared fields, branches,
       if branches, string pattern steps, and debug/source metadata.
 - [ ] Route body-lowering creation through draft append helpers instead of
