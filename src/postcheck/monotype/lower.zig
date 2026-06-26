@@ -340,9 +340,20 @@ const LoweredNestedMatch = struct {
 };
 
 const ReservedTemplate = struct {
-    fn_id: Ast.FnId,
+    target: Ast.FnSlot,
     needs_lowering: bool,
+
+    fn localFnId(self: ReservedTemplate) Ast.FnId {
+        return localFnIdFromSlot(self.target, "Monotype procedure template reservation needed a local function id");
+    }
 };
+
+fn localFnIdFromSlot(slot: Ast.FnSlot, comptime message: []const u8) Ast.FnId {
+    return switch (slot) {
+        .local => |fn_id| fn_id,
+        .imported => Common.invariant(message),
+    };
+}
 
 /// A nested function body together with the instantiation context that
 /// snapshots the lexical binders at its site.
@@ -959,7 +970,7 @@ const Builder = struct {
         const body = try self.program.addExpr(.{
             .ty = fn_data.ret,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(callee),
+                .callee = Ast.procCalleeForSlot(callee),
                 .args = try self.program.addExprSpan(arg_exprs),
             } },
         });
@@ -1359,8 +1370,8 @@ const Builder = struct {
             try requester.drainDirty();
             const def = self.program.defs.items[@intFromEnum(existing.def)];
             return .{
-                .fn_id = def.fn_id orelse
-                    Common.invariant("reserved Monotype procedure template definition had no function id"),
+                .target = .{ .local = def.fn_id orelse
+                    Common.invariant("reserved Monotype procedure template definition had no function id") },
                 .needs_lowering = existing.status == .reserved,
             };
         } else {
@@ -1397,7 +1408,7 @@ const Builder = struct {
         try self.lowered_template_by_def.put(def_id, entry_index);
         try self.appendTemplateLookup(family, .request, fn_ty_digest, entry_index);
         return .{
-            .fn_id = fn_id,
+            .target = .{ .local = fn_id },
             .needs_lowering = true,
         };
     }
@@ -2201,7 +2212,7 @@ const Builder = struct {
         source_ty_view: ModuleView,
         proc: checked.ProcedureUseTemplate,
         source_fn_ty: checked.CheckedTypeId,
-    ) Allocator.Error!Ast.FnId {
+    ) Allocator.Error!Ast.FnSlot {
         const mono_fn_ty = try self.lowerType(source_ty_view, source_fn_ty);
         const source_fn_key = proc.source_fn_ty_template;
         const fn_template = switch (proc.binding) {
@@ -2230,7 +2241,7 @@ const Builder = struct {
                 break :blk self.fnDefForProcedureBindingBody(app_view, binding.body, source_fn_ty, source_fn_key, mono_fn_ty);
             },
         };
-        return try self.lowerFnTemplateDef(source_ty_view, fn_template);
+        return try self.lowerFnTemplateCallTarget(source_ty_view, fn_template);
     }
 
     /// Lower (or defer) a procedure template body and return the Monotype
@@ -2238,7 +2249,7 @@ const Builder = struct {
     /// request reserves an id and defers the body; outside one (root and
     /// wrapper paths, whose types come from the builder-global cache without
     /// body evidence), the body lowers now.
-    fn lowerFnTemplateDef(self: *Builder, source_ty_view: ModuleView, fn_template: Ast.FnTemplate) Allocator.Error!Ast.FnId {
+    fn lowerFnTemplateCallTarget(self: *Builder, source_ty_view: ModuleView, fn_template: Ast.FnTemplate) Allocator.Error!Ast.FnSlot {
         const template_ref = switch (fn_template.fn_def) {
             .local_template,
             .imported_template,
@@ -2267,7 +2278,7 @@ const Builder = struct {
                 );
                 if (reserved.needs_lowering) {
                     try graph.deferred_templates.append(self.allocator, .{
-                        .fn_id = reserved.fn_id,
+                        .fn_id = reserved.localFnId(),
                         .template_ref = template_ref,
                         .module = source_ty_view.key,
                         .source_fn_ty = fn_template.source_fn_ty,
@@ -2275,11 +2286,18 @@ const Builder = struct {
                         .fn_ty = fn_template.mono_fn_ty,
                     });
                 }
-                return reserved.fn_id;
+                return reserved.target;
             }
         }
         const def = try self.lowerTemplateWithMono(template_ref, source_ty_view, fn_template.source_fn_ty, fn_template.source_fn_key, fn_template.mono_fn_ty);
-        return self.defFnId(def);
+        return .{ .local = self.defFnId(def) };
+    }
+
+    fn lowerFnTemplateDef(self: *Builder, source_ty_view: ModuleView, fn_template: Ast.FnTemplate) Allocator.Error!Ast.FnId {
+        return localFnIdFromSlot(
+            try self.lowerFnTemplateCallTarget(source_ty_view, fn_template),
+            "Monotype function value lowering requires a local function definition",
+        );
     }
 
     fn lowerRestoredConstFnTemplate(self: *Builder, type_view: ModuleView, fn_template: Ast.FnTemplate) Allocator.Error!Ast.FnId {
@@ -2301,7 +2319,7 @@ const Builder = struct {
         }
     }
 
-    fn lowerFnTemplateDefFromContext(self: *Builder, source_ctx: *BodyContext, fn_template: Ast.FnTemplate) Allocator.Error!Ast.FnId {
+    fn lowerFnTemplateCallTargetFromContext(self: *Builder, source_ctx: *BodyContext, fn_template: Ast.FnTemplate) Allocator.Error!Ast.FnSlot {
         const template_ref = switch (fn_template.fn_def) {
             .local_template,
             .imported_template,
@@ -2324,7 +2342,7 @@ const Builder = struct {
         );
         if (reserved.needs_lowering) {
             try source_ctx.graph.deferred_templates.append(self.allocator, .{
-                .fn_id = reserved.fn_id,
+                .fn_id = reserved.localFnId(),
                 .template_ref = template_ref,
                 .module = source_ctx.view.key,
                 .source_fn_ty = fn_template.source_fn_ty,
@@ -2332,7 +2350,14 @@ const Builder = struct {
                 .fn_ty = fn_template.mono_fn_ty,
             });
         }
-        return reserved.fn_id;
+        return reserved.target;
+    }
+
+    fn lowerFnTemplateDefFromContext(self: *Builder, source_ctx: *BodyContext, fn_template: Ast.FnTemplate) Allocator.Error!Ast.FnId {
+        return localFnIdFromSlot(
+            try self.lowerFnTemplateCallTargetFromContext(source_ctx, fn_template),
+            "Monotype function value lowering requires a local function definition",
+        );
     }
 
     fn defFnId(self: *Builder, def: Ast.DefId) Ast.FnId {
@@ -6837,7 +6862,7 @@ const BodyContext = struct {
             return try self.builder.program.addExpr(.{
                 .ty = ret_ty,
                 .data = .{ .call_proc = .{
-                    .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(parse_lookup, parse_mono_ty)),
+                    .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(parse_lookup, parse_mono_ty)),
                     .args = try self.builder.program.addExprSpan(&parse_args),
                 } },
             });
@@ -6880,7 +6905,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = ret_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, final_spec_expr, state_expr }),
             } },
         });
@@ -7012,7 +7037,7 @@ const BodyContext = struct {
         const step_expr = try self.builder.program.addExpr(.{
             .ty = step_try_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{
                     encoding_expr,
                     try self.builder.localExpr(fields_local, fields_ty),
@@ -7665,7 +7690,7 @@ const BodyContext = struct {
         const skip_expr = try self.builder.program.addExpr(.{
             .ty = skip_try_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, try self.builder.localExpr(rest_local, state_ty) }),
             } },
         });
@@ -7772,7 +7797,7 @@ const BodyContext = struct {
         const parser_expr = try self.builder.program.addExpr(.{
             .ty = runtime_fn_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{encoding_expr}),
             } },
         });
@@ -8386,7 +8411,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = str_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, field_expr }),
             } },
         });
@@ -8466,7 +8491,7 @@ const BodyContext = struct {
             return .{
                 .ret_ty = fn_data.ret,
                 .data = .{ .call_proc = .{
-                    .callee = Ast.localProcCallee(callee),
+                    .callee = Ast.procCalleeForSlot(callee),
                     .args = try self.lowerExprSpanAtTypes(call.args, self.builder.program.types.span(fn_data.args)),
                 } },
             };
@@ -8925,13 +8950,13 @@ const BodyContext = struct {
         source_fn_ty: checked.CheckedTypeId,
         source_fn_key: names.TypeDigest,
         mono_fn_ty: Type.TypeId,
-    ) Allocator.Error!Ast.FnId {
+    ) Allocator.Error!Ast.FnSlot {
         const raw = @intFromEnum(target);
         if (raw >= self.view.resolved_refs.records.len) {
             Common.invariant("checked direct call target is outside resolved value table");
         }
         return switch (self.view.resolved_refs.records[raw].ref) {
-            .local_proc => |local| try self.fnTemplateForLocalProcWithMono(local, source_fn_ty, source_fn_key, mono_fn_ty),
+            .local_proc => |local| .{ .local = try self.fnTemplateForLocalProcWithMono(local, source_fn_ty, source_fn_key, mono_fn_ty) },
             .top_level_proc,
             .imported_proc,
             .hosted_proc,
@@ -8978,7 +9003,7 @@ const BodyContext = struct {
         source_fn_ty: checked.CheckedTypeId,
         source_fn_key: names.TypeDigest,
         mono_fn_ty: Type.TypeId,
-    ) Allocator.Error!Ast.FnId {
+    ) Allocator.Error!Ast.FnSlot {
         const fn_template = switch (proc.binding) {
             .top_level => |top_level| blk: {
                 const view = self.builder.moduleForId(checked.topLevelProcedureModuleId(top_level));
@@ -9011,7 +9036,7 @@ const BodyContext = struct {
                 break :blk self.builder.fnDefForProcedureBindingBody(app_view, binding.body, source_fn_ty, source_fn_key, mono_fn_ty);
             },
         };
-        return try self.builder.lowerFnTemplateDefFromContext(self, fn_template);
+        return try self.builder.lowerFnTemplateCallTargetFromContext(self, fn_template);
     }
 
     fn currentLocalBindingForResolvedValue(self: *BodyContext, ref_id: checked.ResolvedValueId) ?CurrentLocal {
@@ -10703,7 +10728,7 @@ const BodyContext = struct {
         self: *BodyContext,
         lookup: MethodLookup,
         callable_mono_ty: Type.TypeId,
-    ) Allocator.Error!Ast.FnId {
+    ) Allocator.Error!Ast.FnSlot {
         const source_fn_ty = lookup.target.callable_ty;
         const source_fn_key = lookup.view.types.rootKey(source_fn_ty);
         return switch (lookup.target.kind) {
@@ -10715,16 +10740,16 @@ const BodyContext = struct {
                     source_fn_key,
                     callable_mono_ty,
                 );
-                break :blk try self.builder.lowerFnTemplateDefFromContext(self, fn_template);
+                break :blk try self.builder.lowerFnTemplateCallTargetFromContext(self, fn_template);
             },
             .local_proc => |local| blk: {
                 self.requireLocalMethodTargetInCurrentView(lookup);
-                break :blk try self.fnTemplateForLocalProcWithMono(
+                break :blk .{ .local = try self.fnTemplateForLocalProcWithMono(
                     .{ .binder = local.binder, .expr = local.expr },
                     source_fn_ty,
                     source_fn_key,
                     callable_mono_ty,
-                );
+                ) };
             },
         };
     }
@@ -10740,7 +10765,7 @@ const BodyContext = struct {
         const fn_data = self.builder.functionShape(callable_mono_ty, "checked dispatch target had a non-function type");
         const args = try arg_ctx.lowerDispatchOperandsAtTypes(plan.argsSlice(self.view.static_dispatch_plans), self.builder.program.types.span(fn_data.args), pre_lowered);
         return .{ .call_proc = .{
-            .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+            .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
             .args = args,
         } };
     }
@@ -11186,7 +11211,7 @@ const BodyContext = struct {
         const encoder_expr = try self.builder.program.addExpr(.{
             .ty = runtime_fn_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ value_expr, encoding_expr }),
             } },
         });
@@ -11219,7 +11244,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = ret_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(arg_exprs),
             } },
         });
@@ -11705,7 +11730,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = err_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&args),
                 .is_cold = true,
             } },
@@ -11740,7 +11765,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = err_ty,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
                 .args = try self.builder.program.addExprSpan(&args),
             } },
         });
@@ -11993,7 +12018,7 @@ const BodyContext = struct {
         const callable_mono_ty = try self.methodTargetMonoTypeFromArgs(lookup, &arg_tys, ctx.result_ty);
         const args = D.callArgs(operand);
         return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .call_proc = .{
-            .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
+            .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
             .args = try self.builder.program.addExprSpan(&args),
         } } });
     }
@@ -13930,7 +13955,7 @@ const BodyContext = struct {
         return try self.builder.program.addExpr(.{
             .ty = fn_data.ret,
             .data = .{ .call_proc = .{
-                .callee = Ast.localProcCallee(try self.methodTargetCalleeWithMono(lookup, target_mono_ty)),
+                .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, target_mono_ty)),
                 .args = try self.builder.program.addExprSpan(args),
             } },
         });
@@ -14984,7 +15009,7 @@ const BodyContext = struct {
                 const callable_mono_ty = try self.methodTargetMonoTypeFromArgs(lookup, &arg_tys, bool_ty);
                 const callee = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty);
                 return try self.builder.program.addExpr(.{ .ty = bool_ty, .data = .{ .call_proc = .{
-                    .callee = Ast.localProcCallee(callee),
+                    .callee = Ast.procCalleeForSlot(callee),
                     .args = try self.builder.program.addExprSpan(&.{ scrutinee, expected }),
                 } } });
             }

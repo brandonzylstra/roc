@@ -304,6 +304,11 @@ pub fn localProcCallee(fn_id: FnId) ProcCallee {
     return .{ .func = .{ .local = fn_id } };
 }
 
+/// Construct a direct call target from an already-resolved function slot.
+pub fn procCalleeForSlot(slot: FnSlot) ProcCallee {
+    return .{ .func = slot };
+}
+
 /// Construct a direct call target for a function imported from a loaded shard.
 pub fn importedProcCallee(imported: ImportedFnId) ProcCallee {
     return .{ .func = .{ .imported = imported } };
