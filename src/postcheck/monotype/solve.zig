@@ -1347,6 +1347,18 @@ pub const InstGraph = struct {
         return false;
     }
 
+    /// Return the current root node for a TypeId that is one of this graph's
+    /// temporary Monotype views. Closed TypeIds and stale view ids return null.
+    pub fn monoViewNode(self: *InstGraph, ty: Type.TypeId) ?NodeId {
+        const raw_node = self.mono_nodes.get(ty) orelse return null;
+        const node = self.find(raw_node);
+        const views = self.node_monos.get(node) orelse return null;
+        for (views.items) |view| {
+            if (view == ty) return node;
+        }
+        return null;
+    }
+
     /// Write a node's current content into one of its Monotype views.
     fn fillMono(self: *InstGraph, raw_root: NodeId, ty: Type.TypeId) Allocator.Error!void {
         const root = self.find(raw_root);

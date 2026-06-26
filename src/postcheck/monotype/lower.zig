@@ -3730,6 +3730,15 @@ const DraftTypeCell = union(enum) {
         return .{ .graph_node = node };
     }
 
+    fn fromActiveType(graph: ?*InstGraph, ty: Type.TypeId) Allocator.Error!DraftTypeCell {
+        if (graph) |active_graph| {
+            if (active_graph.monoViewNode(ty)) |node| {
+                return .{ .graph_node = node };
+            }
+        }
+        return try DraftTypeCell.fromSealed(graph, ty);
+    }
+
     fn fromSealed(graph: ?*InstGraph, ty: Type.TypeId) Allocator.Error!DraftTypeCell {
         const cell: DraftTypeCell = .{ .sealed = ty };
         try cell.assertSealedClosed(graph);
@@ -18242,10 +18251,18 @@ test "draft sealed type cell validation distinguishes closed snapshots from grap
     const closed = try type_store.add(.{ .primitive = .u64 });
     const closed_cell = try DraftTypeCell.fromSealed(graph, closed);
     try std.testing.expect(!try closed_cell.sealedHasGraphViews(graph));
+    switch (try DraftTypeCell.fromActiveType(graph, closed)) {
+        .sealed => |sealed| try std.testing.expectEqual(closed, sealed),
+        .graph_node => return error.TestExpectedEqual,
+    }
 
     const graph_view = try graph.monoFor(try graph.newNode(.{ .primitive = .u64 }));
     const graph_view_cell: DraftTypeCell = .{ .sealed = graph_view };
     try std.testing.expect(try graph_view_cell.sealedHasGraphViews(graph));
+    switch (try DraftTypeCell.fromActiveType(graph, graph_view)) {
+        .graph_node => {},
+        .sealed => return error.TestExpectedEqual,
+    }
     try std.testing.expect(!try DraftTypeCell.fromGraphNode(try graph.newNode(.{ .primitive = .bool })).sealedHasGraphViews(graph));
 }
 
