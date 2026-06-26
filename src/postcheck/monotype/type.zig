@@ -1192,10 +1192,12 @@ pub const DurableView = struct {
 
 /// Mutable builder for immutable Monotype type nodes.
 ///
-/// The interner is child-first: callers provide already-interned child
-/// `TypeId`s, and every successful call returns a `TypeId` whose content is not
-/// mutated by the interner afterwards. Recursive groups still use the legacy
-/// `Store.set` path until graph sealing is converted.
+/// The interner is child-first for acyclic types: callers provide
+/// already-interned child `TypeId`s, and every successful call returns a
+/// `TypeId` whose content is not mutated by the interner afterwards. Recursive
+/// roots are sealed through `internRecursiveRoot`, which keeps the temporary
+/// back-reference slots private until the root has immutable content and a
+/// digest/equality bucket.
 pub const Interner = struct {
     allocator: std.mem.Allocator,
     name_store: *const names.NameStore,
@@ -1284,6 +1286,205 @@ pub const Interner = struct {
         const mark_ = self.store.mark();
         const ty = try self.store.add(.{ .erased = digest });
         return try self.internCandidate(mark_, ty);
+    }
+
+    pub const RecursiveLink = union(enum(u8)) {
+        interned: TypeId,
+        node: RecursiveNodeId,
+        root,
+    };
+
+    pub const RecursiveNodeId = enum(u32) { _ };
+
+    pub fn recursiveNodeId(index: usize) RecursiveNodeId {
+        return @enumFromInt(@as(u32, @intCast(index)));
+    }
+
+    pub const RecursiveField = struct {
+        name: names.RecordFieldNameId,
+        ty: RecursiveLink,
+    };
+
+    pub const RecursiveTag = struct {
+        name: names.TagNameId,
+        checked_name: names.TagNameId,
+        payloads: []const RecursiveLink,
+    };
+
+    pub const RecursiveNamedBacking = struct {
+        ty: RecursiveLink,
+        use: BackingUse,
+    };
+
+    pub const RecursiveNamed = struct {
+        named_type: NamedType,
+        def: TypeDef,
+        kind: NamedKind,
+        builtin_owner: ?static_dispatch.BuiltinOwner = null,
+        args: []const RecursiveLink,
+        backing: ?RecursiveNamedBacking = null,
+        declared_order: Span = Span.empty(),
+    };
+
+    pub const RecursiveContent = union(enum(u8)) {
+        primitive: Primitive,
+        named: RecursiveNamed,
+        record: []const RecursiveField,
+        tuple: []const RecursiveLink,
+        tag_union: []const RecursiveTag,
+        list: RecursiveLink,
+        box: RecursiveLink,
+        func: struct {
+            args: []const RecursiveLink,
+            ret: RecursiveLink,
+        },
+        erased: names.TypeDigest,
+        zst,
+    };
+
+    /// Intern one recursive root without exposing the reserved root id before
+    /// its content has been sealed. The input may refer to the root with
+    /// `RecursiveLink.root`; every other child must already be an immutable
+    /// interned `TypeId`.
+    pub fn internRecursiveRoot(self: *Interner, content: RecursiveContent) std.mem.Allocator.Error!TypeId {
+        return try self.internRecursiveGroupRoot(&.{content}, recursiveNodeId(0));
+    }
+
+    /// Intern one public root from a private recursive group. Group nodes may
+    /// reference each other through `RecursiveLink.node`; only the selected root
+    /// is returned to the caller, and it is returned only after every private
+    /// node has been filled exactly once.
+    pub fn internRecursiveGroupRoot(
+        self: *Interner,
+        contents: []const RecursiveContent,
+        root_node: RecursiveNodeId,
+    ) std.mem.Allocator.Error!TypeId {
+        if (@intFromEnum(root_node) >= contents.len) {
+            Common.invariant("Monotype recursive type group root is outside the group");
+        }
+
+        const mark_ = self.store.mark();
+        errdefer self.store.restore(mark_);
+
+        const ids = try self.allocator.alloc(TypeId, contents.len);
+        defer self.allocator.free(ids);
+
+        for (ids) |*id| {
+            id.* = try self.store.add(.zst);
+        }
+        const root = ids[@intFromEnum(root_node)];
+        for (contents, 0..) |content, index| {
+            const lowered = try self.lowerRecursiveContent(ids, root, content);
+            self.store.set(ids[index], lowered);
+        }
+        return try self.internCandidate(mark_, root);
+    }
+
+    fn lowerRecursiveLink(_: *Interner, ids: []const TypeId, root: TypeId, link: RecursiveLink) TypeId {
+        return switch (link) {
+            .interned => |ty| ty,
+            .node => |node| blk: {
+                const raw = @intFromEnum(node);
+                if (raw >= ids.len) Common.invariant("Monotype recursive type reference is outside the group");
+                break :blk ids[raw];
+            },
+            .root => root,
+        };
+    }
+
+    fn lowerRecursiveLinkSpan(
+        self: *Interner,
+        ids: []const TypeId,
+        root: TypeId,
+        links: []const RecursiveLink,
+    ) std.mem.Allocator.Error!Span {
+        if (links.len == 0) return .empty();
+        const lowered = try self.allocator.alloc(TypeId, links.len);
+        defer self.allocator.free(lowered);
+        for (links, 0..) |link, index| {
+            lowered[index] = self.lowerRecursiveLink(ids, root, link);
+        }
+        return try self.store.addSpan(lowered);
+    }
+
+    fn lowerRecursiveFields(
+        self: *Interner,
+        ids: []const TypeId,
+        root: TypeId,
+        fields: []const RecursiveField,
+    ) std.mem.Allocator.Error!Span {
+        if (fields.len == 0) return .empty();
+        const lowered = try self.allocator.alloc(Field, fields.len);
+        defer self.allocator.free(lowered);
+        for (fields, 0..) |field, index| {
+            lowered[index] = .{
+                .name = field.name,
+                .ty = self.lowerRecursiveLink(ids, root, field.ty),
+            };
+        }
+        return try self.store.addRecordFields(self.name_store, lowered);
+    }
+
+    fn lowerRecursiveTags(
+        self: *Interner,
+        ids: []const TypeId,
+        root: TypeId,
+        tags_: []const RecursiveTag,
+    ) std.mem.Allocator.Error!Span {
+        if (tags_.len == 0) return .empty();
+        const lowered = try self.allocator.alloc(Tag, tags_.len);
+        defer self.allocator.free(lowered);
+        for (tags_, 0..) |tag, index| {
+            lowered[index] = .{
+                .name = tag.name,
+                .checked_name = tag.checked_name,
+                .payloads = try self.lowerRecursiveLinkSpan(ids, root, tag.payloads),
+            };
+        }
+        return try self.store.addTagVariants(self.name_store, lowered);
+    }
+
+    fn lowerRecursiveNamed(
+        self: *Interner,
+        ids: []const TypeId,
+        root: TypeId,
+        named: RecursiveNamed,
+    ) std.mem.Allocator.Error!NamedContent {
+        return .{
+            .named_type = named.named_type,
+            .def = named.def,
+            .kind = named.kind,
+            .builtin_owner = named.builtin_owner,
+            .args = try self.lowerRecursiveLinkSpan(ids, root, named.args),
+            .backing = if (named.backing) |backing| .{
+                .ty = self.lowerRecursiveLink(ids, root, backing.ty),
+                .use = backing.use,
+            } else null,
+            .declared_order = named.declared_order,
+        };
+    }
+
+    fn lowerRecursiveContent(
+        self: *Interner,
+        ids: []const TypeId,
+        root: TypeId,
+        content: RecursiveContent,
+    ) std.mem.Allocator.Error!Content {
+        return switch (content) {
+            .primitive => |primitive| .{ .primitive = primitive },
+            .named => |named| .{ .named = try self.lowerRecursiveNamed(ids, root, named) },
+            .record => |fields| .{ .record = try self.lowerRecursiveFields(ids, root, fields) },
+            .tuple => |items| .{ .tuple = try self.lowerRecursiveLinkSpan(ids, root, items) },
+            .tag_union => |tags_| .{ .tag_union = try self.lowerRecursiveTags(ids, root, tags_) },
+            .list => |elem| .{ .list = self.lowerRecursiveLink(ids, root, elem) },
+            .box => |elem| .{ .box = self.lowerRecursiveLink(ids, root, elem) },
+            .func => |function| .{ .func = .{
+                .args = try self.lowerRecursiveLinkSpan(ids, root, function.args),
+                .ret = self.lowerRecursiveLink(ids, root, function.ret),
+            } },
+            .erased => |digest| .{ .erased = digest },
+            .zst => .zst,
+        };
     }
 
     fn internCandidate(self: *Interner, mark_: Store.Mark, candidate: TypeId) std.mem.Allocator.Error!TypeId {
@@ -1507,6 +1708,106 @@ test "monotype type interner checks exact equality after digest match" {
     const second_digest = interner.store.typeDigestCached(&name_store, second, null);
     try std.testing.expectEqualSlices(u8, first_digest.bytes[0..], second_digest.bytes[0..]);
     try std.testing.expect(first != second);
+}
+
+test "monotype type interner seals recursive root before exposing type id" {
+    var name_store = names.NameStore.init(std.testing.allocator);
+    defer name_store.deinit();
+
+    const field_name = try name_store.internRecordFieldLabel("next");
+
+    var interner = Interner.init(std.testing.allocator, &name_store);
+    defer interner.deinit();
+
+    const root = try interner.internRecursiveRoot(.{ .record = &.{
+        .{ .name = field_name, .ty = .root },
+    } });
+
+    const fields = interner.store.fieldSpan(interner.store.get(root).record);
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    try std.testing.expectEqual(root, fields[0].ty);
+    try std.testing.expectEqual(@as(?Store.VerifyError, null), interner.store.verify(&name_store));
+}
+
+test "monotype type interner reuses equivalent recursive roots" {
+    var name_store = names.NameStore.init(std.testing.allocator);
+    defer name_store.deinit();
+
+    const field_name = try name_store.internRecordFieldLabel("next");
+
+    var interner = Interner.init(std.testing.allocator, &name_store);
+    defer interner.deinit();
+
+    const first = try interner.internRecursiveRoot(.{ .record = &.{
+        .{ .name = field_name, .ty = .root },
+    } });
+    const second = try interner.internRecursiveRoot(.{ .record = &.{
+        .{ .name = field_name, .ty = .root },
+    } });
+
+    try std.testing.expectEqual(first, second);
+    try std.testing.expectEqual(@as(usize, 1), interner.view().types.len);
+}
+
+test "monotype type interner seals multi-node recursive group privately" {
+    var name_store = names.NameStore.init(std.testing.allocator);
+    defer name_store.deinit();
+
+    const field_name = try name_store.internRecordFieldLabel("step");
+
+    var interner = Interner.init(std.testing.allocator, &name_store);
+    defer interner.deinit();
+
+    const record_node = Interner.recursiveNodeId(0);
+    const func_node = Interner.recursiveNodeId(1);
+    const first = try interner.internRecursiveGroupRoot(&.{
+        .{ .record = &.{
+            .{ .name = field_name, .ty = .{ .node = func_node } },
+        } },
+        .{ .func = .{
+            .args = &.{},
+            .ret = .{ .node = record_node },
+        } },
+    }, record_node);
+    const second = try interner.internRecursiveGroupRoot(&.{
+        .{ .record = &.{
+            .{ .name = field_name, .ty = .{ .node = func_node } },
+        } },
+        .{ .func = .{
+            .args = &.{},
+            .ret = .{ .node = record_node },
+        } },
+    }, record_node);
+
+    try std.testing.expectEqual(first, second);
+    try std.testing.expectEqual(@as(usize, 2), interner.view().types.len);
+
+    const step_ty = interner.store.fieldSpan(interner.store.get(first).record)[0].ty;
+    const step_fn = interner.store.get(step_ty).func;
+    try std.testing.expectEqual(first, step_fn.ret);
+}
+
+test "monotype type interner keeps distinct recursive roots with different children" {
+    var name_store = names.NameStore.init(std.testing.allocator);
+    defer name_store.deinit();
+
+    const next_name = try name_store.internRecordFieldLabel("next");
+    const done_name = try name_store.internRecordFieldLabel("done");
+
+    var interner = Interner.init(std.testing.allocator, &name_store);
+    defer interner.deinit();
+
+    const bool_ty = try interner.internPrimitive(.bool);
+    const recursive_only = try interner.internRecursiveRoot(.{ .record = &.{
+        .{ .name = next_name, .ty = .root },
+    } });
+    const recursive_with_bool = try interner.internRecursiveRoot(.{ .record = &.{
+        .{ .name = next_name, .ty = .root },
+        .{ .name = done_name, .ty = .{ .interned = bool_ty } },
+    } });
+
+    try std.testing.expect(recursive_only != recursive_with_bool);
+    try std.testing.expect(!try interner.store.typeEql(&name_store, recursive_only, recursive_with_bool));
 }
 
 test "monotype named type digest includes generic arguments" {
