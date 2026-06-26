@@ -61,7 +61,7 @@ pub const SpecBuilder = struct {
     allocator: std.mem.Allocator,
     names: *const names.NameStore,
     types: *const Type.Store,
-    records: std.ArrayList(Ast.SpecRecord),
+    records: *std.ArrayList(Ast.SpecRecord),
     loaded_records: std.ArrayList(LoadedSpec),
     lookup: std.AutoHashMap(SpecLookupDigest, std.ArrayList(SpecEntryId)),
 
@@ -69,12 +69,13 @@ pub const SpecBuilder = struct {
         allocator: std.mem.Allocator,
         name_store: *const names.NameStore,
         type_store: *const Type.Store,
+        records: *std.ArrayList(Ast.SpecRecord),
     ) SpecBuilder {
         return .{
             .allocator = allocator,
             .names = name_store,
             .types = type_store,
-            .records = .empty,
+            .records = records,
             .loaded_records = .empty,
             .lookup = std.AutoHashMap(SpecLookupDigest, std.ArrayList(SpecEntryId)).init(allocator),
         };
@@ -85,7 +86,6 @@ pub const SpecBuilder = struct {
         while (lists.next()) |list| list.deinit(self.allocator);
         self.lookup.deinit();
         self.loaded_records.deinit(self.allocator);
-        self.records.deinit(self.allocator);
     }
 
     pub fn insertLoadedReady(
@@ -308,7 +308,10 @@ test "monotype spec builder reuses exact specialization identities" {
     const unit_ty = try type_store.add(.zst);
     const identity = testSpecIdentity(unit_ty, digestWithFirstByte(1), digestWithFirstByte(2));
 
-    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store);
+    var records = std.ArrayList(Ast.SpecRecord).empty;
+    defer records.deinit(std.testing.allocator);
+
+    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store, &records);
     defer builder.deinit();
 
     const requested_fn: Ast.FnId = @enumFromInt(1);
@@ -342,7 +345,10 @@ test "monotype spec builder keeps checked module boundary in callable identity" 
     const source_digest = digestWithFirstByte(1);
     const mono_digest = digestWithFirstByte(2);
 
-    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store);
+    var records = std.ArrayList(Ast.SpecRecord).empty;
+    defer records.deinit(std.testing.allocator);
+
+    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store, &records);
     defer builder.deinit();
 
     const first_module = testSpecIdentityWithModule(unit_ty, moduleDigestWithFirstByte(1), source_digest, mono_digest);
@@ -388,7 +394,10 @@ test "monotype spec builder uses exact type equality after digest match" {
     } });
 
     const forced_digest = digestWithFirstByte(9);
-    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store);
+    var records = std.ArrayList(Ast.SpecRecord).empty;
+    defer records.deinit(std.testing.allocator);
+
+    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store, &records);
     defer builder.deinit();
 
     const first = try builder.reserve(testSpecIdentity(first_ty, digestWithFirstByte(1), forced_digest), @enumFromInt(1));
@@ -435,7 +444,10 @@ test "monotype spec builder reuses loaded records through exact cross-store type
     const current_identity = testSpecIdentity(current_unit, source_digest, mono_digest);
     const loaded_identity = testSpecIdentity(loaded_unit, source_digest, mono_digest);
 
-    var builder = SpecBuilder.init(allocator, &name_store, &current_types);
+    var records = std.ArrayList(Ast.SpecRecord).empty;
+    defer records.deinit(allocator);
+
+    var builder = SpecBuilder.init(allocator, &name_store, &current_types, &records);
     defer builder.deinit();
 
     const imported: Ast.ImportedFnId = @enumFromInt(1);
@@ -486,7 +498,10 @@ test "monotype spec builder rejects loaded records when exact cross-store type e
     const current_identity = testSpecIdentity(current_unit, source_digest, forced_mono_digest);
     const loaded_identity = testSpecIdentity(loaded_str, source_digest, forced_mono_digest);
 
-    var builder = SpecBuilder.init(allocator, &name_store, &current_types);
+    var records = std.ArrayList(Ast.SpecRecord).empty;
+    defer records.deinit(allocator);
+
+    var builder = SpecBuilder.init(allocator, &name_store, &current_types, &records);
     defer builder.deinit();
 
     _ = try builder.insertLoadedReady(.{
