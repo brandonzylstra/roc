@@ -218,6 +218,11 @@ test "Monotype lifting mutates only callable expression nodes in place" {
     try expectContains(lifted_source, "source: Mono.ProgramView");
     try expectContains(lifted_source, "const source_view = movedMonoView(&owned, &program);");
     try expectContains(lifted_source, "Lifter.init(allocator, source_view, &program)");
+    try std.testing.expect(std.mem.find(u8, lifted_source, "self.source.") != null);
+    try std.testing.expect(std.mem.find(u8, lifted_source, "self.source.exprs.items") == null);
+    try std.testing.expect(std.mem.find(u8, lifted_source, "self.source.pats.items") == null);
+    try std.testing.expect(std.mem.find(u8, lifted_source, "self.source.stmts.items") == null);
+    try std.testing.expect(std.mem.find(u8, lifted_source, "self.source.locals.items") == null);
 
     const rewrite_expr = sourceSliceBetween(lifted_source, "fn rewriteExpr", "fn liftLambda");
     try expectContains(rewrite_expr, "expr.data = .{ .fn_ref");
