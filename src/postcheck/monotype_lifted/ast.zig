@@ -303,15 +303,36 @@ pub const ProgramView = struct {
     }
 };
 
-/// Return the lifted function id for a direct call after Monotype lifting.
-pub fn callProcCallee(call: Mono.CallProc) FnId {
+/// Direct call target after Monotype lifting.
+pub const DirectCallee = union(enum(u8)) {
+    local: FnId,
+    imported: ImportedFnId,
+};
+
+/// Return the lifted direct-call target after Monotype lifting.
+pub fn directCallee(call: Mono.CallProc) DirectCallee {
     return switch (call.callee) {
-        .lifted => |fn_id| fn_id,
+        .lifted => |fn_id| .{ .local = fn_id },
         .func => |slot| switch (slot) {
             .local => Common.invariant("Monotype Lifted direct call still referenced a Monotype function id"),
-            .imported => Common.invariant("Monotype Lifted direct call still referenced an imported shard function"),
+            .imported => |imported| .{ .imported = imported },
         },
     };
+}
+
+/// Return the local lifted function id for a direct call, or null when it
+/// targets an imported shard.
+pub fn localDirectCallee(call: Mono.CallProc) ?FnId {
+    return switch (directCallee(call)) {
+        .local => |fn_id| fn_id,
+        .imported => null,
+    };
+}
+
+/// Return the local lifted function id for stages that cannot yet consume
+/// imported shard calls.
+pub fn localDirectCalleeOrInvariant(call: Mono.CallProc, comptime stage: []const u8) FnId {
+    return localDirectCallee(call) orelse Common.invariant(stage ++ " requires imported Monotype calls to be resolved before this stage");
 }
 
 /// Complete Monotype Lifted program plus side arrays.

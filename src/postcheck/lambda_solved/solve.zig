@@ -447,7 +447,7 @@ const Solver = struct {
                 }
             },
             .call_proc => |call| {
-                const callee = Lifted.callProcCallee(call);
+                const callee = Lifted.localDirectCalleeOrInvariant(call, "Lambda Solved");
                 const func = try self.functionShape(self.program.fn_tys.items[@intFromEnum(callee)]);
                 const args = self.lifted.exprSpan(call.args);
                 if (func.args.count() != args.len) Common.invariant("procedure call arity differs from its checked type");
@@ -686,7 +686,7 @@ const Solver = struct {
         const ty = switch (expr.data) {
             .local => |local| self.localTy(local),
             .fn_ref => |fn_id| self.program.fn_tys.items[@intFromEnum(fn_id)],
-            .call_proc => |call| (try self.functionShape(self.program.fn_tys.items[@intFromEnum(Lifted.callProcCallee(call))])).ret,
+            .call_proc => |call| (try self.functionShape(self.program.fn_tys.items[@intFromEnum(Lifted.localDirectCalleeOrInvariant(call, "Lambda Solved"))])).ret,
             else => try self.lowerTypeFresh(expr.ty),
         };
         self.expr_tys[index] = ty;
