@@ -36,6 +36,14 @@ pub const SpecializationCacheControl = struct {
     pub const disabled: SpecializationCacheControl = .{ .read = false, .write = false };
 };
 
+/// Already-validated specialization shard that can satisfy in-body template
+/// requests without copying function bodies into the current program.
+pub const LoadedSpecializationShard = struct {
+    shard_id: Ast.ShardId,
+    types: Type.DurableView,
+    specs: []const Ast.SpecRecord,
+};
+
 /// Options used while lowering checked modules into Monotype IR.
 pub const Options = struct {
     /// Preserve source-level procedure names for consumers that present runtime
@@ -43,6 +51,8 @@ pub const Options = struct {
     proc_debug_names: bool = false,
     /// Control Monotype specialization cache reads and writes.
     specialization_cache: SpecializationCacheControl = .{},
+    /// Valid loaded specialization shards to index when cache reads are enabled.
+    loaded_specialization_shards: []const LoadedSpecializationShard = &.{},
     /// Optional deterministic counters for specialization-shape tests.
     specialization_counters: ?*SpecializationCounters = null,
 };
@@ -82,6 +92,7 @@ pub fn run(
     defer builder.deinit();
     try builder.initHostedCatalog();
     try builder.initMethodLookupIndex();
+    try builder.loadCandidateSpecializationShards();
 
     for (roots.requests) |request| {
         try builder.lowerRoot(request);
@@ -435,6 +446,24 @@ const GeneratedHelperDefEntry = union(enum) {
     }
 };
 
+fn templateSpecIdentity(
+    template_ref: names.ProcTemplate,
+    source_fn_key: names.TypeDigest,
+    mono_fn_ty: Type.TypeId,
+    mono_fn_ty_digest: names.TypeDigest,
+) Ast.SpecIdentity {
+    return .{
+        .callable = .{ .proc_template = .{
+            .module = names.procTemplateModuleDigest(template_ref),
+            .proc_base = @intFromEnum(template_ref.proc_base),
+            .template = @intFromEnum(template_ref.template),
+        } },
+        .source_fn_ty_digest = source_fn_key,
+        .mono_fn_ty_digest = mono_fn_ty_digest,
+        .mono_fn_ty = mono_fn_ty,
+    };
+}
+
 const Builder = struct {
     allocator: Allocator,
     modules: Common.CheckedModules,
@@ -442,6 +471,7 @@ const Builder = struct {
     program: *Ast.Program,
     proc_debug_names: bool,
     specialization_cache: SpecializationCacheControl,
+    loaded_specialization_shards: []const LoadedSpecializationShard,
     counters: ?*SpecializationCounters,
     symbols: Common.SymbolGen = .{},
     type_cache: std.AutoHashMap(CheckedTypeAddress, Type.TypeId),
@@ -481,6 +511,7 @@ const Builder = struct {
             .program = program,
             .proc_debug_names = options.proc_debug_names,
             .specialization_cache = options.specialization_cache,
+            .loaded_specialization_shards = options.loaded_specialization_shards,
             .counters = options.specialization_counters,
             .type_cache = std.AutoHashMap(CheckedTypeAddress, Type.TypeId).init(allocator),
             .spec_store = specialize.SpecBuilder.init(allocator, &program.names, &program.types, &program.specs),
@@ -499,6 +530,26 @@ const Builder = struct {
             .hash_defs = std.AutoHashMap(GeneratedHelperDefAddress, GeneratedHelperDefEntry).init(allocator),
             .source_file_ids = std.AutoHashMap(u32, u32).init(allocator),
         };
+    }
+
+    fn loadCandidateSpecializationShards(self: *Builder) Allocator.Error!void {
+        if (!self.specialization_cache.read) return;
+
+        for (self.loaded_specialization_shards) |shard| {
+            if (shard.shard_id == .local) {
+                Common.invariant("loaded Monotype specialization shard used the local shard id");
+            }
+            for (shard.specs) |record| {
+                if (record.status != .ready) {
+                    Common.invariant("loaded Monotype specialization shard contained an unfinished record");
+                }
+                const imported = try self.program.addImportedFn(.{
+                    .shard = shard.shard_id,
+                    .fn_id = record.fn_id,
+                });
+                _ = try self.spec_store.insertLoadedReady(record, shard.types, imported);
+            }
+        }
     }
 
     /// Source file table index for a module's view, registering the module on
@@ -1379,6 +1430,17 @@ const Builder = struct {
                 .needs_lowering = existing.status == .reserved,
             };
         } else {
+            const identity = templateSpecIdentity(template_ref, source_fn_key, fn_ty, fn_ty_digest);
+            if (try self.spec_store.find(identity)) |loaded| {
+                self.count("template_hits");
+                switch (loaded.target) {
+                    .local => Common.invariant("Monotype specialization index found a local template missing from lowering state"),
+                    .imported => return .{
+                        .target = loaded.target,
+                        .needs_lowering = false,
+                    },
+                }
+            }
             self.count("template_misses");
         }
 
@@ -1550,16 +1612,7 @@ const Builder = struct {
         fn_id: Ast.FnId,
         status: Ast.SpecStatus,
     ) Allocator.Error!Ast.SpecId {
-        return try self.addSpecRecord(.{
-            .callable = .{ .proc_template = .{
-                .module = names.procTemplateModuleDigest(template_ref),
-                .proc_base = @intFromEnum(template_ref.proc_base),
-                .template = @intFromEnum(template_ref.template),
-            } },
-            .source_fn_ty_digest = source_fn_key,
-            .mono_fn_ty_digest = mono_fn_ty_digest,
-            .mono_fn_ty = mono_fn_ty,
-        }, fn_id, status);
+        return try self.addSpecRecord(templateSpecIdentity(template_ref, source_fn_key, mono_fn_ty, mono_fn_ty_digest), fn_id, status);
     }
 
     fn addNestedSpecRecord(
