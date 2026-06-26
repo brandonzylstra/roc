@@ -3778,33 +3778,34 @@ const BodyDraft = struct {
         var sealer = GraphTypeFinals.init(graph);
         defer sealer.deinit();
         const sealed_root = if (root_node) |node| try sealer.sealNode(node) else null;
+        if (sealed_root) |ty| try graph.assertTypeHasNoGraphViews(ty);
 
         for (builder.program.fns.items[self.fns_start..end_.fns]) |*fn_| {
-            try sealFnTemplate(&sealer, &fn_.source);
+            try sealFnTemplate(graph, &sealer, &fn_.source);
         }
         for (builder.program.defs.items[self.defs_start..end_.defs]) |*def| {
-            try sealDef(&sealer, def);
+            try sealDef(graph, &sealer, def);
         }
         for (builder.program.nested_defs.items[self.nested_defs_start..end_.nested_defs]) |*def| {
-            try sealNestedDef(&sealer, def);
+            try sealNestedDef(graph, &sealer, def);
         }
         for (builder.program.exprs.items[self.exprs_start..end_.exprs]) |*expr| {
-            expr.ty = try sealer.sealType(expr.ty);
+            expr.ty = try sealType(graph, &sealer, expr.ty);
         }
         for (builder.program.pats.items[self.pats_start..end_.pats]) |*pat| {
-            pat.ty = try sealer.sealType(pat.ty);
+            pat.ty = try sealType(graph, &sealer, pat.ty);
         }
         for (builder.program.locals.items[self.locals_start..end_.locals]) |*local| {
-            local.ty = try sealer.sealType(local.ty);
+            local.ty = try sealType(graph, &sealer, local.ty);
         }
         for (builder.program.typed_locals.items[self.typed_locals_start..end_.typed_locals]) |*typed_local| {
-            typed_local.ty = try sealer.sealType(typed_local.ty);
+            typed_local.ty = try sealType(graph, &sealer, typed_local.ty);
         }
         var spec_index = self.specs_start;
         while (spec_index < end_.specs) : (spec_index += 1) {
             const spec_id: Ast.SpecId = @enumFromInt(@as(u32, @intCast(spec_index)));
             var identity = builder.program.specs.items[spec_index].identity;
-            const sealed_fn_ty = try sealer.sealType(identity.mono_fn_ty);
+            const sealed_fn_ty = try sealType(graph, &sealer, identity.mono_fn_ty);
             if (sealed_fn_ty == identity.mono_fn_ty) continue;
             identity.mono_fn_ty = sealed_fn_ty;
             identity.mono_fn_ty_digest = builder.specializationTypeDigest(sealed_fn_ty);
@@ -3827,20 +3828,26 @@ const BodyDraft = struct {
         }
     }
 
-    fn sealFnTemplate(sealer: *GraphTypeFinals, template: *Ast.FnTemplate) Allocator.Error!void {
-        template.mono_fn_ty = try sealer.sealType(template.mono_fn_ty);
+    fn sealType(graph: *InstGraph, sealer: *GraphTypeFinals, ty: Type.TypeId) Allocator.Error!Type.TypeId {
+        const sealed = try sealer.sealType(ty);
+        try graph.assertTypeHasNoGraphViews(sealed);
+        return sealed;
     }
 
-    fn sealDef(sealer: *GraphTypeFinals, def: *Ast.Def) Allocator.Error!void {
+    fn sealFnTemplate(graph: *InstGraph, sealer: *GraphTypeFinals, template: *Ast.FnTemplate) Allocator.Error!void {
+        template.mono_fn_ty = try sealType(graph, sealer, template.mono_fn_ty);
+    }
+
+    fn sealDef(graph: *InstGraph, sealer: *GraphTypeFinals, def: *Ast.Def) Allocator.Error!void {
         if (def.fn_def) |*fn_template| {
-            try sealFnTemplate(sealer, fn_template);
+            try sealFnTemplate(graph, sealer, fn_template);
         }
-        def.ret = try sealer.sealType(def.ret);
+        def.ret = try sealType(graph, sealer, def.ret);
     }
 
-    fn sealNestedDef(sealer: *GraphTypeFinals, def: *Ast.NestedDef) Allocator.Error!void {
-        try sealFnTemplate(sealer, &def.fn_def);
-        def.ret = try sealer.sealType(def.ret);
+    fn sealNestedDef(graph: *InstGraph, sealer: *GraphTypeFinals, def: *Ast.NestedDef) Allocator.Error!void {
+        try sealFnTemplate(graph, sealer, &def.fn_def);
+        def.ret = try sealType(graph, sealer, def.ret);
     }
 };
 

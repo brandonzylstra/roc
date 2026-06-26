@@ -1251,6 +1251,80 @@ pub const InstGraph = struct {
         }
     }
 
+    pub fn assertTypeHasNoGraphViews(self: *InstGraph, ty: Type.TypeId) Allocator.Error!void {
+        var seen = std.AutoHashMap(Type.TypeId, void).init(self.allocator);
+        defer seen.deinit();
+        if (try self.typeContainsGraphView(ty, &seen)) {
+            Common.invariant("Monotype body draft retained an instantiation graph type view after sealing");
+        }
+    }
+
+    fn typeContainsGraphView(
+        self: *InstGraph,
+        ty: Type.TypeId,
+        seen: *std.AutoHashMap(Type.TypeId, void),
+    ) Allocator.Error!bool {
+        if (self.isGraphViewType(ty)) return true;
+        const seen_entry = try seen.getOrPut(ty);
+        if (seen_entry.found_existing) return false;
+        return switch (self.types.get(ty)) {
+            .primitive, .erased, .zst => false,
+            .list => |elem| try self.typeContainsGraphView(elem, seen),
+            .box => |elem| try self.typeContainsGraphView(elem, seen),
+            .tuple => |items| try self.typeSpanContainsGraphView(items, seen),
+            .func => |func| blk: {
+                if (try self.typeSpanContainsGraphView(func.args, seen)) break :blk true;
+                break :blk try self.typeContainsGraphView(func.ret, seen);
+            },
+            .record => |fields| blk: {
+                for (self.types.fieldSpan(fields)) |field| {
+                    if (try self.typeContainsGraphView(field.ty, seen)) break :blk true;
+                }
+                break :blk false;
+            },
+            .tag_union => |tags| blk: {
+                for (self.types.tagSpan(tags)) |tag| {
+                    if (try self.typeSpanContainsGraphView(tag.payloads, seen)) break :blk true;
+                }
+                break :blk false;
+            },
+            .named => |named| blk: {
+                if (try self.typeSpanContainsGraphView(named.args, seen)) break :blk true;
+                if (named.backing) |backing| {
+                    if (try self.typeContainsGraphView(backing.ty, seen)) break :blk true;
+                }
+                for (self.types.declaredFieldSpan(named.declared_order)) |field| {
+                    switch (field) {
+                        .named => {},
+                        .padding => |padding| if (try self.typeContainsGraphView(padding, seen)) break :blk true,
+                    }
+                }
+                break :blk false;
+            },
+        };
+    }
+
+    fn typeSpanContainsGraphView(
+        self: *InstGraph,
+        span: Type.Span,
+        seen: *std.AutoHashMap(Type.TypeId, void),
+    ) Allocator.Error!bool {
+        for (self.types.span(span)) |child| {
+            if (try self.typeContainsGraphView(child, seen)) return true;
+        }
+        return false;
+    }
+
+    fn isGraphViewType(self: *InstGraph, ty: Type.TypeId) bool {
+        const raw_node = self.mono_nodes.get(ty) orelse return false;
+        const node = self.find(raw_node);
+        const views = self.node_monos.get(node) orelse return false;
+        for (views.items) |view| {
+            if (view == ty) return true;
+        }
+        return false;
+    }
+
     /// Write a node's current content into one of its Monotype views.
     fn fillMono(self: *InstGraph, raw_root: NodeId, ty: Type.TypeId) Allocator.Error!void {
         const root = self.find(raw_root);
