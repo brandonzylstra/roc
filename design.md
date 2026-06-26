@@ -2442,6 +2442,57 @@ shape: repeated calls at the same closed function type reuse one specialization
 after the first request, and growing structural accumulator types add only the
 new record/function nodes instead of redigesting every previous layer.
 
+Open instantiation graphs do not write directly into final Monotype body
+sections. While a specialization is being solved, lowering writes to a
+`BodyDraft` owned by that specialization graph. A draft mirrors the final
+Monotype sections enough for lowering to refer to expressions, patterns, locals,
+definitions, nested definitions, side-pool spans, and function signatures, but
+all type-bearing fields use a draft type reference:
+
+```zig
+const DraftTypeRef = union(enum) {
+    graph_node: InstNodeId,
+    sealed: TypeId,
+};
+```
+
+`graph_node` is used for any type cell owned by the active instantiation graph:
+expression types, pattern types, binder/local types, typed-local entries,
+function arguments, function returns, lambda and nested function signatures,
+specialization request function types, layout requests, and runtime schema
+requests. `sealed` is used only for closed Monotype types that were already
+materialized before this graph was opened, such as imported cache entries or
+builder-global primitive and hosted ABI types. If a sealed type must participate
+in the current specialization's constraints, the graph imports it and the draft
+stores the imported node instead of the original `TypeId`.
+
+A `BodyDraft` may contain ordinary lowering ids, spans, and side pools while it
+is active, but those ids are draft-local. They are not cache ids and no later
+post-check stage consumes them. The draft is sealed only after:
+
+1. all checked type evidence for the specialization has been applied;
+2. deferred procedure-template requests created by this graph have been drained
+   or reserved with stable closed request types;
+3. nested function bodies that share this graph have finished lowering;
+4. every unresolved graph node can be closed from checked data, or can be
+   proven to be a truly unconstrained empty tag union.
+
+Sealing performs the only transition from graph nodes to final Monotype
+`TypeId`s. It walks every draft type reference, materializes each graph node
+through the Monotype type interner, preserves recursive groups privately inside
+the interner, computes and stores type digests once, and then copies the fully
+sealed records into `MonoProgramBuilder`. This copy also turns draft-local ids
+and spans into final shard-local ids and spans. If sealing finds a graph node in
+any completed record after this step, that is a compiler bug.
+
+This split is required for future specialization caching. Cache files contain
+only sealed `MonoProgramView` sections: fixed-width records, ids, spans, and
+offsets into side pools. They never contain union-find nodes, mutable type
+views, allocator-owned arrays, hash maps, or draft-local ids. Because every
+interior relation in a sealed program is an id or span into the same shard, a
+mapped cache file can be read back as a read-only `MonoProgramView` with only
+top-level slice creation, shard assignment, and import-table resolution.
+
 The program store is split into a builder and a read-only view:
 
 ```zig
