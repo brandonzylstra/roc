@@ -1915,7 +1915,7 @@ const Builder = struct {
                 try ctx.constrainTypeToMono(ctx.checkedTypeInCurrentView(source.view, formal), mono_arg);
             }
         }
-        const backing = try ctx.lowerType(ctx.nominalBackingRoot(nominal));
+        const backing = try graph.sealNode(try ctx.instNode(ctx.nominalBackingRoot(nominal)));
         return try self.structuralBackingForNominal(view, nominal, backing);
     }
 

@@ -1218,6 +1218,15 @@ pub const InstGraph = struct {
         return try sealer.seal(ty);
     }
 
+    /// Materialize a graph node directly into a final TypeId without first
+    /// exposing or copying a mutable Monotype view.
+    pub fn sealNode(self: *InstGraph, node: NodeId) Allocator.Error!Type.TypeId {
+        try self.drainDirty();
+        var sealer = NodeSealer.init(self);
+        defer sealer.deinit();
+        return try sealer.seal(node);
+    }
+
     /// Write a node's current content into one of its Monotype views.
     fn fillMono(self: *InstGraph, raw_root: NodeId, ty: Type.TypeId) Allocator.Error!void {
         const root = self.find(raw_root);
@@ -1396,6 +1405,119 @@ pub const InstGraph = struct {
                 try self.fillMono(root, ty);
             }
         }
+    }
+};
+
+const NodeSealer = struct {
+    graph: *InstGraph,
+    sealed: std.AutoHashMap(NodeId, Type.TypeId),
+
+    fn init(graph: *InstGraph) NodeSealer {
+        return .{
+            .graph = graph,
+            .sealed = std.AutoHashMap(NodeId, Type.TypeId).init(graph.allocator),
+        };
+    }
+
+    fn deinit(self: *NodeSealer) void {
+        self.sealed.deinit();
+    }
+
+    fn seal(self: *NodeSealer, raw_node: NodeId) Allocator.Error!Type.TypeId {
+        const node = self.graph.find(raw_node);
+        if (self.sealed.get(node)) |existing| return existing;
+
+        const out = try self.graph.types.add(.zst);
+        try self.sealed.put(node, out);
+        const content = try self.sealContent(node);
+        self.graph.types.set(out, content);
+        return out;
+    }
+
+    fn sealContent(self: *NodeSealer, node: NodeId) Allocator.Error!Type.Content {
+        return switch (self.graph.nodes.items[@intFromEnum(node)]) {
+            .redirect => unreachable,
+            .unresolved => |variable| blk: {
+                if (variable.numeric_default_phase) |phase| switch (phase) {
+                    .mono_specialization => break :blk .{ .primitive = .dec },
+                    .mono_specialization_str => break :blk .{ .primitive = .str },
+                    .checking_finalized => Common.invariant("checking-finalized numeric variable reached Monotype unresolved"),
+                };
+                if (variable.row_default) |row_default| switch (row_default) {
+                    .empty_record => break :blk .{ .record = Type.Span.empty() },
+                    .empty_tag_union => break :blk .{ .tag_union = Type.Span.empty() },
+                };
+                break :blk .{ .tag_union = Type.Span.empty() };
+            },
+            .primitive => |primitive| .{ .primitive = primitive },
+            .list => |elem| .{ .list = try self.seal(elem) },
+            .box => |elem| .{ .box = try self.seal(elem) },
+            .tuple => |items| .{ .tuple = try self.sealNodeSpan(items) },
+            .func => |func| .{ .func = .{
+                .args = try self.sealNodeSpan(func.args),
+                .ret = try self.seal(func.ret),
+            } },
+            .empty_tag_union => .{ .tag_union = Type.Span.empty() },
+            .empty_record => .{ .record = Type.Span.empty() },
+            .tag_union => .{ .tag_union = try self.sealTagRow(node) },
+            .record => .{ .record = try self.sealRecordRow(node) },
+            .named => |named| .{ .named = .{
+                .named_type = named.named_type,
+                .def = named.def,
+                .kind = named.kind,
+                .builtin_owner = named.builtin_owner,
+                .args = try self.sealNodeSpan(named.args),
+                .backing = if (named.backing) |raw_backing| backing: {
+                    const structural = try self.graph.structuralBackingNode(raw_backing.node, named);
+                    break :backing .{
+                        .ty = try self.seal(structural.node),
+                        .use = raw_backing.use,
+                    };
+                } else null,
+                .declared_order = named.declared_order,
+            } },
+            .erased => |digest| .{ .erased = digest },
+            .zst => .zst,
+        };
+    }
+
+    fn sealNodeSpan(self: *NodeSealer, nodes: []const NodeId) Allocator.Error!Type.Span {
+        if (nodes.len == 0) return .empty();
+        const sealed_nodes = try self.graph.allocator.alloc(Type.TypeId, nodes.len);
+        defer self.graph.allocator.free(sealed_nodes);
+        for (nodes, 0..) |node, index| {
+            sealed_nodes[index] = try self.seal(node);
+        }
+        return try self.graph.types.addSpan(sealed_nodes);
+    }
+
+    fn sealRecordRow(self: *NodeSealer, node: NodeId) Allocator.Error!Type.Span {
+        const flat = try self.graph.flattenRecordRow(node);
+        if (flat.fields.len == 0) return .empty();
+        const fields = try self.graph.allocator.alloc(Type.Field, flat.fields.len);
+        defer self.graph.allocator.free(fields);
+        for (flat.fields, 0..) |field, index| {
+            fields[index] = .{
+                .name = field.name,
+                .ty = try self.seal(field.ty),
+            };
+        }
+        return try self.graph.types.addRecordFields(self.graph.name_store, fields);
+    }
+
+    fn sealTagRow(self: *NodeSealer, node: NodeId) Allocator.Error!Type.Span {
+        const flat = try self.graph.flattenTagRow(node);
+        if (flat.tags.len == 0) return .empty();
+        const tags = try self.graph.allocator.alloc(Type.Tag, flat.tags.len);
+        defer self.graph.allocator.free(tags);
+        for (flat.tags, 0..) |tag, index| {
+            tags[index] = .{
+                .name = tag.name,
+                .checked_name = tag.checked_name,
+                .payloads = try self.sealNodeSpan(tag.payloads),
+            };
+        }
+        return try self.graph.types.addTagVariants(self.graph.name_store, tags);
     }
 };
 
@@ -1805,6 +1927,50 @@ test "sealed monotype copy is not refilled by later graph evidence" {
     try graph.drainDirty();
 
     try std.testing.expectEqual(@as(usize, 2), type_store.fieldSpan(type_store.get(draft).record).len);
+    try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
+}
+
+test "sealed graph node does not allocate a mutable monotype view" {
+    const gpa = std.testing.allocator;
+
+    var type_store = Type.Store.init(gpa);
+    defer type_store.deinit();
+
+    var name_store = names.NameStore.init(gpa);
+    defer name_store.deinit();
+
+    var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
+    defer unsolved_monos.deinit();
+
+    const graph = try InstGraph.create(gpa, &type_store, &name_store, &unsolved_monos);
+    defer graph.destroy();
+
+    const a_name = try name_store.internRecordFieldLabel("a");
+    const b_name = try name_store.internRecordFieldLabel("b");
+    const a_ty = try graph.newNode(.{ .primitive = .u64 });
+    const b_ty = try graph.newNode(.{ .primitive = .u64 });
+
+    const fields = try graph.arena().alloc(InstField, 1);
+    fields[0] = .{ .name = a_name, .ty = a_ty };
+    const ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+    const row = try graph.newNode(.{ .record = .{
+        .fields = fields,
+        .ext = ext,
+    } });
+
+    const sealed = try graph.sealNode(row);
+    try std.testing.expect(!graph.ownsMonoView(sealed));
+    try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
+
+    const extra_fields = try graph.arena().alloc(InstField, 1);
+    extra_fields[0] = .{ .name = b_name, .ty = b_ty };
+    const extra = try graph.newNode(.{ .record = .{
+        .fields = extra_fields,
+        .ext = try graph.newNode(.empty_record),
+    } });
+    try graph.unify(ext, extra);
+    try graph.drainDirty();
+
     try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
 }
 
