@@ -245,6 +245,35 @@ test "monotype spec builder reuses exact specialization identities" {
     try std.testing.expectEqual(@as(Ast.FnId, @enumFromInt(3)), builder.records.items[@intFromEnum(first.spec)].fn_id);
 }
 
+test "monotype spec builder keeps checked module boundary in callable identity" {
+    var name_store = names.NameStore.init(std.testing.allocator);
+    defer name_store.deinit();
+
+    var type_store = Type.Store.init(std.testing.allocator);
+    defer type_store.deinit();
+
+    const unit_ty = try type_store.add(.zst);
+    const source_digest = digestWithFirstByte(1);
+    const mono_digest = digestWithFirstByte(2);
+
+    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store);
+    defer builder.deinit();
+
+    const first_module = testSpecIdentityWithModule(unit_ty, moduleDigestWithFirstByte(1), source_digest, mono_digest);
+    const second_module = testSpecIdentityWithModule(unit_ty, moduleDigestWithFirstByte(2), source_digest, mono_digest);
+
+    const first = try builder.reserve(first_module, @enumFromInt(1));
+    const second = try builder.reserve(second_module, @enumFromInt(2));
+    const repeated_first = try builder.reserve(first_module, @enumFromInt(3));
+
+    try std.testing.expect(first.created);
+    try std.testing.expect(second.created);
+    try std.testing.expect(!repeated_first.created);
+    try std.testing.expect(first.spec != second.spec);
+    try std.testing.expectEqual(first.spec, repeated_first.spec);
+    try std.testing.expectEqual(@as(usize, 2), builder.records.items.len);
+}
+
 test "monotype spec builder uses exact type equality after digest match" {
     var name_store = names.NameStore.init(std.testing.allocator);
     defer name_store.deinit();
@@ -314,14 +343,29 @@ fn digestWithFirstByte(comptime byte: u8) @import("check").CheckedNames.TypeDige
     return digest;
 }
 
+fn moduleDigestWithFirstByte(comptime byte: u8) names.CheckedModuleDigest {
+    var digest: names.CheckedModuleDigest = .{};
+    digest.bytes[0] = byte;
+    return digest;
+}
+
 fn testSpecIdentity(
     mono_fn_ty: Type.TypeId,
     source_digest: names.TypeDigest,
     mono_digest: names.TypeDigest,
 ) Ast.SpecIdentity {
+    return testSpecIdentityWithModule(mono_fn_ty, .{}, source_digest, mono_digest);
+}
+
+fn testSpecIdentityWithModule(
+    mono_fn_ty: Type.TypeId,
+    module_digest: names.CheckedModuleDigest,
+    source_digest: names.TypeDigest,
+    mono_digest: names.TypeDigest,
+) Ast.SpecIdentity {
     return .{
         .callable = .{ .proc_template = .{
-            .module = .{},
+            .module = module_digest,
             .proc_base = 0,
             .template = 1,
         } },
