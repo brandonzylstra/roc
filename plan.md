@@ -243,7 +243,7 @@ immutable `TypeId`s after the graph is closed.
       graph views into final arrays.
 - [ ] Delete or make private any `InstGraph.monoFor` API that can expose a
       mutable graph view to final Monotype arrays.
-- [ ] Keep `InstGraph.importMono` for importing closed snapshots into a graph,
+- [x] Keep `InstGraph.importMono` for importing closed snapshots into a graph,
       but make it return graph nodes only.
 - [x] Add an architecture check that rejects new active-body calls to
       `ProgramBuilder.addExpr`, `addPat`, `addLocal`, `addTypedLocalSpan`, and
