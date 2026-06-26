@@ -1729,12 +1729,24 @@ const Builder = struct {
         const raw = @intFromEnum(checked_ty);
         if (raw >= view.types.payloadCount()) Common.invariant("checked type id outside checked type store");
 
-        const reserved = try self.program.types.add(.zst);
-        try self.type_cache.put(address, reserved);
-        try self.unsolved_monos.put(reserved, {});
-        const lowered = try self.lowerTypePayload(view, checked_ty, view.types.payload(checked_ty));
-        self.program.types.fillReserved(reserved, lowered);
-        return reserved;
+        const Context = struct {
+            builder: *Builder,
+            address: CheckedTypeAddress,
+            view: ModuleView,
+            checked_ty: checked.CheckedTypeId,
+
+            fn fill(context: @This(), reserved: Type.TypeId) Allocator.Error!Type.Content {
+                try context.builder.type_cache.put(context.address, reserved);
+                try context.builder.unsolved_monos.put(reserved, {});
+                return try context.builder.lowerTypePayload(context.view, context.checked_ty, context.view.types.payload(context.checked_ty));
+            }
+        };
+        return try self.program.types.addRecursive(Context{
+            .builder = self,
+            .address = address,
+            .view = view,
+            .checked_ty = checked_ty,
+        }, Context.fill);
     }
 
     fn lowerTypePayload(self: *Builder, view: ModuleView, checked_ty: checked.CheckedTypeId, payload: checked.CheckedTypePayload) Allocator.Error!Type.Content {

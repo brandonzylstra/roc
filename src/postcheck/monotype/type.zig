@@ -232,13 +232,35 @@ pub const Store = struct {
         return @enumFromInt(@as(u32, @intCast(index)));
     }
 
-    /// Fill a previously reserved type slot.
-    ///
-    /// This exists only for private recursive interner construction and the
-    /// current instantiation-graph compatibility path, where graph-owned
-    /// mutable views are refilled until the body draft is sealed. Completed
-    /// Monotype views must be frozen before leaving the builder.
-    pub fn fillReserved(self: *Store, ty: TypeId, content: Content) void {
+    /// Add one recursive type without returning its id to the caller until the
+    /// node content has been installed. The callback receives the private id so
+    /// the content can point back to itself or register it in an in-progress
+    /// recursive sealer.
+    pub fn addRecursive(
+        self: *Store,
+        context: anytype,
+        comptime fill: fn (@TypeOf(context), TypeId) std.mem.Allocator.Error!Content,
+    ) std.mem.Allocator.Error!TypeId {
+        const mark_ = self.mark();
+        errdefer self.restore(mark_);
+        const reserved = try self.reserveSlot();
+        const content = try fill(context, reserved);
+        self.fillReservedSlot(reserved, content);
+        return reserved;
+    }
+
+    /// Update an active instantiation graph's mutable Monotype view. This is a
+    /// graph-compatibility API only; completed program views must seal graph
+    /// nodes into fresh immutable ids before constructing `Ast.ProgramView`.
+    pub fn replaceGraphView(self: *Store, ty: TypeId, content: Content) void {
+        self.fillReservedSlot(ty, content);
+    }
+
+    fn reserveSlot(self: *Store) std.mem.Allocator.Error!TypeId {
+        return try self.add(.zst);
+    }
+
+    fn fillReservedSlot(self: *Store, ty: TypeId, content: Content) void {
         self.assertMutable();
         self.types.items[@intFromEnum(ty)] = content;
         self.clearTypeDigestCache();
@@ -1556,12 +1578,12 @@ pub const Interner = struct {
         defer self.allocator.free(ids);
 
         for (ids) |*id| {
-            id.* = try self.store.add(.zst);
+            id.* = try self.store.reserveSlot();
         }
         const root = ids[@intFromEnum(root_node)];
         for (contents, 0..) |content, index| {
             const lowered = try self.lowerRecursiveContent(ids, root, content);
-            self.store.fillReserved(ids[index], lowered);
+            self.store.fillReservedSlot(ids[index], lowered);
         }
         return try self.internCandidate(mark_, root);
     }
@@ -2150,10 +2172,10 @@ test "monotype digest terminates on recursive structural types" {
     const field_name = try name_store.internRecordFieldLabel("step");
 
     // A record whose field is a function returning the record itself.
-    const rec_a = try store.add(.zst);
+    const rec_a = try store.reserveSlot();
     const fn_a = try store.add(.{ .func = .{ .args = Span.empty(), .ret = rec_a } });
     const fields_a = try store.addFields(&.{.{ .name = field_name, .ty = fn_a }});
-    store.fillReserved(rec_a, .{ .record = fields_a });
+    store.fillReservedSlot(rec_a, .{ .record = fields_a });
 
     const first = store.typeDigest(&name_store, rec_a);
     const again = store.typeDigest(&name_store, rec_a);
@@ -2161,10 +2183,10 @@ test "monotype digest terminates on recursive structural types" {
 
     // An isomorphic cycle at different ids digests identically: cycles are
     // encoded as back references by position, not by id.
-    const rec_b = try store.add(.zst);
+    const rec_b = try store.reserveSlot();
     const fn_b = try store.add(.{ .func = .{ .args = Span.empty(), .ret = rec_b } });
     const fields_b = try store.addFields(&.{.{ .name = field_name, .ty = fn_b }});
-    store.fillReserved(rec_b, .{ .record = fields_b });
+    store.fillReservedSlot(rec_b, .{ .record = fields_b });
 
     const other = store.typeDigest(&name_store, rec_b);
     try std.testing.expect(std.mem.eql(u8, first.bytes[0..], other.bytes[0..]));
@@ -2199,7 +2221,7 @@ test "monotype cached digest reuses acyclic child digests and invalidates on res
     try std.testing.expectEqual(@as(u64, 1), outer_stats.cache_misses);
     try std.testing.expectEqual(@as(u64, 1), outer_stats.nodes_visited);
 
-    store.fillReserved(inner, .{ .record = Span.empty() });
+    store.fillReservedSlot(inner, .{ .record = Span.empty() });
 
     var after_refill_stats: Store.DigestStats = .{};
     const after_refill = store.typeDigestCached(&name_store, inner, &after_refill_stats);
@@ -2218,22 +2240,22 @@ test "monotype type equality accepts isomorphic recursive structural types" {
 
     const field_name = try name_store.internRecordFieldLabel("step");
 
-    const rec_a = try store.add(.zst);
+    const rec_a = try store.reserveSlot();
     const fn_a = try store.add(.{ .func = .{ .args = Span.empty(), .ret = rec_a } });
     const fields_a = try store.addFields(&.{.{ .name = field_name, .ty = fn_a }});
-    store.fillReserved(rec_a, .{ .record = fields_a });
+    store.fillReservedSlot(rec_a, .{ .record = fields_a });
 
-    const rec_b = try store.add(.zst);
+    const rec_b = try store.reserveSlot();
     const fn_b = try store.add(.{ .func = .{ .args = Span.empty(), .ret = rec_b } });
     const fields_b = try store.addFields(&.{.{ .name = field_name, .ty = fn_b }});
-    store.fillReserved(rec_b, .{ .record = fields_b });
+    store.fillReservedSlot(rec_b, .{ .record = fields_b });
 
     try std.testing.expect(try store.typeEql(&name_store, rec_a, rec_b));
 
     const str = try store.add(.{ .primitive = .str });
-    const rec_c = try store.add(.zst);
+    const rec_c = try store.reserveSlot();
     const fields_c = try store.addFields(&.{.{ .name = field_name, .ty = str }});
-    store.fillReserved(rec_c, .{ .record = fields_c });
+    store.fillReservedSlot(rec_c, .{ .record = fields_c });
     try std.testing.expect(!try store.typeEql(&name_store, rec_a, rec_c));
 }
 

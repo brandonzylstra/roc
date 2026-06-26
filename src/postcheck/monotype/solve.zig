@@ -1300,7 +1300,7 @@ pub const InstGraph = struct {
             .erased => |digest| .{ .erased = digest },
             .zst => .zst,
         };
-        types.fillReserved(ty, filled);
+        types.replaceGraphView(ty, filled);
     }
 
     fn monoSlice(self: *InstGraph, nodes_slice: []const NodeId) Allocator.Error![]Type.TypeId {
@@ -1418,11 +1418,16 @@ pub const GraphTypeFinals = struct {
         const node = self.graph.find(raw_node);
         if (self.sealed.get(node)) |existing| return existing;
 
-        const out = try self.graph.types.add(.zst);
-        try self.sealed.put(node, out);
-        const content = try self.sealContent(node);
-        self.graph.types.fillReserved(out, content);
-        return out;
+        const Context = struct {
+            sealer: *GraphTypeFinals,
+            node: NodeId,
+
+            fn fill(context: @This(), reserved: Type.TypeId) Allocator.Error!Type.Content {
+                try context.sealer.sealed.put(context.node, reserved);
+                return try context.sealer.sealContent(context.node);
+            }
+        };
+        return try self.graph.types.addRecursive(Context{ .sealer = self, .node = node }, Context.fill);
     }
 
     fn sealContent(self: *GraphTypeFinals, node: NodeId) Allocator.Error!Type.Content {
