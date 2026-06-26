@@ -4234,6 +4234,8 @@ const BodyDraftStore = struct {
     fn addExpr(self: *BodyDraftStore, expr: DraftExpr) Allocator.Error!DraftExprId {
         const id: DraftExprId = @enumFromInt(@as(u32, @intCast(self.exprs.items.len)));
         try self.exprs.append(self.allocator, expr);
+        try self.expr_locs.append(self.allocator, base.SourceLoc.none);
+        try self.expr_regions.append(self.allocator, base.Region.zero());
         return id;
     }
 
@@ -4264,6 +4266,8 @@ const BodyDraftStore = struct {
     fn addStmt(self: *BodyDraftStore, stmt: DraftStmt) Allocator.Error!DraftStmtId {
         const id: DraftStmtId = @enumFromInt(@as(u32, @intCast(self.stmts.items.len)));
         try self.stmts.append(self.allocator, stmt);
+        try self.stmt_locs.append(self.allocator, base.SourceLoc.none);
+        try self.stmt_regions.append(self.allocator, base.Region.zero());
         return id;
     }
 
@@ -4415,6 +4419,209 @@ const BodyDraftStore = struct {
 
     fn addRuntimeSchemaRequest(self: *BodyDraftStore, request: DraftRuntimeSchemaRequest) Allocator.Error!void {
         try self.runtime_schema_requests.append(self.allocator, request);
+    }
+
+    fn sealCoreIntoProgram(self: *const BodyDraftStore, program: *Ast.Program, graph: *InstGraph) Allocator.Error!void {
+        try graph.drainDirty();
+        graph.assertNoDeferredRequestsBeforeBodySeal();
+        var sealer = GraphTypeFinals.init(graph);
+        defer sealer.deinit();
+
+        const ids = FinalIdOffsets{
+            .fn_start = @intCast(program.fns.items.len),
+            .def_start = @intCast(program.defs.items.len),
+            .nested_def_start = @intCast(program.nested_defs.items.len),
+            .expr_start = @intCast(program.exprs.items.len),
+            .pat_start = @intCast(program.pats.items.len),
+            .stmt_start = @intCast(program.stmts.items.len),
+            .local_start = @intCast(program.locals.items.len),
+            .string_literal_start = @intCast(program.string_literals.items.len),
+            .comptime_site_start = @intCast(program.comptime_sites.items.len),
+            .expr_ids_start = @intCast(program.expr_ids.items.len),
+            .pat_ids_start = @intCast(program.pat_ids.items.len),
+            .typed_locals_start = @intCast(program.typed_locals.items.len),
+            .stmt_ids_start = @intCast(program.stmt_ids.items.len),
+            .source_file_start = @intCast(program.source_files.items.len),
+        };
+
+        for (self.source_files.items) |span| {
+            _ = try program.addSourceFile(self.sourceText(span));
+        }
+
+        try program.expr_ids.ensureUnusedCapacity(program.allocator, self.expr_ids.items.len);
+        for (self.expr_ids.items) |id| program.expr_ids.appendAssumeCapacity(ids.expr(id));
+
+        try program.pat_ids.ensureUnusedCapacity(program.allocator, self.pat_ids.items.len);
+        for (self.pat_ids.items) |id| program.pat_ids.appendAssumeCapacity(ids.pat(id));
+
+        try program.stmt_ids.ensureUnusedCapacity(program.allocator, self.stmt_ids.items.len);
+        for (self.stmt_ids.items) |id| program.stmt_ids.appendAssumeCapacity(ids.stmt(id));
+
+        try program.locals.ensureUnusedCapacity(program.allocator, self.locals.items.len);
+        try program.local_names.ensureUnusedCapacity(program.allocator, self.locals.items.len);
+        for (self.locals.items, 0..) |local, index| {
+            const expected: Ast.LocalId = @enumFromInt(ids.local_start + @as(u32, @intCast(index)));
+            const sealed_ty = try local.ty.seal(graph, &sealer);
+            program.locals.appendAssumeCapacity(.{
+                .id = expected,
+                .symbol = local.symbol,
+                .ty = sealed_ty,
+                .binder = local.binder,
+                .capture_id = local.capture_id,
+            });
+            program.local_names.appendAssumeCapacity(try program.allocator.dupe(u8, self.sourceText(self.local_names.items[index])));
+        }
+
+        try program.typed_locals.ensureUnusedCapacity(program.allocator, self.typed_locals.items.len);
+        for (self.typed_locals.items) |typed| {
+            program.typed_locals.appendAssumeCapacity(.{
+                .local = ids.local(typed.local),
+                .ty = try typed.ty.seal(graph, &sealer),
+            });
+        }
+
+        try program.pats.ensureUnusedCapacity(program.allocator, self.pats.items.len);
+        for (self.pats.items) |pat| {
+            program.pats.appendAssumeCapacity(.{
+                .ty = try pat.ty.seal(graph, &sealer),
+                .data = self.sealCorePatData(ids, pat.data),
+            });
+        }
+
+        try program.exprs.ensureUnusedCapacity(program.allocator, self.exprs.items.len);
+        try program.expr_locs.ensureUnusedCapacity(program.allocator, self.exprs.items.len);
+        try program.expr_regions.ensureUnusedCapacity(program.allocator, self.exprs.items.len);
+        for (self.exprs.items, 0..) |expr, index| {
+            program.exprs.appendAssumeCapacity(.{
+                .ty = try expr.ty.seal(graph, &sealer),
+                .data = self.sealCoreExprData(ids, expr.data),
+            });
+            program.expr_locs.appendAssumeCapacity(ids.sourceLoc(self.expr_locs.items[index]));
+            program.expr_regions.appendAssumeCapacity(self.expr_regions.items[index]);
+        }
+
+        try program.stmts.ensureUnusedCapacity(program.allocator, self.stmts.items.len);
+        try program.stmt_locs.ensureUnusedCapacity(program.allocator, self.stmts.items.len);
+        try program.stmt_regions.ensureUnusedCapacity(program.allocator, self.stmts.items.len);
+        for (self.stmts.items, 0..) |stmt, index| {
+            program.stmts.appendAssumeCapacity(self.sealCoreStmt(ids, stmt));
+            program.stmt_locs.appendAssumeCapacity(ids.sourceLoc(self.stmt_locs.items[index]));
+            program.stmt_regions.appendAssumeCapacity(self.stmt_regions.items[index]);
+        }
+    }
+
+    fn sourceText(self: *const BodyDraftStore, span: DraftSpan(u8)) []const u8 {
+        if (span.start > self.source_text_bytes.items.len or span.len > self.source_text_bytes.items.len - span.start) {
+            Common.invariant("Monotype body draft source text span was out of bounds");
+        }
+        return self.source_text_bytes.items[span.start..][0..span.len];
+    }
+
+    fn sealCorePatData(self: *const BodyDraftStore, ids: FinalIdOffsets, data: DraftPatData) Ast.PatData {
+        _ = self;
+        return switch (data) {
+            .bind => |local| .{ .bind = ids.local(local) },
+            .wildcard => .wildcard,
+            .as => |as| .{ .as = .{
+                .pattern = ids.pat(as.pattern),
+                .local = ids.local(as.local),
+            } },
+            else => Common.invariant("Monotype body draft core sealer reached an unsupported pattern form"),
+        };
+    }
+
+    fn sealCoreExprData(self: *const BodyDraftStore, ids: FinalIdOffsets, data: DraftExprData) Ast.ExprData {
+        return switch (data) {
+            .local => |local| .{ .local = ids.local(local) },
+            .unit => .unit,
+            .int_lit => |value| .{ .int_lit = value },
+            .frac_f32_lit => |value| .{ .frac_f32_lit = value },
+            .frac_f64_lit => |value| .{ .frac_f64_lit = value },
+            .dec_lit => |value| .{ .dec_lit = value },
+            .let_ => |let_| .{ .let_ = .{
+                .bind = ids.pat(let_.bind),
+                .value = ids.expr(let_.value),
+                .rest = ids.expr(let_.rest),
+                .comptime_site = if (let_.comptime_site) |site| ids.comptimeSite(site) else null,
+            } },
+            .block => |block| .{ .block = .{
+                .statements = self.stmtSpan(ids, block.statements),
+                .final_expr = ids.expr(block.final_expr),
+            } },
+            else => Common.invariant("Monotype body draft core sealer reached an unsupported expression form"),
+        };
+    }
+
+    fn sealCoreStmt(self: *const BodyDraftStore, ids: FinalIdOffsets, stmt: DraftStmt) Ast.Stmt {
+        _ = self;
+        return switch (stmt) {
+            .uninitialized => |pat| .{ .uninitialized = ids.pat(pat) },
+            .let_ => |let_| .{ .let_ = .{
+                .pat = ids.pat(let_.pat),
+                .value = ids.expr(let_.value),
+                .recursive = let_.recursive,
+                .comptime_site = if (let_.comptime_site) |site| ids.comptimeSite(site) else null,
+            } },
+            .expr => |expr| .{ .expr = ids.expr(expr) },
+            .expect => |expr| .{ .expect = ids.expr(expr) },
+            .dbg => |expr| .{ .dbg = ids.expr(expr) },
+            .return_ => |expr| .{ .return_ = ids.expr(expr) },
+            .crash => |literal| .{ .crash = ids.stringLiteral(literal) },
+        };
+    }
+
+    fn stmtSpan(_: *const BodyDraftStore, ids: FinalIdOffsets, span: DraftSpan(DraftStmtId)) Ast.Span(Ast.StmtId) {
+        return .{ .start = ids.stmt_ids_start + span.start, .len = span.len };
+    }
+};
+
+const FinalIdOffsets = struct {
+    fn_start: u32,
+    def_start: u32,
+    nested_def_start: u32,
+    expr_start: u32,
+    pat_start: u32,
+    stmt_start: u32,
+    local_start: u32,
+    string_literal_start: u32,
+    comptime_site_start: u32,
+    expr_ids_start: u32,
+    pat_ids_start: u32,
+    typed_locals_start: u32,
+    stmt_ids_start: u32,
+    source_file_start: u32,
+
+    fn expr(self: FinalIdOffsets, id: DraftExprId) Ast.ExprId {
+        return @enumFromInt(self.expr_start + @intFromEnum(id));
+    }
+
+    fn pat(self: FinalIdOffsets, id: DraftPatId) Ast.PatId {
+        return @enumFromInt(self.pat_start + @intFromEnum(id));
+    }
+
+    fn stmt(self: FinalIdOffsets, id: DraftStmtId) Ast.StmtId {
+        return @enumFromInt(self.stmt_start + @intFromEnum(id));
+    }
+
+    fn local(self: FinalIdOffsets, id: DraftLocalId) Ast.LocalId {
+        return @enumFromInt(self.local_start + @intFromEnum(id));
+    }
+
+    fn stringLiteral(self: FinalIdOffsets, id: DraftStringLiteralId) Ast.StringLiteralId {
+        return @enumFromInt(self.string_literal_start + @intFromEnum(id));
+    }
+
+    fn comptimeSite(self: FinalIdOffsets, id: DraftComptimeSiteId) Ast.ComptimeSiteId {
+        return @enumFromInt(self.comptime_site_start + @intFromEnum(id));
+    }
+
+    fn sourceLoc(self: FinalIdOffsets, loc: base.SourceLoc) base.SourceLoc {
+        if (loc.file == base.SourceLoc.no_file) return loc;
+        return .{
+            .file = self.source_file_start + loc.file,
+            .line = loc.line,
+            .column = loc.column,
+        };
     }
 };
 
@@ -17233,16 +17440,13 @@ test "draft sealed type cell validation distinguishes closed snapshots from grap
 test "body draft store appends draft-local ids spans and type cells" {
     const gpa = std.testing.allocator;
 
-    var type_store = Type.Store.init(gpa);
-    defer type_store.deinit();
-
-    var name_store = names.NameStore.init(gpa);
-    defer name_store.deinit();
+    var program = Ast.Program.init(gpa);
+    defer program.deinit();
 
     var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
     defer unsolved_monos.deinit();
 
-    const graph = try InstGraph.create(gpa, &type_store, &name_store, &unsolved_monos);
+    const graph = try InstGraph.create(gpa, &program.types, &program.names, &unsolved_monos);
     defer graph.destroy();
 
     var draft = BodyDraftStore.init(gpa);
@@ -17255,7 +17459,7 @@ test "body draft store appends draft-local ids spans and type cells" {
     const expr_span = try draft.addExprSpan(&.{expr});
     const pat_span = try draft.addPatSpan(&.{pat});
     const typed_local_span = try draft.addTypedLocalSpan(&.{.{ .local = local, .ty = ty }});
-    const field_name = try name_store.internRecordFieldLabel("field");
+    const field_name = try program.names.internRecordFieldLabel("field");
     const field_span = try draft.addFieldExprSpan(&.{.{ .name = field_name, .value = expr }});
     const destruct_span = try draft.addRecordDestructSpan(&.{.{ .name = field_name, .pattern = pat }});
     const branch_span = try draft.addBranchSpan(&.{.{ .pat = pat, .body = expr }});
@@ -17272,7 +17476,6 @@ test "body draft store appends draft-local ids spans and type cells" {
     const stmt = try draft.addStmt(.{ .let_ = .{
         .pat = pat,
         .value = expr,
-        .rest = expr,
         .comptime_site = site,
     } });
     const stmt_span = try draft.addStmtSpan(&.{stmt});
@@ -17307,6 +17510,29 @@ test "body draft store appends draft-local ids spans and type cells" {
     try std.testing.expectEqual(@as(usize, 1), draft.source_files.items.len);
     try std.testing.expectEqual(@as(usize, 1), draft.local_names.items.len);
     try std.testing.expect(draft.local_names.items[@intFromEnum(local)].len != 0);
+
+    try draft.sealCoreIntoProgram(&program, graph);
+    try std.testing.expectEqual(@as(usize, 1), program.locals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), program.pats.items.len);
+    try std.testing.expectEqual(@as(usize, 1), program.exprs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), program.stmts.items.len);
+    try std.testing.expectEqual(@as(usize, 1), program.source_files.items.len);
+    try std.testing.expectEqualStrings("value", program.localName(@enumFromInt(0)));
+    switch (program.pats.items[0].data) {
+        .bind => |sealed_local| try std.testing.expectEqual(@as(Ast.LocalId, @enumFromInt(0)), sealed_local),
+        else => return error.TestExpectedEqual,
+    }
+    switch (program.exprs.items[0].data) {
+        .local => |sealed_local| try std.testing.expectEqual(@as(Ast.LocalId, @enumFromInt(0)), sealed_local),
+        else => return error.TestExpectedEqual,
+    }
+    switch (program.stmts.items[0]) {
+        .let_ => |let_| {
+            try std.testing.expectEqual(@as(Ast.PatId, @enumFromInt(0)), let_.pat);
+            try std.testing.expectEqual(@as(Ast.ExprId, @enumFromInt(0)), let_.value);
+        },
+        else => return error.TestExpectedEqual,
+    }
 }
 
 test "record parser presence words cover fields wider than one u64" {
