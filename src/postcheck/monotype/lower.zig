@@ -10,6 +10,7 @@ const base = @import("base");
 const Common = @import("../common.zig");
 const Ast = @import("ast.zig");
 const Type = @import("type.zig");
+const specialize = @import("specialize.zig");
 const solve = @import("solve.zig");
 
 const InstGraph = solve.InstGraph;
@@ -444,6 +445,7 @@ const Builder = struct {
     counters: ?*SpecializationCounters,
     symbols: Common.SymbolGen = .{},
     type_cache: std.AutoHashMap(CheckedTypeAddress, Type.TypeId),
+    spec_store: specialize.SpecBuilder,
     /// Monotypes owned by the builder-global type cache. They are lowered
     /// without body evidence, so empty tag unions inside them are unresolved
     /// slots rather than solved uninhabited types.
@@ -481,6 +483,7 @@ const Builder = struct {
             .specialization_cache = options.specialization_cache,
             .counters = options.specialization_counters,
             .type_cache = std.AutoHashMap(CheckedTypeAddress, Type.TypeId).init(allocator),
+            .spec_store = specialize.SpecBuilder.init(allocator, &program.names, &program.types, &program.specs),
             .unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(allocator),
             .lowered_templates = .empty,
             .lowered_template_by_fn = std.AutoHashMap(Ast.FnId, u32).init(allocator),
@@ -532,6 +535,7 @@ const Builder = struct {
         self.lowered_template_by_def.deinit();
         self.lowered_template_by_fn.deinit();
         self.lowered_templates.deinit(self.allocator);
+        self.spec_store.deinit();
         self.unsolved_monos.deinit();
         self.type_cache.deinit();
     }
@@ -1546,20 +1550,16 @@ const Builder = struct {
         fn_id: Ast.FnId,
         status: Ast.SpecStatus,
     ) Allocator.Error!Ast.SpecId {
-        return try self.program.addSpec(.{
-            .identity = .{
-                .callable = .{ .proc_template = .{
-                    .module = names.procTemplateModuleDigest(template_ref),
-                    .proc_base = @intFromEnum(template_ref.proc_base),
-                    .template = @intFromEnum(template_ref.template),
-                } },
-                .source_fn_ty_digest = source_fn_key,
-                .mono_fn_ty_digest = mono_fn_ty_digest,
-                .mono_fn_ty = mono_fn_ty,
-            },
-            .fn_id = fn_id,
-            .status = status,
-        });
+        return try self.addSpecRecord(.{
+            .callable = .{ .proc_template = .{
+                .module = names.procTemplateModuleDigest(template_ref),
+                .proc_base = @intFromEnum(template_ref.proc_base),
+                .template = @intFromEnum(template_ref.template),
+            } },
+            .source_fn_ty_digest = source_fn_key,
+            .mono_fn_ty_digest = mono_fn_ty_digest,
+            .mono_fn_ty = mono_fn_ty,
+        }, fn_id, status);
     }
 
     fn addNestedSpecRecord(
@@ -1570,22 +1570,35 @@ const Builder = struct {
         mono_fn_ty_digest: names.TypeDigest,
         fn_id: Ast.FnId,
     ) Allocator.Error!Ast.SpecId {
-        return try self.program.addSpec(.{
-            .identity = .{
-                .callable = .{ .nested_site = .{
-                    .module = names.procTemplateModuleDigest(nested.owner),
-                    .owner_proc_base = @intFromEnum(nested.owner.proc_base),
-                    .owner_template = @intFromEnum(nested.owner.template),
-                    .owner_fn_digest = nested.context_fn_key,
-                    .site = @intFromEnum(nested.site),
-                } },
-                .source_fn_ty_digest = source_fn_key,
-                .mono_fn_ty_digest = mono_fn_ty_digest,
-                .mono_fn_ty = mono_fn_ty,
-            },
-            .fn_id = fn_id,
-            .status = .lowering,
-        });
+        return try self.addSpecRecord(.{
+            .callable = .{ .nested_site = .{
+                .module = names.procTemplateModuleDigest(nested.owner),
+                .owner_proc_base = @intFromEnum(nested.owner.proc_base),
+                .owner_template = @intFromEnum(nested.owner.template),
+                .owner_fn_digest = nested.context_fn_key,
+                .site = @intFromEnum(nested.site),
+            } },
+            .source_fn_ty_digest = source_fn_key,
+            .mono_fn_ty_digest = mono_fn_ty_digest,
+            .mono_fn_ty = mono_fn_ty,
+        }, fn_id, .lowering);
+    }
+
+    fn addSpecRecord(
+        self: *Builder,
+        identity: Ast.SpecIdentity,
+        fn_id: Ast.FnId,
+        status: Ast.SpecStatus,
+    ) Allocator.Error!Ast.SpecId {
+        const reserved = try self.spec_store.reserve(identity, fn_id);
+        if (!reserved.created) Common.invariant("Monotype specialization record already existed before lowering registered it");
+        const spec = reserved.spec orelse Common.invariant("fresh Monotype specialization record resolved to an imported target");
+        switch (status) {
+            .reserved => {},
+            .lowering => self.spec_store.markLowering(spec),
+            .ready => self.spec_store.markReady(spec, fn_id),
+        }
+        return spec;
     }
 
     fn registerProcDebugNameForTemplate(
