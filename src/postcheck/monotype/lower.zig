@@ -4183,29 +4183,29 @@ const BodyContext = struct {
         return try self.graph.monoFor(try self.instNode(checked_ty));
     }
 
-    fn graphFunctionType(
+    fn graphFunctionNode(
         self: *BodyContext,
         args: []const NodeId,
         ret: NodeId,
-    ) Allocator.Error!Type.TypeId {
+    ) Allocator.Error!NodeId {
         const stored_args = try self.graph.arena().alloc(NodeId, args.len);
         @memcpy(stored_args, args);
-        return try self.graph.monoFor(try self.graph.newNode(.{ .func = .{
+        return try self.graph.newNode(.{ .func = .{
             .args = stored_args,
             .ret = ret,
-        } }));
+        } });
     }
 
-    fn graphFunctionTypeFromMono(
+    fn graphFunctionNodeFromMono(
         self: *BodyContext,
         arg_tys: []const Type.TypeId,
         ret_ty: Type.TypeId,
-    ) Allocator.Error!Type.TypeId {
+    ) Allocator.Error!NodeId {
         const args = try self.graph.arena().alloc(NodeId, arg_tys.len);
         for (arg_tys, 0..) |arg_ty, index| {
             args[index] = try self.graph.importMono(arg_ty);
         }
-        return try self.graphFunctionType(args, try self.graph.importMono(ret_ty));
+        return try self.graphFunctionNode(args, try self.graph.importMono(ret_ty));
     }
 
     /// Instantiate a checked type into this specialization's graph, caching by
@@ -9066,7 +9066,7 @@ const BodyContext = struct {
                 else
                     try self.instNode(formal_ty);
             }
-            return try self.graphFunctionType(args, try self.instNode(function.ret));
+            return try self.graph.monoFor(try self.graphFunctionNode(args, try self.instNode(function.ret)));
         }
         return try self.graph.monoFor(fn_node);
     }
@@ -9223,7 +9223,7 @@ const BodyContext = struct {
         }
         try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(ret_ty));
         try self.graph.drainDirty();
-        return try self.graphFunctionTypeFromMono(arg_tys, ret_ty);
+        return try self.graph.monoFor(try self.graphFunctionNodeFromMono(arg_tys, ret_ty));
     }
 
     fn instantiateTargetCallTypeFromMonoArgAtIndexAndRet(
@@ -10533,7 +10533,8 @@ const BodyContext = struct {
         }
         defer self.restoreBinders(saved.items);
 
-        return try self.graphFunctionType(arg_nodes, try self.graph.importMono(try self.lowerExprType(lambda.body)));
+        const ret_node = try self.graph.importMono(try self.lowerExprType(lambda.body));
+        return try self.graph.monoFor(try self.graphFunctionNode(arg_nodes, ret_node));
     }
 
     fn lowerLambdaExpr(
