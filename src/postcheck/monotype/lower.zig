@@ -1365,32 +1365,37 @@ const Builder = struct {
         // requester's id in place. Builder-global types stay snapshots; they
         // serve many specializations.
         const root_node = try body_ctx.instNode(template.checked_fn_root);
-        if (!self.unsolved_monos.contains(lower_fn_ty)) {
+        const body_uses_generated_evidence =
+            !self.unsolved_monos.contains(lower_fn_ty) and body_ctx.functionHasGeneratedOpaqueEvidence(lower_fn_ty);
+        if (!self.unsolved_monos.contains(lower_fn_ty) and !body_uses_generated_evidence) {
             try graph.addMonoView(root_node, lower_fn_ty);
         }
         const draft = BodyDraft.begin(self);
         const live_fn_ty = try graph.monoFor(root_node);
-        const lowered = try body_ctx.lowerTemplateBody(template_ref, template, live_fn_ty);
+        const body_fn_ty = if (body_uses_generated_evidence) lower_fn_ty else live_fn_ty;
+        const lowered = try body_ctx.lowerTemplateBody(template_ref, template, body_fn_ty);
         const draft_end = draft.end(self);
         if (requester) |requester_graph| {
+            const requester_fn_ty = if (body_uses_generated_evidence) body_fn_ty else live_fn_ty;
             try requester_graph.unify(
                 try requester_graph.importMono(fn_ty),
-                try requester_graph.importMono(live_fn_ty),
+                try requester_graph.importMono(requester_fn_ty),
             );
             try requester_graph.drainDirty();
         }
         try self.drainSpecRequests(graph);
         const sealed_fn_ty = (try draft.seal(self, graph, root_node, draft_end)).?;
         try draft.markNestedReady(self, draft_end);
+        const final_fn_ty = if (body_uses_generated_evidence) body_fn_ty else sealed_fn_ty;
         // The definition records the body's solved view of the root type.
         // Deferred call sites embed the requested type, which digests
         // identically because digests are alias-transparent and a solved
         // requester determines every interface slot; root-class call sites
         // adopt this recorded template directly.
         var def_template = fn_template;
-        def_template.mono_fn_ty = sealed_fn_ty;
+        def_template.mono_fn_ty = final_fn_ty;
         self.program.fns.items[@intFromEnum(reservation.fn_id)].source = def_template;
-        const sealed_fn_data = self.functionShape(sealed_fn_ty, "checked procedure template root type was not a function");
+        const sealed_fn_data = self.functionShape(final_fn_ty, "checked procedure template root type was not a function");
         self.program.defs.items[@intFromEnum(reservation.def)] = .{
             .symbol = reservation.symbol,
             .fn_def = def_template,
@@ -1399,7 +1404,7 @@ const Builder = struct {
             .body = .{ .roc = lowered.body },
             .ret = sealed_fn_data.ret,
         };
-        try self.markTemplateReady(family, reservation.def, sealed_fn_ty);
+        try self.markTemplateReady(family, reservation.def, final_fn_ty);
         return reservation.def;
     }
 
@@ -5909,6 +5914,14 @@ const BodyContext = struct {
         return self.isGeneratedFieldNamesEvidenceType(ty) or self.isGeneratedParseTagUnionSpecEvidenceType(ty);
     }
 
+    fn functionHasGeneratedOpaqueEvidence(self: *BodyContext, fn_ty: Type.TypeId) bool {
+        const function = self.builder.functionShape(fn_ty, "generated opaque evidence check requested for a non-function type");
+        for (self.builder.program.types.span(function.args)) |arg| {
+            if (self.isGeneratedOpaqueEvidenceType(arg)) return true;
+        }
+        return self.isGeneratedOpaqueEvidenceType(function.ret);
+    }
+
     fn publicOpaqueUnificationType(self: *BodyContext, ty: Type.TypeId) Allocator.Error!Type.TypeId {
         if (!self.isGeneratedOpaqueEvidenceType(ty)) return ty;
         return switch (self.builder.program.types.get(ty)) {
@@ -8939,14 +8952,19 @@ const BodyContext = struct {
         }
         try self.graph.drainDirty();
         if (saw_generated_opaque_evidence) {
-            const args = try self.graph.arena().alloc(NodeId, function.args.len);
+            const args = try self.allocator.alloc(Type.TypeId, function.args.len);
+            defer self.allocator.free(args);
             for (function.args, generated_arg_overrides, 0..) |formal_ty, override, index| {
                 args[index] = if (override) |ty|
-                    try self.graph.importMono(ty)
+                    ty
                 else
-                    try self.instNode(formal_ty);
+                    try self.graph.monoFor(try self.instNode(formal_ty));
             }
-            return try self.graphFunctionType(args, try self.instNode(function.ret));
+            const generated_fn = try self.builder.program.types.add(.{ .func = .{
+                .args = try self.builder.program.types.addSpan(args),
+                .ret = try self.graph.monoFor(try self.instNode(function.ret)),
+            } });
+            return generated_fn;
         }
         return try self.graph.monoFor(fn_node);
     }
