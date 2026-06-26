@@ -326,7 +326,7 @@ test "parse diagnostic report handles invalid mutable identifier spelling" {
     }
 }
 
-test "bughunt B212: parameterized type arguments accept bare function types" {
+test "regression B212: parameterized type arguments accept bare function types" {
     const gpa = std.testing.allocator;
     const source =
         \\module []
