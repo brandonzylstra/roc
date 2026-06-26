@@ -1428,6 +1428,58 @@ test "monotype call target verifier checks local and imported slots" {
     }
 }
 
+test "fresh single-shard view preserves builder local call graph" {
+    var program = Program.init(std.testing.allocator);
+    defer program.deinit();
+
+    const unit_ty = try program.types.add(.zst);
+    const fn_ty = try program.types.add(.{ .func = .{
+        .args = Type.Span.empty(),
+        .ret = unit_ty,
+    } });
+    const first_fn = try program.addFn(testFnSource(fn_ty));
+    const second_fn = try program.addFn(testFnSource(fn_ty));
+
+    _ = try program.addExpr(.{ .ty = unit_ty, .data = .{ .call_proc = .{
+        .callee = localProcCallee(first_fn),
+        .args = Span(ExprId).empty(),
+    } } });
+    _ = try program.addExpr(.{ .ty = unit_ty, .data = .{ .call_proc = .{
+        .callee = localProcCallee(second_fn),
+        .args = Span(ExprId).empty(),
+    } } });
+
+    var builder_targets = std.ArrayList(FnId).empty;
+    defer builder_targets.deinit(std.testing.allocator);
+    try collectSingleShardLocalCallTargets(std.testing.allocator, program.exprs.items, &builder_targets);
+
+    const view_ = program.view();
+    var view_targets = std.ArrayList(FnId).empty;
+    defer view_targets.deinit(std.testing.allocator);
+    try collectSingleShardLocalCallTargets(std.testing.allocator, view_.exprs, &view_targets);
+
+    try std.testing.expectEqualSlices(FnId, builder_targets.items, view_targets.items);
+}
+
+fn collectSingleShardLocalCallTargets(
+    allocator: std.mem.Allocator,
+    exprs: []const Expr,
+    out: *std.ArrayList(FnId),
+) (std.mem.Allocator.Error || error{TestUnexpectedResult})!void {
+    for (exprs) |expr| {
+        switch (expr.data) {
+            .call_proc => |call| switch (call.callee) {
+                .func => |slot| switch (slot) {
+                    .local => |fn_id| try out.append(allocator, fn_id),
+                    .imported => return error.TestUnexpectedResult,
+                },
+                .lifted => return error.TestUnexpectedResult,
+            },
+            else => {},
+        }
+    }
+}
+
 fn testFnSource(mono_fn_ty: Type.TypeId) FnTemplate {
     return .{
         .fn_def = undefined, // call-target verifier tests do not inspect the source callable
