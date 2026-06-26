@@ -1300,7 +1300,7 @@ pub const InstGraph = struct {
             .erased => |digest| .{ .erased = digest },
             .zst => .zst,
         };
-        types.set(ty, filled);
+        types.fillReserved(ty, filled);
     }
 
     fn monoSlice(self: *InstGraph, nodes_slice: []const NodeId) Allocator.Error![]Type.TypeId {
@@ -1421,7 +1421,7 @@ pub const GraphTypeFinals = struct {
         const out = try self.graph.types.add(.zst);
         try self.sealed.put(node, out);
         const content = try self.sealContent(node);
-        self.graph.types.set(out, content);
+        self.graph.types.fillReserved(out, content);
         return out;
     }
 

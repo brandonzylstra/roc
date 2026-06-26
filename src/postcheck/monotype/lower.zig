@@ -1728,7 +1728,7 @@ const Builder = struct {
         try self.type_cache.put(address, reserved);
         try self.unsolved_monos.put(reserved, {});
         const lowered = try self.lowerTypePayload(view, checked_ty, view.types.payload(checked_ty));
-        self.program.types.set(reserved, lowered);
+        self.program.types.fillReserved(reserved, lowered);
         return reserved;
     }
 
