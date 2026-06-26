@@ -37,6 +37,10 @@ pub const DeferredTemplate = struct {
 /// Identity of a node in a specialization's instantiation graph.
 pub const NodeId = enum(u32) { _ };
 
+// Current mutable Monotype output points to remove during graph sealing:
+// `addMonoView`, `monoFor`, `refreshedMonoFor`, `fillMono`, `importMono`, row
+// flattening, and the span materializers below. Completed Monotype views must
+// expose only `TypeId`s and durable AST ids, never these graph-local ids.
 /// Tag variant inside an instantiation-graph row. Names are program NameStore
 /// ids translated at instantiation so rows from different checked modules
 /// compare uniformly.
@@ -1564,6 +1568,35 @@ fn testCheckedTypeId(comptime value: u32) checked.CheckedTypeId {
 
 test "monotype solve declarations are referenced" {
     std.testing.refAllDecls(@This());
+}
+
+test "completed monotype program view does not expose instantiation graph nodes" {
+    @setEvalBranchQuota(10_000);
+    comptime assertNoNodeId(Ast.ProgramView, "Ast.ProgramView");
+}
+
+fn assertNoNodeId(comptime T: type, comptime path: []const u8) void {
+    if (T == NodeId) @compileError(path ++ " exposes instantiation graph NodeId");
+
+    switch (@typeInfo(T)) {
+        .array => |array| assertNoNodeId(array.child, path ++ "[]"),
+        .optional => |optional| assertNoNodeId(optional.child, path ++ "?"),
+        .pointer => |pointer| switch (pointer.size) {
+            .slice => assertNoNodeId(pointer.child, path ++ "[]"),
+            .one, .many, .c => {},
+        },
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                assertNoNodeId(field.type, path ++ "." ++ field.name);
+            }
+        },
+        .@"union" => |info| {
+            inline for (info.fields) |field| {
+                assertNoNodeId(field.type, path ++ "." ++ field.name);
+            }
+        },
+        else => {},
+    }
 }
 
 test "issue 9647: row refills do not duplicate dependencies or materialized spans" {
