@@ -1561,7 +1561,10 @@ const Lowerer = struct {
             .fn_ref => |fn_id| try self.lowerFnRefInto(target, expr_id, fn_id, next),
             .nominal => |backing| try self.lowerNominalInto(target, expr_ty, backing, next),
             .let_ => |let_| try self.lowerLetInto(target, let_, next),
-            .call_proc => |call| try self.lowerDirectProcCallInto(target, Lifted.localDirectCalleeOrInvariant(call, "LIR lowering"), self.solved.lifted.exprSpan(call.args), call.is_cold, next),
+            .call_proc => |call| switch (Lifted.directCallee(call)) {
+                .local => |callee| try self.lowerDirectProcCallInto(target, callee, self.solved.lifted.exprSpan(call.args), call.is_cold, next),
+                .imported => Common.invariant("direct LIR lowering requires imported Monotype calls to be linked before this stage"),
+            },
             .call_value => |call| try self.lowerValueCallInto(target, call.callee, self.solved.lifted.exprSpan(call.args), next),
             .low_level => |call| try self.lowerLowLevelInto(target, call.op, call.args, next),
             .field_access => |field| try self.lowerFieldAccessInto(target, field.receiver, field.field, next),

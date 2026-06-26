@@ -554,12 +554,18 @@ const Lowerer = struct {
             .fn_ref => |target| try self.lowerCallableValue(expr_id, target, ty),
             .call_value => |call| try self.lowerValueCall(ty, call),
             .call_proc => |call| blk: {
-                const callee = Lifted.localDirectCalleeOrInvariant(call, "Lambda Mono");
-                break :blk .{ .direct_call = .{
-                    .target = try self.ensureOwnFnSpec(callee, .finite),
-                    .args = try self.lowerDirectCallArgs(callee, call.args),
-                    .is_cold = call.is_cold,
-                } };
+                break :blk switch (Lifted.directCallee(call)) {
+                    .local => |callee| .{ .direct_call = .{
+                        .target = .{ .local = try self.ensureOwnFnSpec(callee, .finite) },
+                        .args = try self.lowerDirectCallArgs(callee, call.args),
+                        .is_cold = call.is_cold,
+                    } },
+                    .imported => |imported| .{ .direct_call = .{
+                        .target = .{ .imported = imported },
+                        .args = try self.lowerImportedDirectCallArgs(call.args),
+                        .is_cold = call.is_cold,
+                    } },
+                };
             },
             .low_level => |call| .{ .low_level = .{
                 .op = call.op,
@@ -746,6 +752,12 @@ const Lowerer = struct {
         return try self.program.addExprSpan(args);
     }
 
+    fn lowerImportedDirectCallArgs(self: *Lowerer, args_span: Lifted.Span(Lifted.ExprId)) Allocator.Error!Ast.Span(Ast.ExprId) {
+        const args = try self.lowerExprSlice(self.solved.lifted.exprSpan(args_span));
+        defer self.allocator.free(args);
+        return try self.program.addExprSpan(args);
+    }
+
     fn lowerValueCall(self: *Lowerer, ty: Type.TypeId, call: anytype) Allocator.Error!Ast.ExprData {
         const callee = try self.lowerExpr(call.callee);
         const callee_ty = self.program.exprs.items[@intFromEnum(callee)].ty;
@@ -789,7 +801,7 @@ const Lowerer = struct {
                         .body = try self.program.addExpr(.{
                             .ty = ty,
                             .data = .{ .direct_call = .{
-                                .target = variant.target,
+                                .target = .{ .local = variant.target },
                                 .args = try self.program.addExprSpan(call_args),
                             } },
                         }),

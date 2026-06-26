@@ -359,21 +359,22 @@ fn expectSpecsCoveredByCachedOrLoaded(
     }
 }
 
-fn importedDirectCallCount(view: MonoAst.ProgramView) usize {
-    var count: usize = 0;
-    for (view.exprs) |expr| {
-        switch (expr.data) {
-            .call_proc => |call| switch (call.callee) {
-                .func => |slot| switch (slot) {
-                    .local => {},
-                    .imported => count += 1,
-                },
-                .lifted => {},
-            },
-            else => {},
-        }
-    }
-    return count;
+fn isUnaryPrimitiveFnSpec(view: MonoAst.ProgramView, record: MonoAst.SpecRecord, primitive: MonoType.Primitive) bool {
+    const func = switch (view.types.get(record.identity.mono_fn_ty)) {
+        .func => |func| func,
+        else => return false,
+    };
+    const args = view.types.span(func.args);
+    if (args.len != 1) return false;
+    const arg_matches = switch (view.types.get(args[0])) {
+        .primitive => |arg| arg == primitive,
+        else => false,
+    };
+    const ret_matches = switch (view.types.get(func.ret)) {
+        .primitive => |ret| ret == primitive,
+        else => false,
+    };
+    return arg_matches and ret_matches;
 }
 
 fn lowerModuleWithDebugEffects(
@@ -1563,15 +1564,6 @@ test "disabling monotype specialization cache does not change monotype output" {
 
 test "monotype specialization cache read reuses loaded hits and lowers fresh misses" {
     const allocator = std.testing.allocator;
-    const loaded_source =
-        \\module [main]
-        \\
-        \\identity : a -> a
-        \\identity = |value| value
-        \\
-        \\main : U64
-        \\main = identity(1)
-    ;
     const mixed_source =
         \\module [main]
         \\
@@ -1584,15 +1576,21 @@ test "monotype specialization cache read reuses loaded hits and lowers fresh mis
         \\}
     ;
 
-    var loaded_program = try lowerMonotypeModule(allocator, loaded_source);
+    var loaded_program = try lowerMonotypeModule(allocator, mixed_source);
     defer loaded_program.deinit(allocator);
+    const loaded_program_view = loaded_program.mono.view();
+
+    const selected_loaded_spec = for (loaded_program_view.specs) |record| {
+        if (isUnaryPrimitiveFnSpec(loaded_program_view, record, .u64)) break record;
+    } else return error.MissingProcSpec;
+    const loaded_specs = [_]MonoAst.SpecRecord{selected_loaded_spec};
 
     const loaded_types = try durableTypeSnapshot(allocator, &loaded_program.mono);
     defer loaded_types.deinit(allocator);
     const loaded_shards = [_]MonoLower.LoadedSpecializationShard{.{
         .shard_id = @enumFromInt(1),
         .types = loaded_types.view,
-        .specs = loaded_program.mono.view().specs,
+        .specs = &loaded_specs,
     }};
 
     var no_cache = try lowerMonotypeModuleWithOptions(allocator, mixed_source, .{
@@ -1609,7 +1607,7 @@ test "monotype specialization cache read reuses loaded hits and lowers fresh mis
     defer cached.deinit(allocator);
 
     try std.testing.expect(cached.mono.view().imported_fns.len > 0);
-    try std.testing.expect(importedDirectCallCount(cached.mono.view()) > 0);
+    try std.testing.expect(cached.mono.view().specs.len < no_cache.mono.view().specs.len);
     try std.testing.expect(counters.template_hits > 0);
     try std.testing.expect(counters.template_misses > 0);
     try expectSpecsCoveredByCachedOrLoaded(allocator, no_cache.mono.view(), cached.mono.view(), loaded_shards[0]);

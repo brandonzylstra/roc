@@ -329,12 +329,6 @@ pub fn localDirectCallee(call: Mono.CallProc) ?FnId {
     };
 }
 
-/// Return the local lifted function id for stages that cannot yet consume
-/// imported shard calls.
-pub fn localDirectCalleeOrInvariant(call: Mono.CallProc, comptime stage: []const u8) FnId {
-    return localDirectCallee(call) orelse Common.invariant(stage ++ " requires imported Monotype calls to be resolved before this stage");
-}
-
 /// Complete Monotype Lifted program plus side arrays.
 pub const Program = struct {
     allocator: std.mem.Allocator,

@@ -447,13 +447,21 @@ const Solver = struct {
                 }
             },
             .call_proc => |call| {
-                const callee = Lifted.localDirectCalleeOrInvariant(call, "Lambda Solved");
-                const func = try self.functionShape(self.program.fn_tys.items[@intFromEnum(callee)]);
                 const args = self.lifted.exprSpan(call.args);
-                if (func.args.count() != args.len) Common.invariant("procedure call arity differs from its checked type");
-                try self.unify(expected, func.ret);
-                for (args, 0..) |arg, i| {
-                    _ = try self.expectExpr(arg, self.program.types.spanItem(func.args, i));
+                switch (Lifted.directCallee(call)) {
+                    .local => |callee| {
+                        const func = try self.functionShape(self.program.fn_tys.items[@intFromEnum(callee)]);
+                        if (func.args.count() != args.len) Common.invariant("procedure call arity differs from its checked type");
+                        try self.unify(expected, func.ret);
+                        for (args, 0..) |arg, i| {
+                            _ = try self.expectExpr(arg, self.program.types.spanItem(func.args, i));
+                        }
+                    },
+                    .imported => {
+                        for (args) |arg| {
+                            _ = try self.inferExpr(arg);
+                        }
+                    },
                 }
             },
             .low_level => |call| {
@@ -686,7 +694,10 @@ const Solver = struct {
         const ty = switch (expr.data) {
             .local => |local| self.localTy(local),
             .fn_ref => |fn_id| self.program.fn_tys.items[@intFromEnum(fn_id)],
-            .call_proc => |call| (try self.functionShape(self.program.fn_tys.items[@intFromEnum(Lifted.localDirectCalleeOrInvariant(call, "Lambda Solved"))])).ret,
+            .call_proc => |call| switch (Lifted.directCallee(call)) {
+                .local => |callee| (try self.functionShape(self.program.fn_tys.items[@intFromEnum(callee)])).ret,
+                .imported => try self.lowerTypeFresh(expr.ty),
+            },
             else => try self.lowerTypeFresh(expr.ty),
         };
         self.expr_tys[index] = ty;
