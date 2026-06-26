@@ -8871,6 +8871,16 @@ const BodyContext = struct {
         arg_index: usize,
         arg_ty: Type.TypeId,
     ) Allocator.Error!Type.TypeId {
+        const fn_node = try self.instantiateTargetCallNodeFromMonoArgAtIndex(source_fn_ty, arg_index, arg_ty);
+        return try self.graph.monoFor(fn_node);
+    }
+
+    fn instantiateTargetCallNodeFromMonoArgAtIndex(
+        self: *BodyContext,
+        source_fn_ty: checked.CheckedTypeId,
+        arg_index: usize,
+        arg_ty: Type.TypeId,
+    ) Allocator.Error!NodeId {
         const function = self.checkedFunctionType(source_fn_ty);
         if (arg_index >= function.args.len) {
             Common.invariant("checked synthetic dispatch target argument index was outside its function type");
@@ -8878,7 +8888,7 @@ const BodyContext = struct {
         const fn_node = try self.instNode(source_fn_ty);
         try self.graph.unify(try self.instNode(function.args[arg_index]), try self.graph.importMono(arg_ty));
         try self.graph.drainDirty();
-        return try self.graph.monoFor(fn_node);
+        return fn_node;
     }
 
     fn callArgumentMonoType(
@@ -10776,7 +10786,8 @@ const BodyContext = struct {
         };
         var target_ctx = try BodyContext.init(self.allocator, self.builder, lookup.view, owner_template, graph);
         defer target_ctx.deinit();
-        return try target_ctx.instantiateTargetCallTypeFromMonoArgAtIndex(lookup.target.callable_ty, arg_index, arg_ty);
+        const fn_node = try target_ctx.instantiateTargetCallNodeFromMonoArgAtIndex(lookup.target.callable_ty, arg_index, arg_ty);
+        return try graph.sealNode(fn_node);
     }
 
     fn methodLookupForTypeName(
