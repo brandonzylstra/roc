@@ -2841,7 +2841,8 @@ const Builder = struct {
         const expr = fn_view.bodies.expr(runtime.expr);
         const plan = dispatchPlanForRuntimeExpr(fn_view, runtime.expr);
         const plan_args = plan.argsSlice(fn_view.static_dispatch_plans);
-        const callable_mono_ty = try fn_ctx.instantiateDispatchPlanCallTypeFromCaller(plan.callable_ty, &fn_ctx, expr.ty, plan_args, ty);
+        const callable_node = try fn_ctx.instantiateDispatchPlanCallNodeFromCaller(plan.callable_ty, &fn_ctx, expr.ty, plan_args, ty);
+        const callable_mono_ty = try graph.sealNode(callable_node);
         const fn_data = self.functionShape(callable_mono_ty, "stored parser constructor had a non-function type");
         const arg_tys = try self.allocator.dupe(Type.TypeId, self.program.types.span(fn_data.args));
         defer self.allocator.free(arg_tys);
@@ -2939,7 +2940,8 @@ const Builder = struct {
         const expr = fn_view.bodies.expr(runtime.expr);
         const plan = dispatchPlanForRuntimeExpr(fn_view, runtime.expr);
         const plan_args = plan.argsSlice(fn_view.static_dispatch_plans);
-        const callable_mono_ty = try fn_ctx.instantiateDispatchPlanCallTypeFromCaller(plan.callable_ty, &fn_ctx, expr.ty, plan_args, ty);
+        const callable_node = try fn_ctx.instantiateDispatchPlanCallNodeFromCaller(plan.callable_ty, &fn_ctx, expr.ty, plan_args, ty);
+        const callable_mono_ty = try graph.sealNode(callable_node);
         const fn_data = self.functionShape(callable_mono_ty, "stored encode_to constructor had a non-function type");
         const arg_tys = try self.allocator.dupe(Type.TypeId, self.program.types.span(fn_data.args));
         defer self.allocator.free(arg_tys);
@@ -8720,6 +8722,18 @@ const BodyContext = struct {
         operands: []const static_dispatch.StaticDispatchOperand,
         expected_ret_ty: ?Type.TypeId,
     ) Allocator.Error!Type.TypeId {
+        const fn_node = try self.instantiateDispatchPlanCallNodeFromCaller(source_fn_ty, caller, checked_ret_ty, operands, expected_ret_ty);
+        return try self.graph.monoFor(fn_node);
+    }
+
+    fn instantiateDispatchPlanCallNodeFromCaller(
+        self: *BodyContext,
+        source_fn_ty: checked.CheckedTypeId,
+        caller: *BodyContext,
+        checked_ret_ty: checked.CheckedTypeId,
+        operands: []const static_dispatch.StaticDispatchOperand,
+        expected_ret_ty: ?Type.TypeId,
+    ) Allocator.Error!NodeId {
         const function = self.checkedFunctionType(source_fn_ty);
         if (function.args.len != operands.len) {
             Common.invariant("checked dispatch plan arity differs from its function type");
@@ -8733,7 +8747,7 @@ const BodyContext = struct {
             try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(expected));
         }
         try self.graph.drainDirty();
-        return try self.graph.monoFor(fn_node);
+        return fn_node;
     }
 
     fn relateFormalToOperand(
