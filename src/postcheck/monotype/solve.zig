@@ -1197,27 +1197,6 @@ pub const InstGraph = struct {
         return ty;
     }
 
-    pub fn ownsMonoView(self: *InstGraph, ty: Type.TypeId) bool {
-        const raw_node = self.mono_nodes.get(ty) orelse return false;
-        const root = self.find(raw_node);
-        const views = self.node_monos.get(root) orelse return false;
-        for (views.items) |view| {
-            if (view == ty) return true;
-        }
-        return false;
-    }
-
-    /// Copy a graph-owned mutable Monotype view into a final TypeId. The
-    /// returned id is not registered as a graph view, so later graph evidence
-    /// cannot refill it. Non-view TypeIds are already outside this graph and
-    /// are returned unchanged.
-    pub fn sealMono(self: *InstGraph, ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        try self.drainDirty();
-        var sealer = MonoSealer.init(self);
-        defer sealer.deinit();
-        return try sealer.seal(ty);
-    }
-
     /// Materialize a graph node directly into a final TypeId without first
     /// exposing or copying a mutable Monotype view.
     pub fn sealNode(self: *InstGraph, node: NodeId) Allocator.Error!Type.TypeId {
@@ -1408,8 +1387,8 @@ pub const InstGraph = struct {
     }
 };
 
-/// Shared finalization state for copying graph-owned draft type views into
-/// immutable Monotype type ids.
+/// Shared finalization state for materializing graph nodes into immutable
+/// Monotype type ids.
 pub const GraphTypeFinals = struct {
     graph: *InstGraph,
     sealed: std.AutoHashMap(NodeId, Type.TypeId),
@@ -1530,116 +1509,6 @@ pub const GraphTypeFinals = struct {
             };
         }
         return try self.graph.types.addTagVariants(self.graph.name_store, tags);
-    }
-};
-
-const MonoSealer = struct {
-    graph: *InstGraph,
-    sealed: std.AutoHashMap(Type.TypeId, Type.TypeId),
-
-    fn init(graph: *InstGraph) MonoSealer {
-        return .{
-            .graph = graph,
-            .sealed = std.AutoHashMap(Type.TypeId, Type.TypeId).init(graph.allocator),
-        };
-    }
-
-    fn deinit(self: *MonoSealer) void {
-        self.sealed.deinit();
-    }
-
-    fn seal(self: *MonoSealer, ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        if (!self.graph.ownsMonoView(ty)) return ty;
-        if (self.sealed.get(ty)) |existing| return existing;
-
-        const out = try self.graph.types.add(.zst);
-        try self.sealed.put(ty, out);
-        const content = try self.sealContent(self.graph.types.get(ty));
-        self.graph.types.set(out, content);
-        return out;
-    }
-
-    fn sealContent(self: *MonoSealer, content: Type.Content) Allocator.Error!Type.Content {
-        return switch (content) {
-            .primitive => |primitive| .{ .primitive = primitive },
-            .list => |elem| .{ .list = try self.seal(elem) },
-            .box => |elem| .{ .box = try self.seal(elem) },
-            .tuple => |items| .{ .tuple = try self.sealTypeSpan(items) },
-            .func => |func| .{ .func = .{
-                .args = try self.sealTypeSpan(func.args),
-                .ret = try self.seal(func.ret),
-            } },
-            .tag_union => |tags| .{ .tag_union = try self.sealTagSpan(tags) },
-            .record => |fields| .{ .record = try self.sealFieldSpan(fields) },
-            .named => |named| .{ .named = .{
-                .named_type = named.named_type,
-                .def = named.def,
-                .kind = named.kind,
-                .builtin_owner = named.builtin_owner,
-                .args = try self.sealTypeSpan(named.args),
-                .backing = if (named.backing) |backing| .{
-                    .ty = try self.seal(backing.ty),
-                    .use = backing.use,
-                } else null,
-                .declared_order = try self.sealDeclaredFieldSpan(named.declared_order),
-            } },
-            .erased => |digest| .{ .erased = digest },
-            .zst => .zst,
-        };
-    }
-
-    fn sealTypeSpan(self: *MonoSealer, span: Type.Span) Allocator.Error!Type.Span {
-        const values = self.graph.types.span(span);
-        if (values.len == 0) return .empty();
-        const sealed_values = try self.graph.allocator.alloc(Type.TypeId, values.len);
-        defer self.graph.allocator.free(sealed_values);
-        for (values, 0..) |value, index| {
-            sealed_values[index] = try self.seal(value);
-        }
-        return try self.graph.types.addSpan(sealed_values);
-    }
-
-    fn sealFieldSpan(self: *MonoSealer, span: Type.Span) Allocator.Error!Type.Span {
-        const fields = self.graph.types.fieldSpan(span);
-        if (fields.len == 0) return .empty();
-        const sealed_fields = try self.graph.allocator.alloc(Type.Field, fields.len);
-        defer self.graph.allocator.free(sealed_fields);
-        for (fields, 0..) |field, index| {
-            sealed_fields[index] = .{
-                .name = field.name,
-                .ty = try self.seal(field.ty),
-            };
-        }
-        return try self.graph.types.addRecordFields(self.graph.name_store, sealed_fields);
-    }
-
-    fn sealTagSpan(self: *MonoSealer, span: Type.Span) Allocator.Error!Type.Span {
-        const tags = self.graph.types.tagSpan(span);
-        if (tags.len == 0) return .empty();
-        const sealed_tags = try self.graph.allocator.alloc(Type.Tag, tags.len);
-        defer self.graph.allocator.free(sealed_tags);
-        for (tags, 0..) |tag, index| {
-            sealed_tags[index] = .{
-                .name = tag.name,
-                .checked_name = tag.checked_name,
-                .payloads = try self.sealTypeSpan(tag.payloads),
-            };
-        }
-        return try self.graph.types.addTagVariants(self.graph.name_store, sealed_tags);
-    }
-
-    fn sealDeclaredFieldSpan(self: *MonoSealer, span: Type.Span) Allocator.Error!Type.Span {
-        const declared = self.graph.types.declaredFieldSpan(span);
-        if (declared.len == 0) return .empty();
-        const sealed_declared = try self.graph.allocator.alloc(Type.DeclaredField, declared.len);
-        defer self.graph.allocator.free(sealed_declared);
-        for (declared, 0..) |field, index| {
-            sealed_declared[index] = switch (field) {
-                .named => |name| .{ .named = name },
-                .padding => |padding| .{ .padding = try self.seal(padding) },
-            };
-        }
-        return try self.graph.types.addDeclaredFields(sealed_declared);
     }
 };
 
@@ -1924,9 +1793,11 @@ test "sealed monotype copy is not refilled by later graph evidence" {
     } });
 
     const draft = try graph.monoFor(row);
-    const sealed = try graph.sealMono(draft);
-    try std.testing.expect(graph.ownsMonoView(draft));
-    try std.testing.expect(!graph.ownsMonoView(sealed));
+    try graph.drainDirty();
+    var finals = GraphTypeFinals.init(graph);
+    defer finals.deinit();
+    const sealed = try finals.sealType(draft);
+    try std.testing.expect(sealed != draft);
     try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
 
     const extra_fields = try graph.arena().alloc(InstField, 1);
@@ -1971,7 +1842,7 @@ test "sealed graph node does not allocate a mutable monotype view" {
     } });
 
     const sealed = try graph.sealNode(row);
-    try std.testing.expect(!graph.ownsMonoView(sealed));
+    try std.testing.expectEqual(@as(usize, 0), graph.node_monos.count());
     try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
 
     const extra_fields = try graph.arena().alloc(InstField, 1);
