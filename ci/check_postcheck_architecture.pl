@@ -134,6 +134,100 @@ for my $rel (iter_zig_files()) {
     close $fh or die "failed to close $rel: $!\n";
 }
 
+sub brace_delta {
+    my ($line) = @_;
+    my $opens = ($line =~ tr/{/{/);
+    my $closes = ($line =~ tr/}/}/);
+    return $opens - $closes;
+}
+
+sub check_body_context_output_access {
+    my $rel = 'src/postcheck/monotype/lower.zig';
+    my $path = File::Spec->catfile($ROOT, $rel);
+    open my $fh, '<', $path or die "failed to read $rel: $!\n";
+
+    my %allowed_fn = map { $_ => 1 } qw(
+        addExpr
+        addPat
+        addLocal
+        addLocalWithBinder
+        addFn
+        reserveDef
+        setDef
+        addExprSpan
+        addPatSpan
+        addTypedLocalSpan
+        addStmt
+        addStmtSpan
+        addFieldExprSpan
+        addRecordDestructSpan
+        addBranchSpan
+        addIfBranchSpan
+        addStrPatternStepSpan
+        addStringLiteral
+        addStringView
+        addComptimeSite
+        exprLoc
+        exprRegion
+        exprType
+        patData
+        localType
+    );
+
+    my $direct_output = qr/self\.builder\.program\.(?:addExpr|addPat|addLocal|addLocalWithBinder|addFn|addExprSpan|addPatSpan|addTypedLocalSpan|addStmt|addStmtSpan|addFieldExprSpan|addRecordDestructSpan|addBranchSpan|addIfBranchSpan|addStrPatternStepSpan|addStringLiteral|addStringView|addComptimeSite|defs\.append|defs\.items|exprs\.items|pats\.items|locals\.items)\b/;
+
+    my $in_body_context = 0;
+    my $body_depth = 0;
+    my $current_fn;
+    my $fn_started = 0;
+    my $fn_depth = 0;
+    my $line_no = 0;
+
+    while (my $line = <$fh>) {
+        ++$line_no;
+        chomp $line;
+
+        if (!$in_body_context) {
+            if ($line =~ /^\s*const\s+BodyContext\s*=\s*struct\s*\{/) {
+                $in_body_context = 1;
+                $body_depth = brace_delta($line);
+            }
+            next;
+        }
+
+        if (!defined $current_fn && $line =~ /^\s+fn\s+([A-Za-z0-9_]+)\b/) {
+            $current_fn = $1;
+            $fn_started = 0;
+            $fn_depth = 0;
+        }
+
+        if ($line =~ $direct_output && !$allowed_fn{$current_fn // ''}) {
+            push @violations, "$rel:$line_no: body-context-final-output: $line";
+        }
+
+        my $delta = brace_delta($line);
+        $body_depth += $delta;
+
+        if (defined $current_fn) {
+            if (!$fn_started && $line =~ /\{/) {
+                $fn_started = 1;
+            }
+            $fn_depth += $delta if $fn_started;
+            if ($fn_started && $fn_depth <= 0) {
+                undef $current_fn;
+                $fn_started = 0;
+                $fn_depth = 0;
+            }
+        }
+
+        last if $body_depth <= 0;
+    }
+
+    close $fh or die "failed to close $rel: $!\n";
+}
+
+check_body_context_output_access();
+
 if (@violations) {
     print "Post-check architecture violations found:\n";
     print "$_\n" for @violations;
