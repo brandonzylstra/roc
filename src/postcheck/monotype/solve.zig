@@ -1245,6 +1245,12 @@ pub const InstGraph = struct {
         return try sealer.sealNode(node);
     }
 
+    pub fn assertNoDeferredRequestsBeforeBodySeal(self: *InstGraph) void {
+        if (self.deferred_templates.items.len != 0) {
+            Common.invariant("Monotype body draft sealed before deferred specialization requests were drained");
+        }
+    }
+
     /// Write a node's current content into one of its Monotype views.
     fn fillMono(self: *InstGraph, raw_root: NodeId, ty: Type.TypeId) Allocator.Error!void {
         const root = self.find(raw_root);

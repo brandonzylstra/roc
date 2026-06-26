@@ -3774,6 +3774,7 @@ const BodyDraft = struct {
 
     fn seal(self: BodyDraft, builder: *Builder, graph: *InstGraph, root_node: ?NodeId, end_: End) Allocator.Error!?Type.TypeId {
         try graph.drainDirty();
+        graph.assertNoDeferredRequestsBeforeBodySeal();
         var sealer = GraphTypeFinals.init(graph);
         defer sealer.deinit();
         const sealed_root = if (root_node) |node| try sealer.sealNode(node) else null;
