@@ -43,6 +43,12 @@ pub const ReserveResult = struct {
     created: bool,
 };
 
+/// Existing specialization found without allocating a fresh local record.
+pub const LookupResult = struct {
+    spec: ?Ast.SpecId,
+    target: Ast.FnSlot,
+};
+
 const LoadedSpecId = enum(u32) { _ };
 
 const LoadedSpec = struct {
@@ -116,22 +122,17 @@ pub const SpecBuilder = struct {
         identity: Ast.SpecIdentity,
         fn_id: Ast.FnId,
     ) std.mem.Allocator.Error!ReserveResult {
+        if (try self.find(identity)) |hit| {
+            return .{
+                .spec = hit.spec,
+                .target = hit.target,
+                .created = false,
+            };
+        }
+
         const lookup_digest = SpecLookupDigest.from(identity);
         const gop = try self.lookup.getOrPut(lookup_digest);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
-
-        for (gop.value_ptr.items) |entry_id| {
-            if (try self.entryMatches(entry_id, identity)) {
-                return .{
-                    .spec = switch (entry_id) {
-                        .local => |spec_id| spec_id,
-                        .loaded => null,
-                    },
-                    .target = self.entryTarget(entry_id),
-                    .created = false,
-                };
-            }
-        }
 
         const spec_id: Ast.SpecId = @enumFromInt(@as(u32, @intCast(self.records.items.len)));
         try self.records.append(self.allocator, .{
@@ -146,6 +147,21 @@ pub const SpecBuilder = struct {
             .target = .{ .local = fn_id },
             .created = true,
         };
+    }
+
+    pub fn find(self: *SpecBuilder, identity: Ast.SpecIdentity) std.mem.Allocator.Error!?LookupResult {
+        const entries = self.lookup.get(SpecLookupDigest.from(identity)) orelse return null;
+        for (entries.items) |entry_id| {
+            if (!try self.entryMatches(entry_id, identity)) continue;
+            return .{
+                .spec = switch (entry_id) {
+                    .local => |spec_id| spec_id,
+                    .loaded => null,
+                },
+                .target = self.entryTarget(entry_id),
+            };
+        }
+        return null;
     }
 
     pub fn markLowering(self: *SpecBuilder, spec: Ast.SpecId) void {
@@ -316,6 +332,8 @@ test "monotype spec builder reuses exact specialization identities" {
 
     const requested_fn: Ast.FnId = @enumFromInt(1);
     const duplicate_request_fn: Ast.FnId = @enumFromInt(2);
+    try std.testing.expectEqual(@as(?LookupResult, null), try builder.find(identity));
+
     const first = try builder.reserve(identity, requested_fn);
     const second = try builder.reserve(identity, duplicate_request_fn);
 
@@ -325,6 +343,9 @@ test "monotype spec builder reuses exact specialization identities" {
     try std.testing.expectEqual(Ast.FnSlot{ .local = requested_fn }, first.target);
     try std.testing.expectEqual(Ast.FnSlot{ .local = requested_fn }, second.target);
     try std.testing.expectEqual(@as(usize, 1), builder.records.items.len);
+    const found = (try builder.find(identity)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(first.spec, found.spec);
+    try std.testing.expectEqual(Ast.FnSlot{ .local = requested_fn }, found.target);
 
     const first_spec = first.spec orelse return error.TestUnexpectedResult;
     builder.markLowering(first_spec);
@@ -457,6 +478,11 @@ test "monotype spec builder reuses loaded records through exact cross-store type
         .status = .ready,
     }, loaded_durable, imported);
 
+    const found = (try builder.find(current_identity)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(?Ast.SpecId, null), found.spec);
+    try std.testing.expectEqual(Ast.FnSlot{ .imported = imported }, found.target);
+    try std.testing.expectEqual(@as(usize, 0), builder.records.items.len);
+
     const hit = try builder.reserve(current_identity, @enumFromInt(1));
     try std.testing.expect(!hit.created);
     try std.testing.expectEqual(@as(?Ast.SpecId, null), hit.spec);
@@ -509,6 +535,8 @@ test "monotype spec builder rejects loaded records when exact cross-store type e
         .fn_id = @enumFromInt(9),
         .status = .ready,
     }, loaded_durable, @enumFromInt(1));
+
+    try std.testing.expectEqual(@as(?LookupResult, null), try builder.find(current_identity));
 
     const miss = try builder.reserve(current_identity, @enumFromInt(1));
     try std.testing.expect(miss.created);
