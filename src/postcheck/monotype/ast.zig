@@ -776,8 +776,8 @@ pub const ProgramView = struct {
     }
 };
 
-/// Complete Monotype program plus side arrays.
-pub const Program = struct {
+/// Mutable builder-side Monotype program storage plus side arrays.
+pub const ProgramBuilder = struct {
     allocator: std.mem.Allocator,
     names: names.NameStore,
     next_symbol: u32,
@@ -827,7 +827,7 @@ pub const Program = struct {
     /// Ambient checked source region recorded by `addExpr`/`addStmt`.
     current_region: base.Region,
 
-    pub fn init(allocator: std.mem.Allocator) Program {
+    pub fn init(allocator: std.mem.Allocator) ProgramBuilder {
         return .{
             .allocator = allocator,
             .names = names.NameStore.init(allocator),
@@ -868,7 +868,7 @@ pub const Program = struct {
         };
     }
 
-    pub fn deinit(self: *Program) void {
+    pub fn deinit(self: *ProgramBuilder) void {
         for (self.local_names.items) |name| {
             if (name.len > 0) self.allocator.free(name);
         }
@@ -911,33 +911,33 @@ pub const Program = struct {
         self.names.deinit();
     }
 
-    pub fn addFn(self: *Program, source: FnTemplate) std.mem.Allocator.Error!FnId {
+    pub fn addFn(self: *ProgramBuilder, source: FnTemplate) std.mem.Allocator.Error!FnId {
         const id: FnId = @enumFromInt(@as(u32, @intCast(self.fns.items.len)));
         try self.fns.append(self.allocator, .{ .source = source });
         return id;
     }
 
-    pub fn addImportedFn(self: *Program, imported: ImportedFn) std.mem.Allocator.Error!ImportedFnId {
+    pub fn addImportedFn(self: *ProgramBuilder, imported: ImportedFn) std.mem.Allocator.Error!ImportedFnId {
         const id: ImportedFnId = @enumFromInt(@as(u32, @intCast(self.imported_fns.items.len)));
         try self.imported_fns.append(self.allocator, imported);
         return id;
     }
 
-    pub fn addSpec(self: *Program, record: SpecRecord) std.mem.Allocator.Error!SpecId {
+    pub fn addSpec(self: *ProgramBuilder, record: SpecRecord) std.mem.Allocator.Error!SpecId {
         const id: SpecId = @enumFromInt(@as(u32, @intCast(self.specs.items.len)));
         try self.specs.append(self.allocator, record);
         return id;
     }
 
-    pub fn fnSource(self: *const Program, id: FnId) FnTemplate {
+    pub fn fnSource(self: *const ProgramBuilder, id: FnId) FnTemplate {
         return self.view().fnSource(id);
     }
 
-    pub fn verifyCallTargets(self: *const Program) ?CallTargetVerifyError {
+    pub fn verifyCallTargets(self: *const ProgramBuilder) ?CallTargetVerifyError {
         return self.view().verifyCallTargets();
     }
 
-    pub fn view(self: *const Program) ProgramView {
+    pub fn view(self: *const ProgramBuilder) ProgramView {
         return .{
             .names = &self.names,
             .types = self.types.view(),
@@ -975,7 +975,7 @@ pub const Program = struct {
         };
     }
 
-    pub fn addExpr(self: *Program, expr: Expr) std.mem.Allocator.Error!ExprId {
+    pub fn addExpr(self: *ProgramBuilder, expr: Expr) std.mem.Allocator.Error!ExprId {
         const id: ExprId = @enumFromInt(@as(u32, @intCast(self.exprs.items.len)));
         try self.exprs.append(self.allocator, expr);
         try self.expr_locs.append(self.allocator, self.current_loc);
@@ -983,17 +983,17 @@ pub const Program = struct {
         return id;
     }
 
-    pub fn setProcDebugName(self: *Program, symbol: Common.Symbol, name: names.ExportNameId) std.mem.Allocator.Error!void {
+    pub fn setProcDebugName(self: *ProgramBuilder, symbol: Common.Symbol, name: names.ExportNameId) std.mem.Allocator.Error!void {
         try self.proc_debug_names.put(symbol, name);
     }
 
-    pub fn procDebugName(self: *const Program, symbol: Common.Symbol) ?names.ExportNameId {
+    pub fn procDebugName(self: *const ProgramBuilder, symbol: Common.Symbol) ?names.ExportNameId {
         return self.proc_debug_names.get(symbol);
     }
 
     /// Register a source file (module display name) and return its index for
     /// `SourceLoc.file`. Callers deduplicate; this always appends.
-    pub fn addSourceFile(self: *Program, name: []const u8) std.mem.Allocator.Error!u32 {
+    pub fn addSourceFile(self: *ProgramBuilder, name: []const u8) std.mem.Allocator.Error!u32 {
         const id: u32 = @intCast(self.source_files.items.len);
         const owned = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned);
@@ -1002,32 +1002,32 @@ pub const Program = struct {
     }
 
     /// Source location of an expression.
-    pub fn exprLoc(self: *const Program, id: ExprId) base.SourceLoc {
+    pub fn exprLoc(self: *const ProgramBuilder, id: ExprId) base.SourceLoc {
         return self.expr_locs.items[@intFromEnum(id)];
     }
 
     /// Checked source region of an expression.
-    pub fn exprRegion(self: *const Program, id: ExprId) base.Region {
+    pub fn exprRegion(self: *const ProgramBuilder, id: ExprId) base.Region {
         return self.expr_regions.items[@intFromEnum(id)];
     }
 
     /// Source location of a statement.
-    pub fn stmtLoc(self: *const Program, id: StmtId) base.SourceLoc {
+    pub fn stmtLoc(self: *const ProgramBuilder, id: StmtId) base.SourceLoc {
         return self.stmt_locs.items[@intFromEnum(id)];
     }
 
     /// Checked source region of a statement.
-    pub fn stmtRegion(self: *const Program, id: StmtId) base.Region {
+    pub fn stmtRegion(self: *const ProgramBuilder, id: StmtId) base.Region {
         return self.stmt_regions.items[@intFromEnum(id)];
     }
 
-    pub fn addPat(self: *Program, pat: Pat) std.mem.Allocator.Error!PatId {
+    pub fn addPat(self: *ProgramBuilder, pat: Pat) std.mem.Allocator.Error!PatId {
         const id: PatId = @enumFromInt(@as(u32, @intCast(self.pats.items.len)));
         try self.pats.append(self.allocator, pat);
         return id;
     }
 
-    pub fn addStmt(self: *Program, stmt: Stmt) std.mem.Allocator.Error!StmtId {
+    pub fn addStmt(self: *ProgramBuilder, stmt: Stmt) std.mem.Allocator.Error!StmtId {
         const id: StmtId = @enumFromInt(@as(u32, @intCast(self.stmts.items.len)));
         try self.stmts.append(self.allocator, stmt);
         try self.stmt_locs.append(self.allocator, self.current_loc);
@@ -1036,7 +1036,7 @@ pub const Program = struct {
     }
 
     pub fn addComptimeSite(
-        self: *Program,
+        self: *ProgramBuilder,
         kind: ComptimeSiteKind,
         region: base.Region,
         checked_site: ?checked.CheckedExhaustivenessSiteId,
@@ -1054,15 +1054,15 @@ pub const Program = struct {
         return id;
     }
 
-    pub fn comptimeSite(self: *const Program, id: ComptimeSiteId) ComptimeSite {
+    pub fn comptimeSite(self: *const ProgramBuilder, id: ComptimeSiteId) ComptimeSite {
         return self.comptime_sites.items[@intFromEnum(id)];
     }
 
-    pub fn addStringLiteral(self: *Program, text: []const u8) std.mem.Allocator.Error!StringLiteralId {
+    pub fn addStringLiteral(self: *ProgramBuilder, text: []const u8) std.mem.Allocator.Error!StringLiteralId {
         return try self.addStringView(text, 0, @intCast(text.len));
     }
 
-    pub fn addStringView(self: *Program, backing: []const u8, offset: u32, len: u32) std.mem.Allocator.Error!StringLiteralId {
+    pub fn addStringView(self: *ProgramBuilder, backing: []const u8, offset: u32, len: u32) std.mem.Allocator.Error!StringLiteralId {
         const offset_usize: usize = offset;
         const len_usize: usize = len;
         if (offset_usize > backing.len or len_usize > backing.len - offset_usize) {
@@ -1080,20 +1080,20 @@ pub const Program = struct {
         return id;
     }
 
-    pub fn stringLiteral(self: *const Program, id: StringLiteralId) StringLiteral {
+    pub fn stringLiteral(self: *const ProgramBuilder, id: StringLiteralId) StringLiteral {
         return self.string_literals.items[@intFromEnum(id)];
     }
 
-    pub fn stringLiteralText(self: *const Program, id: StringLiteralId) []const u8 {
+    pub fn stringLiteralText(self: *const ProgramBuilder, id: StringLiteralId) []const u8 {
         return self.stringLiteral(id).text();
     }
 
-    pub fn addLocal(self: *Program, symbol: Common.Symbol, ty: Type.TypeId) std.mem.Allocator.Error!LocalId {
+    pub fn addLocal(self: *ProgramBuilder, symbol: Common.Symbol, ty: Type.TypeId) std.mem.Allocator.Error!LocalId {
         return try self.addLocalWithBinder(symbol, ty, null);
     }
 
     pub fn addLocalWithBinder(
-        self: *Program,
+        self: *ProgramBuilder,
         symbol: Common.Symbol,
         ty: Type.TypeId,
         binder: ?checked.PatternBinderId,
@@ -1104,12 +1104,12 @@ pub const Program = struct {
         return id;
     }
 
-    pub fn setLocalCaptureId(self: *Program, id: LocalId, capture_id: u32) void {
+    pub fn setLocalCaptureId(self: *ProgramBuilder, id: LocalId, capture_id: u32) void {
         self.locals.items[@intFromEnum(id)].capture_id = capture_id;
     }
 
     /// Record the source-level name of a local (dupes; empty means none).
-    pub fn setLocalName(self: *Program, id: LocalId, name: []const u8) std.mem.Allocator.Error!void {
+    pub fn setLocalName(self: *ProgramBuilder, id: LocalId, name: []const u8) std.mem.Allocator.Error!void {
         if (name.len == 0) return;
         const slot = &self.local_names.items[@intFromEnum(id)];
         if (slot.len > 0) self.allocator.free(slot.*);
@@ -1117,11 +1117,11 @@ pub const Program = struct {
     }
 
     /// Source-level name of a local; empty for compiler-generated temporaries.
-    pub fn localName(self: *const Program, id: LocalId) []const u8 {
+    pub fn localName(self: *const ProgramBuilder, id: LocalId) []const u8 {
         return self.local_names.items[@intFromEnum(id)];
     }
 
-    pub fn setLocalType(self: *Program, id: LocalId, ty: Type.TypeId) void {
+    pub fn setLocalType(self: *ProgramBuilder, id: LocalId, ty: Type.TypeId) void {
         self.locals.items[@intFromEnum(id)].ty = ty;
         for (self.typed_locals.items) |*typed_local| {
             if (typed_local.local == id) {
@@ -1130,19 +1130,19 @@ pub const Program = struct {
         }
     }
 
-    pub fn addExprSpan(self: *Program, ids: []const ExprId) std.mem.Allocator.Error!Span(ExprId) {
+    pub fn addExprSpan(self: *ProgramBuilder, ids: []const ExprId) std.mem.Allocator.Error!Span(ExprId) {
         const start: u32 = @intCast(self.expr_ids.items.len);
         try self.expr_ids.appendSlice(self.allocator, ids);
         return .{ .start = start, .len = @intCast(ids.len) };
     }
 
-    pub fn addPatSpan(self: *Program, ids: []const PatId) std.mem.Allocator.Error!Span(PatId) {
+    pub fn addPatSpan(self: *ProgramBuilder, ids: []const PatId) std.mem.Allocator.Error!Span(PatId) {
         const start: u32 = @intCast(self.pat_ids.items.len);
         try self.pat_ids.appendSlice(self.allocator, ids);
         return .{ .start = start, .len = @intCast(ids.len) };
     }
 
-    pub fn addTypedLocalSpan(self: *Program, values: []const TypedLocal) std.mem.Allocator.Error!Span(TypedLocal) {
+    pub fn addTypedLocalSpan(self: *ProgramBuilder, values: []const TypedLocal) std.mem.Allocator.Error!Span(TypedLocal) {
         const start: u32 = @intCast(self.typed_locals.items.len);
         try self.typed_locals.ensureUnusedCapacity(self.allocator, values.len);
         for (values) |value| {
@@ -1152,85 +1152,87 @@ pub const Program = struct {
         return .{ .start = start, .len = @intCast(values.len) };
     }
 
-    pub fn addFieldExprSpan(self: *Program, values: []const FieldExpr) std.mem.Allocator.Error!Span(FieldExpr) {
+    pub fn addFieldExprSpan(self: *ProgramBuilder, values: []const FieldExpr) std.mem.Allocator.Error!Span(FieldExpr) {
         const start: u32 = @intCast(self.field_exprs.items.len);
         try self.field_exprs.appendSlice(self.allocator, values);
         return .{ .start = start, .len = @intCast(values.len) };
     }
 
-    pub fn addRecordDestructSpan(self: *Program, values: []const RecordDestruct) std.mem.Allocator.Error!Span(RecordDestruct) {
+    pub fn addRecordDestructSpan(self: *ProgramBuilder, values: []const RecordDestruct) std.mem.Allocator.Error!Span(RecordDestruct) {
         const start: u32 = @intCast(self.record_destructs.items.len);
         try self.record_destructs.appendSlice(self.allocator, values);
         return .{ .start = start, .len = @intCast(values.len) };
     }
 
-    pub fn addStrPatternStepSpan(self: *Program, values: []const StrPatternStep) std.mem.Allocator.Error!Span(StrPatternStep) {
+    pub fn addStrPatternStepSpan(self: *ProgramBuilder, values: []const StrPatternStep) std.mem.Allocator.Error!Span(StrPatternStep) {
         const start: u32 = @intCast(self.str_pattern_steps.items.len);
         try self.str_pattern_steps.appendSlice(self.allocator, values);
         return .{ .start = start, .len = @intCast(values.len) };
     }
 
-    pub fn addBranchSpan(self: *Program, values: []const Branch) std.mem.Allocator.Error!Span(Branch) {
+    pub fn addBranchSpan(self: *ProgramBuilder, values: []const Branch) std.mem.Allocator.Error!Span(Branch) {
         const start: u32 = @intCast(self.branches.items.len);
         try self.branches.appendSlice(self.allocator, values);
         return .{ .start = start, .len = @intCast(values.len) };
     }
 
-    pub fn addIfBranchSpan(self: *Program, values: []const IfBranch) std.mem.Allocator.Error!Span(IfBranch) {
+    pub fn addIfBranchSpan(self: *ProgramBuilder, values: []const IfBranch) std.mem.Allocator.Error!Span(IfBranch) {
         const start: u32 = @intCast(self.if_branches.items.len);
         try self.if_branches.appendSlice(self.allocator, values);
         return .{ .start = start, .len = @intCast(values.len) };
     }
 
-    pub fn addStmtSpan(self: *Program, ids: []const StmtId) std.mem.Allocator.Error!Span(StmtId) {
+    pub fn addStmtSpan(self: *ProgramBuilder, ids: []const StmtId) std.mem.Allocator.Error!Span(StmtId) {
         const start: u32 = @intCast(self.stmt_ids.items.len);
         try self.stmt_ids.appendSlice(self.allocator, ids);
         return .{ .start = start, .len = @intCast(ids.len) };
     }
 
-    pub fn exprSpan(self: *const Program, span_: Span(ExprId)) []const ExprId {
+    pub fn exprSpan(self: *const ProgramBuilder, span_: Span(ExprId)) []const ExprId {
         return self.expr_ids.items[span_.start..][0..span_.len];
     }
 
-    pub fn patSpan(self: *const Program, span_: Span(PatId)) []const PatId {
+    pub fn patSpan(self: *const ProgramBuilder, span_: Span(PatId)) []const PatId {
         return self.pat_ids.items[span_.start..][0..span_.len];
     }
 
-    pub fn typedLocalSpan(self: *const Program, span_: Span(TypedLocal)) []const TypedLocal {
+    pub fn typedLocalSpan(self: *const ProgramBuilder, span_: Span(TypedLocal)) []const TypedLocal {
         return self.typed_locals.items[span_.start..][0..span_.len];
     }
 
-    pub fn stmtSpan(self: *const Program, span_: Span(StmtId)) []const StmtId {
+    pub fn stmtSpan(self: *const ProgramBuilder, span_: Span(StmtId)) []const StmtId {
         return self.stmt_ids.items[span_.start..][0..span_.len];
     }
 
-    pub fn fieldExprSpan(self: *const Program, span_: Span(FieldExpr)) []const FieldExpr {
+    pub fn fieldExprSpan(self: *const ProgramBuilder, span_: Span(FieldExpr)) []const FieldExpr {
         return self.field_exprs.items[span_.start..][0..span_.len];
     }
 
-    pub fn recordDestructSpan(self: *const Program, span_: Span(RecordDestruct)) []const RecordDestruct {
+    pub fn recordDestructSpan(self: *const ProgramBuilder, span_: Span(RecordDestruct)) []const RecordDestruct {
         return self.record_destructs.items[span_.start..][0..span_.len];
     }
 
-    pub fn strPatternStepSpan(self: *const Program, span_: Span(StrPatternStep)) []const StrPatternStep {
+    pub fn strPatternStepSpan(self: *const ProgramBuilder, span_: Span(StrPatternStep)) []const StrPatternStep {
         return self.str_pattern_steps.items[span_.start..][0..span_.len];
     }
 
-    pub fn branchSpan(self: *const Program, span_: Span(Branch)) []const Branch {
+    pub fn branchSpan(self: *const ProgramBuilder, span_: Span(Branch)) []const Branch {
         return self.branches.items[span_.start..][0..span_.len];
     }
 
-    pub fn ifBranchSpan(self: *const Program, span_: Span(IfBranch)) []const IfBranch {
+    pub fn ifBranchSpan(self: *const ProgramBuilder, span_: Span(IfBranch)) []const IfBranch {
         return self.if_branches.items[span_.start..][0..span_.len];
     }
 };
 
-/// Mutable Monotype builder-side program storage.
-///
-/// Existing lowering code still names this `Program`; new code should use
-/// `ProgramBuilder` when it needs to distinguish builder-owned arrays from a
-/// read-only `ProgramView`.
-pub const ProgramBuilder = Program;
+/// Compatibility name for existing Monotype builder-owned program storage.
+pub const Program = ProgramBuilder;
+
+/// Design-document name for mutable Monotype builder storage.
+pub const MonoProgramBuilder = ProgramBuilder;
+
+/// Design-document name for the read-only Monotype program view.
+pub const MonoProgramView = ProgramView;
 
 test "monotype ast declarations are referenced" {
     std.testing.refAllDecls(@This());
