@@ -1222,9 +1222,9 @@ pub const InstGraph = struct {
     /// exposing or copying a mutable Monotype view.
     pub fn sealNode(self: *InstGraph, node: NodeId) Allocator.Error!Type.TypeId {
         try self.drainDirty();
-        var sealer = NodeSealer.init(self);
+        var sealer = GraphTypeFinals.init(self);
         defer sealer.deinit();
-        return try sealer.seal(node);
+        return try sealer.sealNode(node);
     }
 
     /// Write a node's current content into one of its Monotype views.
@@ -1408,22 +1408,34 @@ pub const InstGraph = struct {
     }
 };
 
-const NodeSealer = struct {
+/// Shared finalization state for copying graph-owned draft type views into
+/// immutable Monotype type ids.
+pub const GraphTypeFinals = struct {
     graph: *InstGraph,
     sealed: std.AutoHashMap(NodeId, Type.TypeId),
 
-    fn init(graph: *InstGraph) NodeSealer {
+    pub fn init(graph: *InstGraph) GraphTypeFinals {
         return .{
             .graph = graph,
             .sealed = std.AutoHashMap(NodeId, Type.TypeId).init(graph.allocator),
         };
     }
 
-    fn deinit(self: *NodeSealer) void {
+    pub fn deinit(self: *GraphTypeFinals) void {
         self.sealed.deinit();
     }
 
-    fn seal(self: *NodeSealer, raw_node: NodeId) Allocator.Error!Type.TypeId {
+    pub fn sealType(self: *GraphTypeFinals, ty: Type.TypeId) Allocator.Error!Type.TypeId {
+        const raw_node = self.graph.mono_nodes.get(ty) orelse return ty;
+        const node = self.graph.find(raw_node);
+        const views = self.graph.node_monos.get(node) orelse return ty;
+        for (views.items) |view| {
+            if (view == ty) return try self.sealNode(node);
+        }
+        return ty;
+    }
+
+    pub fn sealNode(self: *GraphTypeFinals, raw_node: NodeId) Allocator.Error!Type.TypeId {
         const node = self.graph.find(raw_node);
         if (self.sealed.get(node)) |existing| return existing;
 
@@ -1434,7 +1446,7 @@ const NodeSealer = struct {
         return out;
     }
 
-    fn sealContent(self: *NodeSealer, node: NodeId) Allocator.Error!Type.Content {
+    fn sealContent(self: *GraphTypeFinals, node: NodeId) Allocator.Error!Type.Content {
         return switch (self.graph.nodes.items[@intFromEnum(node)]) {
             .redirect => unreachable,
             .unresolved => |variable| blk: {
@@ -1450,12 +1462,12 @@ const NodeSealer = struct {
                 break :blk .{ .tag_union = Type.Span.empty() };
             },
             .primitive => |primitive| .{ .primitive = primitive },
-            .list => |elem| .{ .list = try self.seal(elem) },
-            .box => |elem| .{ .box = try self.seal(elem) },
+            .list => |elem| .{ .list = try self.sealNode(elem) },
+            .box => |elem| .{ .box = try self.sealNode(elem) },
             .tuple => |items| .{ .tuple = try self.sealNodeSpan(items) },
             .func => |func| .{ .func = .{
                 .args = try self.sealNodeSpan(func.args),
-                .ret = try self.seal(func.ret),
+                .ret = try self.sealNode(func.ret),
             } },
             .empty_tag_union => .{ .tag_union = Type.Span.empty() },
             .empty_record => .{ .record = Type.Span.empty() },
@@ -1470,7 +1482,7 @@ const NodeSealer = struct {
                 .backing = if (named.backing) |raw_backing| backing: {
                     const structural = try self.graph.structuralBackingNode(raw_backing.node, named);
                     break :backing .{
-                        .ty = try self.seal(structural.node),
+                        .ty = try self.sealNode(structural.node),
                         .use = raw_backing.use,
                     };
                 } else null,
@@ -1481,17 +1493,17 @@ const NodeSealer = struct {
         };
     }
 
-    fn sealNodeSpan(self: *NodeSealer, nodes: []const NodeId) Allocator.Error!Type.Span {
+    fn sealNodeSpan(self: *GraphTypeFinals, nodes: []const NodeId) Allocator.Error!Type.Span {
         if (nodes.len == 0) return .empty();
         const sealed_nodes = try self.graph.allocator.alloc(Type.TypeId, nodes.len);
         defer self.graph.allocator.free(sealed_nodes);
         for (nodes, 0..) |node, index| {
-            sealed_nodes[index] = try self.seal(node);
+            sealed_nodes[index] = try self.sealNode(node);
         }
         return try self.graph.types.addSpan(sealed_nodes);
     }
 
-    fn sealRecordRow(self: *NodeSealer, node: NodeId) Allocator.Error!Type.Span {
+    fn sealRecordRow(self: *GraphTypeFinals, node: NodeId) Allocator.Error!Type.Span {
         const flat = try self.graph.flattenRecordRow(node);
         if (flat.fields.len == 0) return .empty();
         const fields = try self.graph.allocator.alloc(Type.Field, flat.fields.len);
@@ -1499,13 +1511,13 @@ const NodeSealer = struct {
         for (flat.fields, 0..) |field, index| {
             fields[index] = .{
                 .name = field.name,
-                .ty = try self.seal(field.ty),
+                .ty = try self.sealNode(field.ty),
             };
         }
         return try self.graph.types.addRecordFields(self.graph.name_store, fields);
     }
 
-    fn sealTagRow(self: *NodeSealer, node: NodeId) Allocator.Error!Type.Span {
+    fn sealTagRow(self: *GraphTypeFinals, node: NodeId) Allocator.Error!Type.Span {
         const flat = try self.graph.flattenTagRow(node);
         if (flat.tags.len == 0) return .empty();
         const tags = try self.graph.allocator.alloc(Type.Tag, flat.tags.len);

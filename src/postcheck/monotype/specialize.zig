@@ -174,6 +174,22 @@ pub const SpecBuilder = struct {
         record.status = .ready;
     }
 
+    pub fn updateLocalIdentity(self: *SpecBuilder, spec: Ast.SpecId, identity: Ast.SpecIdentity) std.mem.Allocator.Error!void {
+        const record = self.recordPtr(spec);
+        record.identity = identity;
+
+        const lookup_digest = SpecLookupDigest.from(identity);
+        const gop = try self.lookup.getOrPut(lookup_digest);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        for (gop.value_ptr.items) |entry| {
+            switch (entry) {
+                .local => |existing| if (existing == spec) return,
+                .loaded => {},
+            }
+        }
+        try gop.value_ptr.append(self.allocator, .{ .local = spec });
+    }
+
     fn recordPtr(self: *SpecBuilder, spec: Ast.SpecId) *Ast.SpecRecord {
         const index = @intFromEnum(spec);
         if (index >= self.records.items.len) @import("../common.zig").invariant("Monotype spec builder referenced a missing record");

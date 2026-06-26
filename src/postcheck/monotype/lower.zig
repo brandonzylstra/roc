@@ -18,6 +18,7 @@ const NodeId = solve.NodeId;
 const InstTag = solve.InstTag;
 const InstField = solve.InstField;
 const InstBacking = solve.InstBacking;
+const GraphTypeFinals = solve.GraphTypeFinals;
 
 const Allocator = std.mem.Allocator;
 const checked = check.CheckedModule;
@@ -1164,8 +1165,12 @@ const Builder = struct {
         try body_ctx.constrainTypeToMono(template.checked_fn_root, mono_fn_ty);
         try body_ctx.constrainKnownType(root.checked_type, mono_fn_ty);
 
+        const draft = BodyDraft.begin(self);
         const lowered = try body_ctx.lowerComptimeRootExprAtType(wrapper.body_expr, mono_fn_ty);
+        const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
+        _ = try draft.seal(self, graph, null, draft_end);
+        try draft.markNestedReady(self, draft_end);
         return lowered;
     }
 
@@ -1367,20 +1372,10 @@ const Builder = struct {
         if (!self.unsolved_monos.contains(lower_fn_ty)) {
             try graph.addMonoView(root_node, lower_fn_ty);
         }
+        const draft = BodyDraft.begin(self);
         const live_fn_ty = try graph.monoFor(root_node);
         const lowered = try body_ctx.lowerTemplateBody(template_ref, template, live_fn_ty);
-        // The definition records the body's solved view of the root type.
-        // Deferred call sites embed the requested type, which digests
-        // identically because digests are alias-transparent and a solved
-        // requester determines every interface slot; root-class call sites
-        // adopt this recorded template directly.
-        var def_template = fn_template;
-        def_template.mono_fn_ty = live_fn_ty;
-        self.program.fns.items[@intFromEnum(reservation.fn_id)].source = def_template;
-        // The body may have refined slots the request left unresolved (empty
-        // tag unions). Flow the solved view back into the requester's Monotype
-        // so call sites embedding the requested id digest identically to this
-        // definition.
+        const draft_end = draft.end(self);
         if (requester) |requester_graph| {
             try requester_graph.unify(
                 try requester_graph.importMono(fn_ty),
@@ -1388,16 +1383,27 @@ const Builder = struct {
             );
             try requester_graph.drainDirty();
         }
+        try self.drainSpecRequests(graph);
+        const sealed_fn_ty = (try draft.seal(self, graph, root_node, draft_end)).?;
+        try draft.markNestedReady(self, draft_end);
+        // The definition records the body's solved view of the root type.
+        // Deferred call sites embed the requested type, which digests
+        // identically because digests are alias-transparent and a solved
+        // requester determines every interface slot; root-class call sites
+        // adopt this recorded template directly.
+        var def_template = fn_template;
+        def_template.mono_fn_ty = sealed_fn_ty;
+        self.program.fns.items[@intFromEnum(reservation.fn_id)].source = def_template;
+        const sealed_fn_data = self.functionShape(sealed_fn_ty, "checked procedure template root type was not a function");
         self.program.defs.items[@intFromEnum(reservation.def)] = .{
             .symbol = reservation.symbol,
             .fn_def = def_template,
             .fn_id = reservation.fn_id,
             .args = lowered.args,
             .body = .{ .roc = lowered.body },
-            .ret = lowered.ret,
+            .ret = sealed_fn_data.ret,
         };
-        try self.markTemplateReady(family, reservation.def, live_fn_ty);
-        try self.drainSpecRequests(graph);
+        try self.markTemplateReady(family, reservation.def, sealed_fn_ty);
         return reservation.def;
     }
 
@@ -1485,9 +1491,13 @@ const Builder = struct {
         const entry = &self.lowered_templates.items[index];
         entry.solved_fn_ty = fn_ty;
         entry.solved_digest = self.specializationTypeDigest(fn_ty);
+        var identity = self.program.specs.items[@intFromEnum(entry.spec)].identity;
+        identity.mono_fn_ty = fn_ty;
+        identity.mono_fn_ty_digest = entry.solved_digest;
+        try self.spec_store.updateLocalIdentity(entry.spec, identity);
         try self.appendTemplateLookup(family, .solved, entry.solved_digest, index);
         entry.status = .ready;
-        self.program.specs.items[@intFromEnum(entry.spec)].status = .ready;
+        self.spec_store.markReady(entry.spec, entry.fn_id);
     }
 
     fn appendTemplateLookup(
@@ -2377,8 +2387,12 @@ const Builder = struct {
                 defer self.active_graph = saved_graph;
                 var fn_ctx = try BodyContext.init(self.allocator, self, fn_view, ownerTemplateForConstFnDef(fn_template.fn_def), graph);
                 defer fn_ctx.deinit();
+                const draft = BodyDraft.begin(self);
                 const fn_id = try self.lowerNestedFnFromContext(&fn_ctx, checkedLambdaExprIdForConstFn(fn_view, fn_template.fn_def), fn_template);
+                const draft_end = draft.end(self);
                 try self.drainSpecRequests(graph);
+                _ = try draft.seal(self, graph, null, draft_end);
+                try draft.markNestedReady(self, draft_end);
                 return fn_id;
             },
             else => return try self.lowerFnTemplateDef(type_view, fn_template),
@@ -2570,7 +2584,6 @@ const Builder = struct {
             .body = lowered.body,
             .ret = lowered.ret,
         });
-        try self.markNestedFnReady(family, fn_id, live_fn_ty);
         return fn_id;
     }
 
@@ -2580,9 +2593,13 @@ const Builder = struct {
         const entry = &self.lowered_nested_fns.items[index];
         entry.solved_fn_ty = fn_ty;
         entry.solved_digest = self.specializationTypeDigest(fn_ty);
+        var identity = self.program.specs.items[@intFromEnum(entry.spec)].identity;
+        identity.mono_fn_ty = fn_ty;
+        identity.mono_fn_ty_digest = entry.solved_digest;
+        try self.spec_store.updateLocalIdentity(entry.spec, identity);
         try self.appendNestedLookup(family, .solved, entry.solved_digest, index);
         entry.status = .ready;
-        self.program.specs.items[@intFromEnum(entry.spec)].status = .ready;
+        self.spec_store.markReady(entry.spec, entry.fn_id);
     }
 
     fn appendNestedLookup(
@@ -2736,6 +2753,7 @@ const Builder = struct {
         var fn_ctx = try BodyContext.init(self.allocator, self, fn_view, ownerTemplateForConstFnDef(fn_value.fn_def), graph);
         defer fn_ctx.deinit();
         try fn_ctx.constrainTypeToMono(fn_value.source_fn_ty, ty);
+        const draft = BodyDraft.begin(self);
 
         const lambda_expr_id = checkedLambdaExprIdForConstFn(fn_view, fn_value.fn_def);
         const lambda_expr = fn_view.bodies.expr(lambda_expr_id);
@@ -2813,7 +2831,10 @@ const Builder = struct {
                 } },
             });
         }
+        const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
+        _ = try draft.seal(self, graph, null, draft_end);
+        try draft.markNestedReady(self, draft_end);
         return expr;
     }
 
@@ -2854,6 +2875,7 @@ const Builder = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored parser runtime function had an unexpected arity");
 
+        const draft = BodyDraft.begin(self);
         const shape_ty = try fn_ctx.lowerType(plan.dispatcher_ty);
         const state_local = try self.program.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try self.localExpr(state_local, runtime_arg_tys[0]);
@@ -2912,7 +2934,10 @@ const Builder = struct {
             parser_expr = try fn_ctx.wrapLet(let_.local, arg_tys[0], let_.value, parser_expr, ty);
         }
 
+        const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
+        _ = try draft.seal(self, graph, null, draft_end);
+        try draft.markNestedReady(self, draft_end);
         return parser_expr;
     }
 
@@ -2953,6 +2978,7 @@ const Builder = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored encode_to runtime function had an unexpected arity");
 
+        const draft = BodyDraft.begin(self);
         const shape_ty = try fn_ctx.lowerType(plan.dispatcher_ty);
         const state_local = try self.program.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try self.localExpr(state_local, runtime_arg_tys[0]);
@@ -3030,7 +3056,10 @@ const Builder = struct {
             encoder_expr = try fn_ctx.wrapLet(let_.local, arg_tys[0], let_.value, encoder_expr, ty);
         }
 
+        const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
+        _ = try draft.seal(self, graph, null, draft_end);
+        try draft.markNestedReady(self, draft_end);
         return encoder_expr;
     }
 
@@ -3610,6 +3639,128 @@ const LoweredTemplateBody = struct {
     args: Ast.Span(Ast.TypedLocal),
     body: Ast.ExprId,
     ret: Type.TypeId,
+};
+
+const BodyDraft = struct {
+    specs_start: usize,
+    fns_start: usize,
+    defs_start: usize,
+    nested_defs_start: usize,
+    exprs_start: usize,
+    pats_start: usize,
+    locals_start: usize,
+    typed_locals_start: usize,
+    lowered_nested_start: usize,
+
+    const End = struct {
+        specs: usize,
+        fns: usize,
+        defs: usize,
+        nested_defs: usize,
+        exprs: usize,
+        pats: usize,
+        locals: usize,
+        typed_locals: usize,
+        lowered_nested: usize,
+    };
+
+    fn begin(builder: *Builder) BodyDraft {
+        return .{
+            .specs_start = builder.program.specs.items.len,
+            .fns_start = builder.program.fns.items.len,
+            .defs_start = builder.program.defs.items.len,
+            .nested_defs_start = builder.program.nested_defs.items.len,
+            .exprs_start = builder.program.exprs.items.len,
+            .pats_start = builder.program.pats.items.len,
+            .locals_start = builder.program.locals.items.len,
+            .typed_locals_start = builder.program.typed_locals.items.len,
+            .lowered_nested_start = builder.lowered_nested_fns.items.len,
+        };
+    }
+
+    fn end(_: BodyDraft, builder: *Builder) End {
+        return .{
+            .specs = builder.program.specs.items.len,
+            .fns = builder.program.fns.items.len,
+            .defs = builder.program.defs.items.len,
+            .nested_defs = builder.program.nested_defs.items.len,
+            .exprs = builder.program.exprs.items.len,
+            .pats = builder.program.pats.items.len,
+            .locals = builder.program.locals.items.len,
+            .typed_locals = builder.program.typed_locals.items.len,
+            .lowered_nested = builder.lowered_nested_fns.items.len,
+        };
+    }
+
+    fn seal(self: BodyDraft, builder: *Builder, graph: *InstGraph, root_node: ?NodeId, end_: End) Allocator.Error!?Type.TypeId {
+        try graph.drainDirty();
+        var sealer = GraphTypeFinals.init(graph);
+        defer sealer.deinit();
+        const sealed_root = if (root_node) |node| try sealer.sealNode(node) else null;
+
+        for (builder.program.fns.items[self.fns_start..end_.fns]) |*fn_| {
+            try sealFnTemplate(&sealer, &fn_.source);
+        }
+        for (builder.program.defs.items[self.defs_start..end_.defs]) |*def| {
+            try sealDef(&sealer, def);
+        }
+        for (builder.program.nested_defs.items[self.nested_defs_start..end_.nested_defs]) |*def| {
+            try sealNestedDef(&sealer, def);
+        }
+        for (builder.program.exprs.items[self.exprs_start..end_.exprs]) |*expr| {
+            expr.ty = try sealer.sealType(expr.ty);
+        }
+        for (builder.program.pats.items[self.pats_start..end_.pats]) |*pat| {
+            pat.ty = try sealer.sealType(pat.ty);
+        }
+        for (builder.program.locals.items[self.locals_start..end_.locals]) |*local| {
+            local.ty = try sealer.sealType(local.ty);
+        }
+        for (builder.program.typed_locals.items[self.typed_locals_start..end_.typed_locals]) |*typed_local| {
+            typed_local.ty = try sealer.sealType(typed_local.ty);
+        }
+        var spec_index = self.specs_start;
+        while (spec_index < end_.specs) : (spec_index += 1) {
+            const spec_id: Ast.SpecId = @enumFromInt(@as(u32, @intCast(spec_index)));
+            var identity = builder.program.specs.items[spec_index].identity;
+            const sealed_fn_ty = try sealer.sealType(identity.mono_fn_ty);
+            if (sealed_fn_ty == identity.mono_fn_ty) continue;
+            identity.mono_fn_ty = sealed_fn_ty;
+            identity.mono_fn_ty_digest = builder.specializationTypeDigest(sealed_fn_ty);
+            try builder.spec_store.updateLocalIdentity(spec_id, identity);
+        }
+        return sealed_root;
+    }
+
+    fn markNestedReady(self: BodyDraft, builder: *Builder, end_: End) Allocator.Error!void {
+        var index = self.lowered_nested_start;
+        while (index < end_.lowered_nested) : (index += 1) {
+            const entry = builder.lowered_nested_fns.items[index];
+            if (entry.status == .ready) continue;
+            const fn_template = builder.program.fns.items[@intFromEnum(entry.fn_id)].source;
+            const nested = switch (fn_template.fn_def) {
+                .nested => |nested| nested,
+                else => Common.invariant("nested specialization entry did not reference a nested function"),
+            };
+            try builder.markNestedFnReady(NestedFnFamily.from(nested, fn_template.source_fn_key), entry.fn_id, fn_template.mono_fn_ty);
+        }
+    }
+
+    fn sealFnTemplate(sealer: *GraphTypeFinals, template: *Ast.FnTemplate) Allocator.Error!void {
+        template.mono_fn_ty = try sealer.sealType(template.mono_fn_ty);
+    }
+
+    fn sealDef(sealer: *GraphTypeFinals, def: *Ast.Def) Allocator.Error!void {
+        if (def.fn_def) |*fn_template| {
+            try sealFnTemplate(sealer, fn_template);
+        }
+        def.ret = try sealer.sealType(def.ret);
+    }
+
+    fn sealNestedDef(sealer: *GraphTypeFinals, def: *Ast.NestedDef) Allocator.Error!void {
+        try sealFnTemplate(sealer, &def.fn_def);
+        def.ret = try sealer.sealType(def.ret);
+    }
 };
 
 const BinderRestore = struct {
@@ -8890,16 +9041,6 @@ const BodyContext = struct {
         return try self.graph.monoFor(fn_node);
     }
 
-    fn instantiateTargetCallTypeFromMonoArgAtIndex(
-        self: *BodyContext,
-        source_fn_ty: checked.CheckedTypeId,
-        arg_index: usize,
-        arg_ty: Type.TypeId,
-    ) Allocator.Error!Type.TypeId {
-        const fn_node = try self.instantiateTargetCallNodeFromMonoArgAtIndex(source_fn_ty, arg_index, arg_ty);
-        return try self.graph.monoFor(fn_node);
-    }
-
     fn instantiateTargetCallNodeFromMonoArgAtIndex(
         self: *BodyContext,
         source_fn_ty: checked.CheckedTypeId,
@@ -9386,9 +9527,13 @@ const BodyContext = struct {
         if (!self.builder.unsolved_monos.contains(ty)) {
             try graph.addMonoView(result_node, ty);
         }
+        const draft = BodyDraft.begin(self.builder);
         const live_ty = try graph.monoFor(result_node);
         const lowered = try body_ctx.lowerComptimeRootExprAtType(body.body_expr, live_ty);
+        const draft_end = draft.end(self.builder);
         try self.builder.drainSpecRequests(graph);
+        _ = try draft.seal(self.builder, graph, null, draft_end);
+        try draft.markNestedReady(self.builder, draft_end);
         return lowered;
     }
 

@@ -1441,10 +1441,10 @@ test "issue 9802 same-type map2 specialization counters are bounded" {
         .nested_misses = 8,
         .template_lookup_candidates = 22,
         .nested_lookup_candidates = 0,
-        .specialization_type_digest_requests = 79,
-        .specialization_type_digest_cache_hits = 194,
-        .specialization_type_digest_cache_misses = 153,
-        .specialization_type_digest_nodes_visited = 153,
+        .specialization_type_digest_requests = 87,
+        .specialization_type_digest_cache_hits = 195,
+        .specialization_type_digest_cache_misses = 148,
+        .specialization_type_digest_nodes_visited = 148,
         .exact_type_checks = 22,
     }, counters);
 }
@@ -1489,10 +1489,10 @@ test "issue 9802 growing-structural map2 specialization counters are bounded" {
         .nested_misses = 6,
         .template_lookup_candidates = 5,
         .nested_lookup_candidates = 0,
-        .specialization_type_digest_requests = 61,
-        .specialization_type_digest_cache_hits = 258,
-        .specialization_type_digest_cache_misses = 273,
-        .specialization_type_digest_nodes_visited = 273,
+        .specialization_type_digest_requests = 67,
+        .specialization_type_digest_cache_hits = 255,
+        .specialization_type_digest_cache_misses = 283,
+        .specialization_type_digest_nodes_visited = 283,
         .exact_type_checks = 5,
     }, counters);
 }
