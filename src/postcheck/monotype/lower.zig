@@ -4448,6 +4448,20 @@ const BodyDraftStore = struct {
             _ = try program.addSourceFile(self.sourceText(span));
         }
 
+        for (self.string_literals.items, 0..) |literal, index| {
+            const id = try program.addStringView(self.stringBytes(literal.backing), literal.offset, literal.len);
+            if (@intFromEnum(id) != ids.string_literal_start + @as(u32, @intCast(index))) {
+                Common.invariant("Monotype body draft string literal id did not append contiguously");
+            }
+        }
+
+        for (self.comptime_sites.items, 0..) |site, index| {
+            const id = try program.addComptimeSite(site.kind, site.region, site.checked_site, self.branchRegions(site.branch_regions));
+            if (@intFromEnum(id) != ids.comptime_site_start + @as(u32, @intCast(index))) {
+                Common.invariant("Monotype body draft compile-time site id did not append contiguously");
+            }
+        }
+
         try program.expr_ids.ensureUnusedCapacity(program.allocator, self.expr_ids.items.len);
         for (self.expr_ids.items) |id| program.expr_ids.appendAssumeCapacity(ids.expr(id));
 
@@ -4515,6 +4529,20 @@ const BodyDraftStore = struct {
             Common.invariant("Monotype body draft source text span was out of bounds");
         }
         return self.source_text_bytes.items[span.start..][0..span.len];
+    }
+
+    fn stringBytes(self: *const BodyDraftStore, span: DraftSpan(u8)) []const u8 {
+        if (span.start > self.string_bytes.items.len or span.len > self.string_bytes.items.len - span.start) {
+            Common.invariant("Monotype body draft string byte span was out of bounds");
+        }
+        return self.string_bytes.items[span.start..][0..span.len];
+    }
+
+    fn branchRegions(self: *const BodyDraftStore, span: DraftSpan(base.Region)) []const base.Region {
+        if (span.start > self.branch_regions.items.len or span.len > self.branch_regions.items.len - span.start) {
+            Common.invariant("Monotype body draft branch-region span was out of bounds");
+        }
+        return self.branch_regions.items[span.start..][0..span.len];
     }
 
     fn sealCorePatData(self: *const BodyDraftStore, ids: FinalIdOffsets, data: DraftPatData) Ast.PatData {
@@ -17517,6 +17545,11 @@ test "body draft store appends draft-local ids spans and type cells" {
     try std.testing.expectEqual(@as(usize, 1), program.exprs.items.len);
     try std.testing.expectEqual(@as(usize, 1), program.stmts.items.len);
     try std.testing.expectEqual(@as(usize, 1), program.source_files.items.len);
+    try std.testing.expectEqual(@as(usize, 1), program.string_literals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), program.comptime_sites.items.len);
+    try std.testing.expectEqualStrings("literal", program.stringLiteralText(@enumFromInt(0)));
+    try std.testing.expectEqual(Ast.ComptimeSiteKind.if_, program.comptimeSite(@enumFromInt(0)).kind);
+    try std.testing.expectEqual(@as(usize, 1), program.comptimeSite(@enumFromInt(0)).branch_regions.len);
     try std.testing.expectEqualStrings("value", program.localName(@enumFromInt(0)));
     switch (program.pats.items[0].data) {
         .bind => |sealed_local| try std.testing.expectEqual(@as(Ast.LocalId, @enumFromInt(0)), sealed_local),
@@ -17530,6 +17563,7 @@ test "body draft store appends draft-local ids spans and type cells" {
         .let_ => |let_| {
             try std.testing.expectEqual(@as(Ast.PatId, @enumFromInt(0)), let_.pat);
             try std.testing.expectEqual(@as(Ast.ExprId, @enumFromInt(0)), let_.value);
+            try std.testing.expectEqual(@as(?Ast.ComptimeSiteId, @enumFromInt(0)), let_.comptime_site);
         },
         else => return error.TestExpectedEqual,
     }
