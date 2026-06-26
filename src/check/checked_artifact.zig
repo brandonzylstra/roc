@@ -27092,6 +27092,42 @@ test "platform app relation resolver returns empty roots before reserving normal
     try std.testing.expectEqual(CheckedTypePayload.empty_tag_union, store.payload(finalized_tags));
 }
 
+test "checked type store reuses closed equivalent payload roots" {
+    const allocator = std.testing.allocator;
+
+    var names = canonical.CanonicalNameStore.init(allocator);
+    defer names.deinit();
+
+    var store = CheckedTypeStore{};
+    defer store.deinit(allocator);
+
+    const first = try appendExplicitCheckedTypePayload(allocator, &names, &store, .empty_record);
+    const second = try appendExplicitCheckedTypePayload(allocator, &names, &store, .empty_record);
+
+    try std.testing.expectEqual(first, second);
+    try std.testing.expectEqual(@as(usize, 1), store.roots.items.len);
+    try std.testing.expectEqual(@as(usize, 1), store.payloads.items.len);
+    try std.testing.expectEqual(CheckedTypePayload.empty_record, store.payload(first));
+}
+
+test "checked type store preserves distinct identity roots with equal variable shape" {
+    const allocator = std.testing.allocator;
+
+    var store = CheckedTypeStore{};
+    defer store.deinit(allocator);
+
+    const first = try store.reserveSyntheticTypeRoot(allocator, testCanonicalTypeKey(70));
+    const second = try store.reserveSyntheticTypeRoot(allocator, testCanonicalTypeKey(71));
+
+    try store.fillSyntheticTypeRoot(allocator, first, .{ .flex = .{} });
+    try store.fillSyntheticTypeRoot(allocator, second, .{ .flex = .{} });
+
+    try std.testing.expect(first != second);
+    try std.testing.expectEqual(@as(usize, 2), store.roots.items.len);
+    try std.testing.expectEqual(@as(usize, 2), store.payloads.items.len);
+    try std.testing.expectEqualDeep(store.payload(first), store.payload(second));
+}
+
 test "provided callable-containing record constant is a data export, not a runtime root" {
     const source =
         \\platform ""
