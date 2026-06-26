@@ -1213,7 +1213,6 @@ const Builder = struct {
     ) Allocator.Error!Ast.DefId {
         const family = TemplateFamily.from(template_ref, source_fn_key);
         self.count("template_requests");
-        const fn_ty_digest = self.specializationTypeDigest(fn_ty);
         var reserved_def: ?Ast.DefId = null;
         var lower_fn_ty = fn_ty;
         if (reserved_fn_id) |fn_id| {
@@ -1227,42 +1226,39 @@ const Builder = struct {
                 .reserved => {
                     reserved_def = existing.def;
                     lower_fn_ty = existing.request_fn_ty;
-                    const current_digest = self.specializationTypeDigest(lower_fn_ty);
-                    if (!digestEql(existing.request_digest, current_digest)) {
-                        existing.request_digest = current_digest;
-                        self.program.specs.items[@intFromEnum(existing.spec)].identity.mono_fn_ty_digest = current_digest;
-                        try self.appendTemplateLookup(family, .request, current_digest, @intCast(index));
-                    }
-                    existing.status = .lowering;
-                    self.program.specs.items[@intFromEnum(existing.spec)].status = .lowering;
-                },
-            }
-        } else if (try self.findLoweredTemplate(family, fn_ty, fn_ty_digest)) |match| {
-            self.count("template_hits");
-            const existing = &self.lowered_templates.items[match.index];
-            const match_ty = match.match_ty;
-            if (requester) |graph| {
-                if (match_ty != fn_ty) {
-                    try graph.unify(try graph.importMono(fn_ty), try graph.importMono(match_ty));
-                }
-                if (existing.status == .ready and existing.solved_fn_ty != fn_ty) {
-                    try graph.unify(try graph.importMono(fn_ty), try graph.importMono(existing.solved_fn_ty));
-                }
-                try graph.drainDirty();
-            }
-            switch (existing.status) {
-                .ready,
-                .lowering,
-                => return existing.def,
-                .reserved => {
-                    reserved_def = existing.def;
-                    lower_fn_ty = existing.request_fn_ty;
                     existing.status = .lowering;
                     self.program.specs.items[@intFromEnum(existing.spec)].status = .lowering;
                 },
             }
         } else {
-            self.count("template_misses");
+            const fn_ty_digest = self.specializationTypeDigest(fn_ty);
+            if (try self.findLoweredTemplate(family, fn_ty, fn_ty_digest)) |match| {
+                self.count("template_hits");
+                const existing = &self.lowered_templates.items[match.index];
+                const match_ty = match.match_ty;
+                if (requester) |graph| {
+                    if (match_ty != fn_ty) {
+                        try graph.unify(try graph.importMono(fn_ty), try graph.importMono(match_ty));
+                    }
+                    if (existing.status == .ready and existing.solved_fn_ty != fn_ty) {
+                        try graph.unify(try graph.importMono(fn_ty), try graph.importMono(existing.solved_fn_ty));
+                    }
+                    try graph.drainDirty();
+                }
+                switch (existing.status) {
+                    .ready,
+                    .lowering,
+                    => return existing.def,
+                    .reserved => {
+                        reserved_def = existing.def;
+                        lower_fn_ty = existing.request_fn_ty;
+                        existing.status = .lowering;
+                        self.program.specs.items[@intFromEnum(existing.spec)].status = .lowering;
+                    },
+                }
+            } else {
+                self.count("template_misses");
+            }
         }
 
         const view = self.moduleForDigest(names.procTemplateModuleDigest(template_ref));
@@ -2659,10 +2655,69 @@ const Builder = struct {
         return null;
     }
 
+    fn sealDeferredSpecRequests(self: *Builder, graph: *InstGraph) Allocator.Error!void {
+        if (graph.deferred_templates.items.len == 0) return;
+
+        try graph.drainDirty();
+        var sealer = GraphTypeFinals.init(graph);
+        defer sealer.deinit();
+
+        for (graph.deferred_templates.items) |*request| {
+            const sealed_fn_ty = try sealer.sealType(request.fn_ty);
+            if (sealed_fn_ty == request.fn_ty) continue;
+            request.fn_ty = sealed_fn_ty;
+            try self.updateReservedTemplateRequestType(
+                TemplateFamily.from(request.template_ref, request.source_fn_key),
+                request.fn_id,
+                sealed_fn_ty,
+            );
+        }
+    }
+
+    fn updateReservedTemplateRequestType(
+        self: *Builder,
+        family: TemplateFamily,
+        fn_id: Ast.FnId,
+        fn_ty: Type.TypeId,
+    ) Allocator.Error!void {
+        const index = self.lowered_template_by_fn.get(fn_id) orelse
+            Common.invariant("deferred Monotype procedure template request referenced a missing reservation");
+        const entry = &self.lowered_templates.items[index];
+        switch (entry.status) {
+            .reserved => {},
+            .lowering,
+            .ready,
+            => Common.invariant("deferred Monotype procedure template request was already lowering"),
+        }
+
+        const digest = self.specializationTypeDigest(fn_ty);
+        entry.request_fn_ty = fn_ty;
+        entry.request_digest = digest;
+        entry.solved_fn_ty = fn_ty;
+        entry.solved_digest = digest;
+        try self.appendTemplateLookup(family, .request, digest, @intCast(index));
+
+        var identity = self.program.specs.items[@intFromEnum(entry.spec)].identity;
+        identity.mono_fn_ty = fn_ty;
+        identity.mono_fn_ty_digest = digest;
+        try self.spec_store.updateLocalIdentity(entry.spec, identity);
+
+        const fn_template = &self.program.fns.items[@intFromEnum(fn_id)].source;
+        fn_template.mono_fn_ty = fn_ty;
+        const def = &self.program.defs.items[@intFromEnum(entry.def)];
+        if (def.fn_def) |*def_template| {
+            def_template.mono_fn_ty = fn_ty;
+        } else {
+            Common.invariant("reserved Monotype procedure template definition had no function template");
+        }
+        def.ret = self.functionShape(fn_ty, "deferred procedure template root type was not a function").ret;
+    }
+
     /// Process the specialization body requests this specialization enqueued
-    /// while its body lowered. Its types are final now, so every request's
-    /// specialization key is stable.
+    /// while its body lowered. Request function types are sealed before any
+    /// callee body lowers, so every queued specialization key is stable.
     fn drainSpecRequests(self: *Builder, graph: *InstGraph) Allocator.Error!void {
+        try self.sealDeferredSpecRequests(graph);
         while (graph.deferred_templates.pop()) |request| {
             _ = try self.lowerTemplateWithMonoFor(
                 request.template_ref,
