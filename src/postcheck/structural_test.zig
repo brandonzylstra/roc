@@ -213,6 +213,39 @@ test "post-check stage products do not store expression cache state" {
     }
 }
 
+test "checked module artifact does not store post-check lowering products" {
+    @setEvalBranchQuota(200_000);
+    comptime assertNoPostCheckType(check.CheckedModule.CheckedModuleArtifact.Serialized, "CheckedModuleArtifact.Serialized");
+}
+
+fn assertNoPostCheckType(comptime T: type, comptime path: []const u8) void {
+    const type_name = @typeName(T);
+    if (std.mem.find(u8, type_name, "postcheck") != null or
+        std.mem.find(u8, type_name, "lir.") != null or
+        std.mem.find(u8, type_name, "monotype") != null or
+        std.mem.find(u8, type_name, "lambda") != null)
+    {
+        @compileError(path ++ " stores post-check lowering type " ++ type_name);
+    }
+
+    switch (@typeInfo(T)) {
+        .array => |array| assertNoPostCheckType(array.child, path ++ "[]"),
+        .optional => |optional| assertNoPostCheckType(optional.child, path ++ "?"),
+        .pointer => |pointer| assertNoPostCheckType(pointer.child, path ++ ".*"),
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                assertNoPostCheckType(field.type, path ++ "." ++ field.name);
+            }
+        },
+        .@"union" => |info| {
+            inline for (info.fields) |field| {
+                assertNoPostCheckType(field.type, path ++ "." ++ field.name);
+            }
+        },
+        else => {},
+    }
+}
+
 test "Monotype lifting mutates only callable expression nodes in place" {
     const lifted_source = @embedFile("monotype_lifted/lift.zig");
     try expectContains(lifted_source, "source: Mono.ProgramView");
