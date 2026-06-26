@@ -5441,6 +5441,311 @@ const BodyContext = struct {
         });
     }
 
+    fn stringExpr(self: *BodyContext, text: []const u8, str_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        return try self.addExpr(.{
+            .ty = str_ty,
+            .data = .{ .str_lit = try self.addStringLiteral(text) },
+        });
+    }
+
+    fn inspectCall(self: *BodyContext, value: Ast.ExprId, value_ty: Type.TypeId, str_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        const def_id = try self.inspectDefForType(value_ty, str_ty);
+        const fn_ty = try self.builder.oneArgFnType(value_ty, str_ty);
+        const callee = try self.addExpr(.{
+            .ty = fn_ty,
+            .data = .{ .def_ref = def_id },
+        });
+        const args = [_]Ast.ExprId{value};
+        return try self.addExpr(.{
+            .ty = str_ty,
+            .data = .{ .call_value = .{
+                .callee = callee,
+                .args = try self.addExprSpan(&args),
+            } },
+        });
+    }
+
+    fn inspectDefForType(self: *BodyContext, value_ty: Type.TypeId, str_ty: Type.TypeId) Allocator.Error!Ast.DefId {
+        const address = GeneratedHelperDefAddress{
+            .value_ty = @intFromEnum(value_ty),
+            .result_ty = @intFromEnum(str_ty),
+        };
+        if (self.builder.inspect_defs.get(address)) |entry| return entry.id();
+
+        const def_id = try self.reserveDef();
+        try self.builder.inspect_defs.put(address, .{ .reserved = def_id });
+
+        const arg_local = try self.addLocal(self.builder.symbols.fresh(), value_ty);
+        const arg_expr = try self.localExpr(arg_local, value_ty);
+        const body = try self.inspectBody(arg_expr, value_ty, value_ty, str_ty);
+        const args = try self.addTypedLocalSpan(&.{.{ .local = arg_local, .ty = value_ty }});
+        self.setDef(def_id, .{
+            .symbol = self.builder.symbols.fresh(),
+            .fn_def = null,
+            .args = args,
+            .body = .{ .roc = body },
+            .ret = str_ty,
+        });
+        try self.builder.inspect_defs.put(address, .{ .ready = def_id });
+        return def_id;
+    }
+
+    fn inspectBody(
+        self: *BodyContext,
+        value: Ast.ExprId,
+        value_ty: Type.TypeId,
+        shape_ty: Type.TypeId,
+        str_ty: Type.TypeId,
+    ) Allocator.Error!Ast.ExprId {
+        return switch (self.builder.program.types.get(shape_ty)) {
+            .primitive => |primitive| try self.primitiveInspect(value, primitive, str_ty),
+            .named => |named| blk: {
+                if (named.builtin_owner) |owner| {
+                    switch (owner) {
+                        .list => break :blk try self.inspectList(value, self.builder.singleTypeArg(named.args, "List"), str_ty),
+                        .box => {},
+                        else => {},
+                    }
+                }
+                if (try self.toInspectCall(value, value_ty, str_ty)) |method_call| break :blk method_call;
+                const backing = named.backing orelse Common.invariant("Str.inspect reached opaque named type without checked inspect authority");
+                if (backing.use != .inspectable) {
+                    break :blk try self.stringExpr("<opaque>", str_ty);
+                }
+                break :blk try self.inspectBody(value, value_ty, backing.ty, str_ty);
+            },
+            .record => |fields| try self.inspectRecord(value, self.builder.program.types.fieldSpan(fields), str_ty),
+            .tuple => |items| try self.inspectTuple(value, self.builder.program.types.span(items), str_ty),
+            .tag_union => |tags| try self.inspectTagUnion(value, value_ty, self.builder.program.types.tagSpan(tags), str_ty),
+            .list => |elem_ty| try self.inspectList(value, elem_ty, str_ty),
+            .func, .erased => try self.stringExpr("<function>", str_ty),
+            .zst => try self.stringExpr("{}", str_ty),
+            .box => |elem_ty| blk: {
+                const unboxed = try self.lowLevelExpr(.box_unbox, &.{value}, elem_ty);
+                var out = try self.stringExpr("Box(", str_ty);
+                out = try self.concatExpr(out, try self.inspectCall(unboxed, elem_ty, str_ty), str_ty);
+                break :blk try self.concatExpr(out, try self.stringExpr(")", str_ty), str_ty);
+            },
+        };
+    }
+
+    fn toInspectCall(self: *BodyContext, value: Ast.ExprId, value_ty: Type.TypeId, str_ty: Type.TypeId) Allocator.Error!?Ast.ExprId {
+        const owner = methodOwnerFromType(&self.builder.program.types, value_ty) orelse return null;
+        const lookup = self.builder.lookupMethodTargetByName(owner, "to_inspect") orelse return null;
+        const procedure = switch (lookup.target.kind) {
+            .procedure => |procedure| procedure,
+            .local_proc => return null,
+        };
+        const template = procedure.template;
+
+        const graph = try InstGraph.create(self.allocator, &self.builder.program.types, &self.builder.program.names, &self.builder.unsolved_monos);
+        defer graph.destroy();
+        const saved_graph = self.builder.active_graph;
+        self.builder.active_graph = graph;
+        defer self.builder.active_graph = saved_graph;
+        var target_ctx = try BodyContext.init(self.allocator, self.builder, lookup.view, template, graph);
+        defer target_ctx.deinit();
+        const callable_node = try target_ctx.instantiateTargetCallNodeFromMonoArgs(lookup.target.callable_ty, &.{value_ty}, str_ty);
+        const callable_mono_ty = try graph.sealNode(callable_node);
+        const callee_def = try self.builder.lowerTemplateWithMono(
+            template,
+            lookup.view,
+            lookup.target.callable_ty,
+            lookup.view.types.rootKey(lookup.target.callable_ty),
+            callable_mono_ty,
+        );
+
+        const args = [_]Ast.ExprId{value};
+        const call = try self.addExpr(.{ .ty = str_ty, .data = .{ .call_proc = .{
+            .callee = Ast.localProcCallee(self.builder.defFnId(callee_def)),
+            .args = try self.addExprSpan(&args),
+        } } });
+        try self.builder.drainSpecRequests(graph);
+        return call;
+    }
+
+    fn primitiveInspect(self: *BodyContext, value: Ast.ExprId, primitive: Type.Primitive, str_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        const args = [_]Ast.ExprId{value};
+        return try self.lowLevelExpr(primitiveInspectLowLevelOp(primitive), &args, str_ty);
+    }
+
+    fn inspectTuple(self: *BodyContext, value: Ast.ExprId, items: []const Type.TypeId, str_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        if (items.len == 0) return try self.stringExpr("()", str_ty);
+        const stable_items = try self.allocator.dupe(Type.TypeId, items);
+        defer self.allocator.free(stable_items);
+
+        var out = try self.stringExpr("(", str_ty);
+        for (stable_items, 0..) |item_ty, i| {
+            if (i != 0) out = try self.concatExpr(out, try self.stringExpr(", ", str_ty), str_ty);
+            const item = try self.addExpr(.{
+                .ty = item_ty,
+                .data = .{ .tuple_access = .{ .tuple = value, .elem_index = @intCast(i) } },
+            });
+            out = try self.concatExpr(out, try self.inspectCall(item, item_ty, str_ty), str_ty);
+        }
+        return try self.concatExpr(out, try self.stringExpr(")", str_ty), str_ty);
+    }
+
+    fn inspectRecord(self: *BodyContext, value: Ast.ExprId, fields: []const Type.Field, str_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        if (fields.len == 0) return try self.stringExpr("{}", str_ty);
+        const stable_fields = try self.allocator.dupe(Type.Field, fields);
+        defer self.allocator.free(stable_fields);
+
+        var out = try self.stringExpr("{ ", str_ty);
+        for (stable_fields, 0..) |field, i| {
+            if (i != 0) out = try self.concatExpr(out, try self.stringExpr(", ", str_ty), str_ty);
+            out = try self.concatExpr(out, try self.stringExpr(self.builder.program.names.recordFieldLabelText(field.name), str_ty), str_ty);
+            out = try self.concatExpr(out, try self.stringExpr(": ", str_ty), str_ty);
+            const field_value = try self.addExpr(.{
+                .ty = field.ty,
+                .data = .{ .field_access = .{ .receiver = value, .field = field.name } },
+            });
+            out = try self.concatExpr(out, try self.inspectCall(field_value, field.ty, str_ty), str_ty);
+        }
+        return try self.concatExpr(out, try self.stringExpr(" }", str_ty), str_ty);
+    }
+
+    fn inspectTagUnion(self: *BodyContext, value: Ast.ExprId, value_ty: Type.TypeId, tags: []const Type.Tag, str_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        if (tags.len == 0) {
+            const msg = try self.addStringLiteral("uninhabited value reached Str.inspect");
+            return try self.addExpr(.{
+                .ty = str_ty,
+                .data = .{ .crash = msg },
+            });
+        }
+        const stable_tags = try self.allocator.dupe(Type.Tag, tags);
+        defer self.allocator.free(stable_tags);
+
+        const branches = try self.allocator.alloc(Ast.Branch, stable_tags.len);
+        defer self.allocator.free(branches);
+
+        for (stable_tags, 0..) |tag, i| {
+            const payload_tys = try self.allocator.dupe(Type.TypeId, self.builder.program.types.span(tag.payloads));
+            defer self.allocator.free(payload_tys);
+            const payload_pats = try self.allocator.alloc(Ast.PatId, payload_tys.len);
+            defer self.allocator.free(payload_pats);
+            const payload_exprs = try self.allocator.alloc(Ast.ExprId, payload_tys.len);
+            defer self.allocator.free(payload_exprs);
+
+            for (payload_tys, 0..) |payload_ty, payload_i| {
+                const local = try self.addLocal(self.builder.symbols.fresh(), payload_ty);
+                payload_pats[payload_i] = try self.addPat(.{ .ty = payload_ty, .data = .{ .bind = local } });
+                payload_exprs[payload_i] = try self.localExpr(local, payload_ty);
+            }
+
+            const pat = try self.addPat(.{
+                .ty = value_ty,
+                .data = .{ .tag = .{
+                    .name = tag.name,
+                    .payloads = try self.addPatSpan(payload_pats),
+                } },
+            });
+            branches[i] = .{
+                .pat = pat,
+                .body = try self.inspectTagBody(tag.name, payload_exprs, payload_tys, str_ty),
+            };
+        }
+
+        return try self.addExpr(.{
+            .ty = str_ty,
+            .data = .{ .match_ = .{
+                .scrutinee = value,
+                .branches = try self.addBranchSpan(branches),
+            } },
+        });
+    }
+
+    fn inspectTagBody(
+        self: *BodyContext,
+        name: names.TagNameId,
+        payload_exprs: []const Ast.ExprId,
+        payload_tys: []const Type.TypeId,
+        str_ty: Type.TypeId,
+    ) Allocator.Error!Ast.ExprId {
+        var out = try self.stringExpr(self.builder.program.names.tagLabelText(name), str_ty);
+        if (payload_exprs.len == 0) return out;
+        out = try self.concatExpr(out, try self.stringExpr("(", str_ty), str_ty);
+        for (payload_exprs, payload_tys, 0..) |payload_expr, payload_ty, i| {
+            if (i != 0) out = try self.concatExpr(out, try self.stringExpr(", ", str_ty), str_ty);
+            out = try self.concatExpr(out, try self.inspectCall(payload_expr, payload_ty, str_ty), str_ty);
+        }
+        return try self.concatExpr(out, try self.stringExpr(")", str_ty), str_ty);
+    }
+
+    fn inspectList(self: *BodyContext, value: Ast.ExprId, elem_ty: Type.TypeId, str_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        const u64_ty = try self.builder.primitiveType(.u64);
+        const bool_ty = try self.builder.primitiveType(.bool);
+
+        const len_local = try self.addLocal(self.builder.symbols.fresh(), u64_ty);
+        const len_pat = try self.bindPat(len_local, u64_ty);
+        const len_value = try self.lowLevelExpr(.list_len, &.{value}, u64_ty);
+        const len_expr = try self.localExpr(len_local, u64_ty);
+
+        const index_local = try self.addLocal(self.builder.symbols.fresh(), u64_ty);
+        const out_local = try self.addLocal(self.builder.symbols.fresh(), str_ty);
+        const index_expr = try self.localExpr(index_local, u64_ty);
+        const out_expr = try self.localExpr(out_local, str_ty);
+
+        const done_cond = try self.lowLevelExpr(.num_is_eq, &.{ index_expr, len_expr }, bool_ty);
+        const finish = try self.addExpr(.{
+            .ty = str_ty,
+            .data = .{ .break_ = try self.concatExpr(out_expr, try self.stringExpr("]", str_ty), str_ty) },
+        });
+        const step = try self.inspectListStep(value, elem_ty, str_ty, index_local, out_local);
+        const body = try self.ifExpr(done_cond, finish, step, str_ty);
+
+        const params = [_]Ast.TypedLocal{
+            .{ .local = index_local, .ty = u64_ty },
+            .{ .local = out_local, .ty = str_ty },
+        };
+        const initial_values = [_]Ast.ExprId{
+            try self.intLiteralExpr(0, u64_ty),
+            try self.stringExpr("[", str_ty),
+        };
+        const loop = try self.addExpr(.{
+            .ty = str_ty,
+            .data = .{ .loop_ = .{
+                .params = try self.addTypedLocalSpan(&params),
+                .initial_values = try self.addExprSpan(&initial_values),
+                .body = body,
+            } },
+        });
+        return try self.addExpr(.{
+            .ty = str_ty,
+            .data = .{ .let_ = .{
+                .bind = len_pat,
+                .value = len_value,
+                .rest = loop,
+            } },
+        });
+    }
+
+    fn inspectListStep(
+        self: *BodyContext,
+        list_value: Ast.ExprId,
+        elem_ty: Type.TypeId,
+        str_ty: Type.TypeId,
+        index_local: Ast.LocalId,
+        out_local: Ast.LocalId,
+    ) Allocator.Error!Ast.ExprId {
+        const u64_ty = try self.builder.primitiveType(.u64);
+        const bool_ty = try self.builder.primitiveType(.bool);
+        const index_expr = try self.localExpr(index_local, u64_ty);
+        const out_expr = try self.localExpr(out_local, str_ty);
+
+        const first_cond = try self.lowLevelExpr(.num_is_eq, &.{ index_expr, try self.intLiteralExpr(0, u64_ty) }, bool_ty);
+        const sep = try self.ifExpr(first_cond, try self.stringExpr("", str_ty), try self.stringExpr(", ", str_ty), str_ty);
+        const elem = try self.lowLevelExpr(.list_get_unsafe, &.{ list_value, index_expr }, elem_ty);
+        const elem_str = try self.inspectCall(elem, elem_ty, str_ty);
+        const with_sep = try self.concatExpr(out_expr, sep, str_ty);
+        const next_out = try self.concatExpr(with_sep, elem_str, str_ty);
+        const next_index = try self.lowLevelExpr(.num_plus, &.{ index_expr, try self.intLiteralExpr(1, u64_ty) }, u64_ty);
+        return try self.addExpr(.{
+            .ty = str_ty,
+            .data = .{ .continue_ = .{ .values = try self.addExprSpan(&.{ next_index, next_out }) } },
+        });
+    }
+
     fn childContext(self: *BodyContext, current_fn_key: names.TypeDigest) Allocator.Error!BodyContext {
         return try self.childContextWithTypeCells(current_fn_key, true);
     }
@@ -5943,7 +6248,7 @@ const BodyContext = struct {
         const arg_local = try self.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
         const typed_arg = Ast.TypedLocal{ .local = arg_local, .ty = arg_tys[0] };
         const local_expr = try self.addExpr(.{ .ty = arg_tys[0], .data = .{ .local = arg_local } });
-        const body = try self.builder.inspectCall(local_expr, arg_tys[0], ret_ty);
+        const body = try self.inspectCall(local_expr, arg_tys[0], ret_ty);
         return .{
             .args = try self.addTypedLocalSpan(&.{typed_arg}),
             .body = body,
@@ -6347,7 +6652,7 @@ const BodyContext = struct {
         const value = try self.lowerExpr(child);
         const value_ty = self.exprType(value);
         const str_ty = try self.builder.primitiveType(.str);
-        return try self.builder.inspectCall(value, value_ty, str_ty);
+        return try self.inspectCall(value, value_ty, str_ty);
     }
 
     fn lowerExpectErrMessage(
@@ -6358,7 +6663,7 @@ const BodyContext = struct {
         const value = try self.lowerExpr(child);
         const value_ty = self.exprType(value);
         const str_ty = try self.builder.primitiveType(.str);
-        const rendered = try self.builder.inspectCall(value, value_ty, str_ty);
+        const rendered = try self.inspectCall(value, value_ty, str_ty);
 
         const snippet_index = @intFromEnum(snippet);
         if (snippet_index >= self.view.bodies.stringLiteralCount()) {
@@ -6371,16 +6676,16 @@ const BodyContext = struct {
             .{snippet_text},
         );
         defer self.builder.allocator.free(prefix_text);
-        const prefix = try self.builder.stringExpr(prefix_text, str_ty);
+        const prefix = try self.stringExpr(prefix_text, str_ty);
         const with_value = try self.concatExpr(prefix, rendered, str_ty);
-        const suffix = try self.builder.stringExpr(")", str_ty);
+        const suffix = try self.stringExpr(")", str_ty);
         return try self.concatExpr(with_value, suffix, str_ty);
     }
 
     fn lowerStr(self: *BodyContext, segments: []const checked.CheckedExprId) Allocator.Error!Ast.ExprData {
         const str_ty = try self.builder.primitiveType(.str);
         if (segments.len == 0) {
-            return .{ .nominal = try self.builder.stringExpr("", str_ty) };
+            return .{ .nominal = try self.stringExpr("", str_ty) };
         }
 
         var out = try self.lowerExprAtType(segments[0], str_ty);
@@ -7973,7 +8278,7 @@ const BodyContext = struct {
         const field_text = self.builder.program.names.recordFieldLabelText(record_field.name);
         return try self.lowerRecordFieldHandleWithName(
             field_handle_ty,
-            try self.builder.stringExpr(field_text, str_ty),
+            try self.stringExpr(field_text, str_ty),
             try self.intLiteralExpr(@intCast(field_text.len), try self.builder.primitiveType(.u64)),
             index,
         );
@@ -10075,7 +10380,7 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         if (!self.typeHasBuiltinOwner(key_ty, .str)) Common.invariant("ParseTagUnionSpec.parse key was not Str");
         const tag_text = self.builder.program.names.tagLabelText(tag.name);
-        const tag_expr = try self.builder.stringExpr(tag_text, key_ty);
+        const tag_expr = try self.stringExpr(tag_text, key_ty);
         const key_expr = try self.localExpr(key_local, key_ty);
         return try self.lowLevelExpr(.str_is_eq, &.{ key_expr, tag_expr }, try self.builder.primitiveType(.bool));
     }
@@ -10194,7 +10499,7 @@ const BodyContext = struct {
         str_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
         const field_text = self.builder.program.names.recordFieldLabelText(field.name);
-        const field_expr = try self.builder.stringExpr(field_text, str_ty);
+        const field_expr = try self.stringExpr(field_text, str_ty);
         const lookup = self.methodLookupForTypeName(encoding_ty, "rename_field");
         const callable_mono_ty = try self.methodTargetMonoTypeFromArgs(lookup, &.{ encoding_ty, str_ty }, str_ty);
         const rename_fn = self.builder.functionShape(callable_mono_ty, "rename_field target method was not a function");
