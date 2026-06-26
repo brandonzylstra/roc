@@ -43,6 +43,10 @@ fn expectContains(haystack: []const u8, needle: []const u8) error{TestUnexpected
     try std.testing.expect(std.mem.find(u8, haystack, needle) != null);
 }
 
+fn expectNotContains(haystack: []const u8, needle: []const u8) error{TestUnexpectedResult}!void {
+    try std.testing.expect(std.mem.find(u8, haystack, needle) == null);
+}
+
 test "Monotype has direct calls and no checked-only expression forms" {
     try std.testing.expect(@hasField(Mono.ExprData, "call_proc"));
     try std.testing.expect(@hasField(Mono.ExprData, "call_value"));
@@ -114,6 +118,35 @@ test "Monotype lookup lowering uses explicit resolved use types" {
     try expectContains(lower_expr_at_type, ".lookup_required => |resolved| return try self.lowerLookupExprAtType(expr.ty, resolved, ty)");
     try expectContains(lower_lookup_at_type, ".platform_required_const => |required| return try self.restoreConstUseAtType(required.const_use, ty)");
     try expectContains(lower_lookup_at_type, ".platform_required_proc => |proc| return try self.lowerProcedureUseValue(proc.procedure, ty)");
+}
+
+test "Monotype specialization has no target backend or LIR imports" {
+    const sources = .{
+        @embedFile("monotype/ast.zig"),
+        @embedFile("monotype/type.zig"),
+        @embedFile("monotype/lower.zig"),
+        @embedFile("monotype/solve.zig"),
+        @embedFile("monotype/specialize.zig"),
+        @embedFile("monotype/serialize.zig"),
+        @embedFile("monotype_lifted/ast.zig"),
+        @embedFile("monotype_lifted/lift.zig"),
+        @embedFile("monotype_lifted/spec_constr.zig"),
+    };
+    const forbidden_imports = .{
+        "@import(\"backend\")",
+        "@import(\"layout\")",
+        "@import(\"lir\")",
+        "@import(\"lir_core\")",
+        "@import(\"roc_target\")",
+        "@import(\"llvm\")",
+        "@import(\"wasm\")",
+    };
+
+    inline for (sources) |source| {
+        inline for (forbidden_imports) |needle| {
+            try expectNotContains(source, needle);
+        }
+    }
 }
 
 test "Lifted functions own captures and consume Monotype expression storage" {
