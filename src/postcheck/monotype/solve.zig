@@ -38,7 +38,7 @@ pub const DeferredTemplate = struct {
 pub const NodeId = enum(u32) { _ };
 
 // Current mutable Monotype output points to remove during graph sealing:
-// `addMonoView`, `monoFor`, `refreshedMonoFor`, `fillMono`, `importMono`, row
+// `addMonoView`, `monoFor`, `fillMono`, `importMono`, row
 // flattening, and the span materializers below. Completed Monotype views must
 // expose only `TypeId`s and durable AST ids, never these graph-local ids.
 /// Tag variant inside an instantiation-graph row. Names are program NameStore
@@ -1197,10 +1197,25 @@ pub const InstGraph = struct {
         return ty;
     }
 
-    pub fn refreshedMonoFor(self: *InstGraph, node: NodeId) Allocator.Error!Type.TypeId {
-        const ty = try self.monoFor(node);
-        try self.fillMono(self.find(node), ty);
-        return ty;
+    pub fn ownsMonoView(self: *InstGraph, ty: Type.TypeId) bool {
+        const raw_node = self.mono_nodes.get(ty) orelse return false;
+        const root = self.find(raw_node);
+        const views = self.node_monos.get(root) orelse return false;
+        for (views.items) |view| {
+            if (view == ty) return true;
+        }
+        return false;
+    }
+
+    /// Copy a graph-owned mutable Monotype view into a final TypeId. The
+    /// returned id is not registered as a graph view, so later graph evidence
+    /// cannot refill it. Non-view TypeIds are already outside this graph and
+    /// are returned unchanged.
+    pub fn sealMono(self: *InstGraph, ty: Type.TypeId) Allocator.Error!Type.TypeId {
+        try self.drainDirty();
+        var sealer = MonoSealer.init(self);
+        defer sealer.deinit();
+        return try sealer.seal(ty);
     }
 
     /// Write a node's current content into one of its Monotype views.
@@ -1381,6 +1396,116 @@ pub const InstGraph = struct {
                 try self.fillMono(root, ty);
             }
         }
+    }
+};
+
+const MonoSealer = struct {
+    graph: *InstGraph,
+    sealed: std.AutoHashMap(Type.TypeId, Type.TypeId),
+
+    fn init(graph: *InstGraph) MonoSealer {
+        return .{
+            .graph = graph,
+            .sealed = std.AutoHashMap(Type.TypeId, Type.TypeId).init(graph.allocator),
+        };
+    }
+
+    fn deinit(self: *MonoSealer) void {
+        self.sealed.deinit();
+    }
+
+    fn seal(self: *MonoSealer, ty: Type.TypeId) Allocator.Error!Type.TypeId {
+        if (!self.graph.ownsMonoView(ty)) return ty;
+        if (self.sealed.get(ty)) |existing| return existing;
+
+        const out = try self.graph.types.add(.zst);
+        try self.sealed.put(ty, out);
+        const content = try self.sealContent(self.graph.types.get(ty));
+        self.graph.types.set(out, content);
+        return out;
+    }
+
+    fn sealContent(self: *MonoSealer, content: Type.Content) Allocator.Error!Type.Content {
+        return switch (content) {
+            .primitive => |primitive| .{ .primitive = primitive },
+            .list => |elem| .{ .list = try self.seal(elem) },
+            .box => |elem| .{ .box = try self.seal(elem) },
+            .tuple => |items| .{ .tuple = try self.sealTypeSpan(items) },
+            .func => |func| .{ .func = .{
+                .args = try self.sealTypeSpan(func.args),
+                .ret = try self.seal(func.ret),
+            } },
+            .tag_union => |tags| .{ .tag_union = try self.sealTagSpan(tags) },
+            .record => |fields| .{ .record = try self.sealFieldSpan(fields) },
+            .named => |named| .{ .named = .{
+                .named_type = named.named_type,
+                .def = named.def,
+                .kind = named.kind,
+                .builtin_owner = named.builtin_owner,
+                .args = try self.sealTypeSpan(named.args),
+                .backing = if (named.backing) |backing| .{
+                    .ty = try self.seal(backing.ty),
+                    .use = backing.use,
+                } else null,
+                .declared_order = try self.sealDeclaredFieldSpan(named.declared_order),
+            } },
+            .erased => |digest| .{ .erased = digest },
+            .zst => .zst,
+        };
+    }
+
+    fn sealTypeSpan(self: *MonoSealer, span: Type.Span) Allocator.Error!Type.Span {
+        const values = self.graph.types.span(span);
+        if (values.len == 0) return .empty();
+        const sealed_values = try self.graph.allocator.alloc(Type.TypeId, values.len);
+        defer self.graph.allocator.free(sealed_values);
+        for (values, 0..) |value, index| {
+            sealed_values[index] = try self.seal(value);
+        }
+        return try self.graph.types.addSpan(sealed_values);
+    }
+
+    fn sealFieldSpan(self: *MonoSealer, span: Type.Span) Allocator.Error!Type.Span {
+        const fields = self.graph.types.fieldSpan(span);
+        if (fields.len == 0) return .empty();
+        const sealed_fields = try self.graph.allocator.alloc(Type.Field, fields.len);
+        defer self.graph.allocator.free(sealed_fields);
+        for (fields, 0..) |field, index| {
+            sealed_fields[index] = .{
+                .name = field.name,
+                .ty = try self.seal(field.ty),
+            };
+        }
+        return try self.graph.types.addRecordFields(self.graph.name_store, sealed_fields);
+    }
+
+    fn sealTagSpan(self: *MonoSealer, span: Type.Span) Allocator.Error!Type.Span {
+        const tags = self.graph.types.tagSpan(span);
+        if (tags.len == 0) return .empty();
+        const sealed_tags = try self.graph.allocator.alloc(Type.Tag, tags.len);
+        defer self.graph.allocator.free(sealed_tags);
+        for (tags, 0..) |tag, index| {
+            sealed_tags[index] = .{
+                .name = tag.name,
+                .checked_name = tag.checked_name,
+                .payloads = try self.sealTypeSpan(tag.payloads),
+            };
+        }
+        return try self.graph.types.addTagVariants(self.graph.name_store, sealed_tags);
+    }
+
+    fn sealDeclaredFieldSpan(self: *MonoSealer, span: Type.Span) Allocator.Error!Type.Span {
+        const declared = self.graph.types.declaredFieldSpan(span);
+        if (declared.len == 0) return .empty();
+        const sealed_declared = try self.graph.allocator.alloc(Type.DeclaredField, declared.len);
+        defer self.graph.allocator.free(sealed_declared);
+        for (declared, 0..) |field, index| {
+            sealed_declared[index] = switch (field) {
+                .named => |name| .{ .named = name },
+                .padding => |padding| .{ .padding = try self.seal(padding) },
+            };
+        }
+        return try self.graph.types.addDeclaredFields(sealed_declared);
     }
 };
 
@@ -1634,6 +1759,53 @@ test "issue 9647: row refills do not duplicate dependencies or materialized span
         return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(usize, 1), parents.items.len);
     try std.testing.expectEqual(@as(usize, 1), type_store.fields.items.len);
+}
+
+test "sealed monotype copy is not refilled by later graph evidence" {
+    const gpa = std.testing.allocator;
+
+    var type_store = Type.Store.init(gpa);
+    defer type_store.deinit();
+
+    var name_store = names.NameStore.init(gpa);
+    defer name_store.deinit();
+
+    var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
+    defer unsolved_monos.deinit();
+
+    const graph = try InstGraph.create(gpa, &type_store, &name_store, &unsolved_monos);
+    defer graph.destroy();
+
+    const a_name = try name_store.internRecordFieldLabel("a");
+    const b_name = try name_store.internRecordFieldLabel("b");
+    const a_ty = try graph.newNode(.{ .primitive = .u64 });
+    const b_ty = try graph.newNode(.{ .primitive = .u64 });
+
+    const fields = try graph.arena().alloc(InstField, 1);
+    fields[0] = .{ .name = a_name, .ty = a_ty };
+    const ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+    const row = try graph.newNode(.{ .record = .{
+        .fields = fields,
+        .ext = ext,
+    } });
+
+    const draft = try graph.monoFor(row);
+    const sealed = try graph.sealMono(draft);
+    try std.testing.expect(graph.ownsMonoView(draft));
+    try std.testing.expect(!graph.ownsMonoView(sealed));
+    try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
+
+    const extra_fields = try graph.arena().alloc(InstField, 1);
+    extra_fields[0] = .{ .name = b_name, .ty = b_ty };
+    const extra = try graph.newNode(.{ .record = .{
+        .fields = extra_fields,
+        .ext = try graph.newNode(.empty_record),
+    } });
+    try graph.unify(ext, extra);
+    try graph.drainDirty();
+
+    try std.testing.expectEqual(@as(usize, 2), type_store.fieldSpan(type_store.get(draft).record).len);
+    try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
 }
 
 test "issue 9647: unresolved tag row extension absorbs rest without allocating a rest node" {
