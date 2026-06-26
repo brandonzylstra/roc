@@ -3611,29 +3611,36 @@ const Builder = struct {
         };
     }
 
-    fn oneArgFnType(self: *Builder, arg_ty: Type.TypeId, ret_ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        const args = [_]Type.TypeId{arg_ty};
+    fn functionTypeFromMonoArgs(self: *Builder, arg_tys: []const Type.TypeId, ret_ty: Type.TypeId) Allocator.Error!Type.TypeId {
+        if (self.active_graph) |graph| {
+            const args = try graph.arena().alloc(NodeId, arg_tys.len);
+            for (arg_tys, 0..) |arg_ty, index| {
+                args[index] = try graph.importMono(arg_ty);
+            }
+            return try graph.monoFor(try graph.newNode(.{ .func = .{
+                .args = args,
+                .ret = try graph.importMono(ret_ty),
+            } }));
+        }
         return try self.program.types.add(.{ .func = .{
-            .args = try self.program.types.addSpan(&args),
+            .args = try self.program.types.addSpan(arg_tys),
             .ret = ret_ty,
         } });
     }
 
+    fn oneArgFnType(self: *Builder, arg_ty: Type.TypeId, ret_ty: Type.TypeId) Allocator.Error!Type.TypeId {
+        return try self.functionTypeFromMonoArgs(&.{arg_ty}, ret_ty);
+    }
+
     fn twoArgFnType(self: *Builder, arg_ty: Type.TypeId, ret_ty: Type.TypeId) Allocator.Error!Type.TypeId {
         const args = [_]Type.TypeId{ arg_ty, arg_ty };
-        return try self.program.types.add(.{ .func = .{
-            .args = try self.program.types.addSpan(&args),
-            .ret = ret_ty,
-        } });
+        return try self.functionTypeFromMonoArgs(&args, ret_ty);
     }
 
     /// `(value, Hasher) -> Hasher`, the shape of a `to_hash` helper.
     fn hashFnType(self: *Builder, value_ty: Type.TypeId, hasher_ty: Type.TypeId) Allocator.Error!Type.TypeId {
         const args = [_]Type.TypeId{ value_ty, hasher_ty };
-        return try self.program.types.add(.{ .func = .{
-            .args = try self.program.types.addSpan(&args),
-            .ret = hasher_ty,
-        } });
+        return try self.functionTypeFromMonoArgs(&args, hasher_ty);
     }
 
     fn singleTypeArg(self: *Builder, span: Type.Span, comptime owner: []const u8) Type.TypeId {
