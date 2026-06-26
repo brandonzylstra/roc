@@ -147,6 +147,7 @@ pub const Store = struct {
     fields: std.ArrayList(Field),
     tags: std.ArrayList(Tag),
     declared_fields: std.ArrayList(DeclaredField),
+    frozen: bool,
 
     pub fn init(allocator: std.mem.Allocator) Store {
         return .{
@@ -157,6 +158,7 @@ pub const Store = struct {
             .fields = .empty,
             .tags = .empty,
             .declared_fields = .empty,
+            .frozen = false,
         };
     }
 
@@ -169,7 +171,16 @@ pub const Store = struct {
         self.types.deinit(self.allocator);
     }
 
+    pub fn freeze(self: *Store) void {
+        self.frozen = true;
+    }
+
+    pub fn isFrozen(self: *const Store) bool {
+        return self.frozen;
+    }
+
     pub fn addSpan(self: *Store, values: []const TypeId) std.mem.Allocator.Error!Span {
+        self.assertMutable();
         if (values.len == 0) return .empty();
         const start: u32 = @intCast(self.spans.items.len);
         try self.spans.appendSlice(self.allocator, values);
@@ -177,6 +188,7 @@ pub const Store = struct {
     }
 
     pub fn addFields(self: *Store, values: []const Field) std.mem.Allocator.Error!Span {
+        self.assertMutable();
         if (values.len == 0) return .empty();
         const start: u32 = @intCast(self.fields.items.len);
         try self.fields.appendSlice(self.allocator, values);
@@ -194,6 +206,7 @@ pub const Store = struct {
     }
 
     pub fn addTags(self: *Store, values: []const Tag) std.mem.Allocator.Error!Span {
+        self.assertMutable();
         if (values.len == 0) return .empty();
         const start: u32 = @intCast(self.tags.items.len);
         try self.tags.appendSlice(self.allocator, values);
@@ -211,6 +224,7 @@ pub const Store = struct {
     }
 
     pub fn add(self: *Store, content: Content) std.mem.Allocator.Error!TypeId {
+        self.assertMutable();
         const index = self.types.items.len;
         try self.types.append(self.allocator, content);
         errdefer _ = self.types.pop();
@@ -219,6 +233,7 @@ pub const Store = struct {
     }
 
     pub fn set(self: *Store, ty: TypeId, content: Content) void {
+        self.assertMutable();
         self.types.items[@intFromEnum(ty)] = content;
         self.clearTypeDigestCache();
     }
@@ -240,6 +255,7 @@ pub const Store = struct {
     }
 
     pub fn addDeclaredFields(self: *Store, values: []const DeclaredField) std.mem.Allocator.Error!Span {
+        self.assertMutable();
         if (values.len == 0) return .empty();
         const start: u32 = @intCast(self.declared_fields.items.len);
         try self.declared_fields.appendSlice(self.allocator, values);
@@ -271,6 +287,7 @@ pub const Store = struct {
     }
 
     fn restore(self: *Store, mark_: Mark) void {
+        self.assertMutable();
         self.types.items.len = mark_.types_len;
         self.type_digests.items.len = mark_.type_digests_len;
         self.spans.items.len = mark_.spans_len;
@@ -334,6 +351,7 @@ pub const Store = struct {
         fields: []const Field,
         tags: []const Tag,
         declared_fields: []const DeclaredField,
+        frozen: bool,
 
         pub fn get(self: View, ty: TypeId) Content {
             return self.types[@intFromEnum(ty)];
@@ -469,6 +487,7 @@ pub const Store = struct {
             .fields = self.fields.items,
             .tags = self.tags.items,
             .declared_fields = self.declared_fields.items,
+            .frozen = self.frozen,
         };
     }
 
@@ -687,6 +706,10 @@ pub const Store = struct {
 
     fn clearTypeDigestCache(self: *Store) void {
         @memset(self.type_digests.items, null);
+    }
+
+    fn assertMutable(self: *const Store) void {
+        if (self.frozen) Common.invariant("frozen Monotype type store cannot be mutated");
     }
 
     fn typeRefInBounds(self: *const Store, ty: TypeId) bool {

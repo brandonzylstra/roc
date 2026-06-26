@@ -986,6 +986,10 @@ pub const ProgramBuilder = struct {
         return self.view().verifyCallTargets();
     }
 
+    pub fn freeze(self: *ProgramBuilder) void {
+        self.types.freeze();
+    }
+
     pub fn view(self: *const ProgramBuilder) ProgramView {
         return .{
             .names = &self.names,
@@ -1317,6 +1321,11 @@ test "monotype program view exposes read-only side arrays" {
     try std.testing.expectEqual(@as(usize, 1), view_.exprs.len);
     try std.testing.expectEqual(@as(usize, 1), view_.typed_locals.len);
     try std.testing.expectEqual(@as(u32, 42), view_.next_symbol);
+    try std.testing.expect(!view_.types.frozen);
+
+    program.freeze();
+    try std.testing.expect(program.types.isFrozen());
+    try std.testing.expect(program.view().types.frozen);
 }
 
 test "monotype call target verifier checks local and imported slots" {

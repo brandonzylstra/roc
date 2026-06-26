@@ -4913,6 +4913,7 @@ fn cloneMonoTypeStore(allocator: std.mem.Allocator, source: *const MonoType.Stor
         .fields = try cloneArrayList(MonoType.Field, allocator, &source.fields),
         .tags = try cloneArrayList(MonoType.Tag, allocator, &source.tags),
         .declared_fields = try cloneArrayList(MonoType.DeclaredField, allocator, &source.declared_fields),
+        .frozen = source.isFrozen(),
     };
 }
 

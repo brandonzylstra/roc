@@ -98,6 +98,7 @@ pub fn run(
     }
 
     program.next_symbol = builder.symbols.next;
+    program.freeze();
     return program;
 }
 
