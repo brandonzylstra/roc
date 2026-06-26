@@ -1406,93 +1406,199 @@ fn directionalTypePair(lhs: TypeId, rhs: TypeId) u64 {
 /// roots are sealed through `internRecursiveRoot`, which keeps the temporary
 /// back-reference slots private until the root has immutable content and a
 /// digest/equality bucket.
-pub const Interner = struct {
+const InternerState = struct {
     allocator: std.mem.Allocator,
     name_store: *const names.NameStore,
     store: Store,
     by_digest: std.AutoHashMap(InternerLookupDigest, std.ArrayList(TypeId)),
+};
 
-    pub fn init(allocator: std.mem.Allocator, name_store: *const names.NameStore) Interner {
-        return .{
+/// Opaque builder handle for interning immutable Monotype type ids.
+pub const Interner = opaque {
+    fn state(self: *Interner) *InternerState {
+        return @ptrCast(@alignCast(self));
+    }
+
+    fn constState(self: *const Interner) *const InternerState {
+        return @ptrCast(@alignCast(self));
+    }
+
+    fn store(self: *Interner) *Store {
+        return &self.state().store;
+    }
+
+    fn constStore(self: *const Interner) *const Store {
+        return &self.constState().store;
+    }
+
+    pub fn init(allocator: std.mem.Allocator, name_store: *const names.NameStore) std.mem.Allocator.Error!*Interner {
+        const state_ = try allocator.create(InternerState);
+        state_.* = .{
             .allocator = allocator,
             .name_store = name_store,
             .store = Store.init(allocator),
             .by_digest = std.AutoHashMap(InternerLookupDigest, std.ArrayList(TypeId)).init(allocator),
         };
+        return @ptrCast(state_);
     }
 
     pub fn deinit(self: *Interner) void {
-        var lists = self.by_digest.valueIterator();
-        while (lists.next()) |list| list.deinit(self.allocator);
-        self.by_digest.deinit();
-        self.store.deinit();
+        const state_ = self.state();
+        var lists = state_.by_digest.valueIterator();
+        while (lists.next()) |list| list.deinit(state_.allocator);
+        state_.by_digest.deinit();
+        state_.store.deinit();
+        const allocator = state_.allocator;
+        allocator.destroy(state_);
     }
 
     pub fn view(self: *const Interner) Store.View {
-        return self.store.view();
+        return self.constStore().view();
+    }
+
+    pub fn get(self: *const Interner, ty: TypeId) Content {
+        return self.constStore().get(ty);
+    }
+
+    pub fn span(self: *const Interner, span_: Span) []const TypeId {
+        return self.constStore().span(span_);
+    }
+
+    pub fn fieldSpan(self: *const Interner, span_: Span) []const Field {
+        return self.constStore().fieldSpan(span_);
+    }
+
+    pub fn tagSpan(self: *const Interner, span_: Span) []const Tag {
+        return self.constStore().tagSpan(span_);
+    }
+
+    pub fn typeDigest(self: *Interner, ty: TypeId) names.TypeDigest {
+        const state_ = self.state();
+        return state_.store.typeDigestCached(state_.name_store, ty, null);
+    }
+
+    pub fn typeEql(self: *const Interner, lhs: TypeId, rhs: TypeId) std.mem.Allocator.Error!bool {
+        const state_ = self.constState();
+        return try state_.store.typeEql(state_.name_store, lhs, rhs);
+    }
+
+    pub fn verify(self: *const Interner) ?Store.VerifyError {
+        const state_ = self.constState();
+        return state_.store.verify(state_.name_store);
     }
 
     pub fn internPrimitive(self: *Interner, primitive: Primitive) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const ty = try self.store.add(.{ .primitive = primitive });
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        const ty = try store_.add(.{ .primitive = primitive });
         return try self.internCandidate(mark_, ty);
     }
 
     pub fn internZst(self: *Interner) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const ty = try self.store.add(.zst);
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        const ty = try store_.add(.zst);
         return try self.internCandidate(mark_, ty);
     }
 
     pub fn internList(self: *Interner, elem: TypeId) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const ty = try self.store.add(.{ .list = elem });
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        const ty = try store_.add(.{ .list = elem });
         return try self.internCandidate(mark_, ty);
     }
 
     pub fn internBox(self: *Interner, elem: TypeId) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const ty = try self.store.add(.{ .box = elem });
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        const ty = try store_.add(.{ .box = elem });
         return try self.internCandidate(mark_, ty);
     }
 
     pub fn internTuple(self: *Interner, items: []const TypeId) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const span_ = try self.store.addSpan(items);
-        const ty = try self.store.add(.{ .tuple = span_ });
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        const span_ = try store_.addSpan(items);
+        const ty = try store_.add(.{ .tuple = span_ });
         return try self.internCandidate(mark_, ty);
     }
 
     pub fn internFunc(self: *Interner, args: []const TypeId, ret: TypeId) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const span_ = try self.store.addSpan(args);
-        const ty = try self.store.add(.{ .func = .{ .args = span_, .ret = ret } });
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        const span_ = try store_.addSpan(args);
+        const ty = try store_.add(.{ .func = .{ .args = span_, .ret = ret } });
         return try self.internCandidate(mark_, ty);
     }
 
     pub fn internRecord(self: *Interner, raw_fields: []const Field) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const span_ = try self.store.addRecordFields(self.name_store, raw_fields);
-        const ty = try self.store.add(.{ .record = span_ });
+        const state_ = self.state();
+        const mark_ = state_.store.mark();
+        const span_ = try state_.store.addRecordFields(state_.name_store, raw_fields);
+        const ty = try state_.store.add(.{ .record = span_ });
         return try self.internCandidate(mark_, ty);
     }
 
-    pub fn internTagUnion(self: *Interner, raw_tags: []const Tag) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const span_ = try self.store.addTagVariants(self.name_store, raw_tags);
-        const ty = try self.store.add(.{ .tag_union = span_ });
+    pub const TagInput = struct {
+        name: names.TagNameId,
+        checked_name: names.TagNameId,
+        payloads: []const TypeId,
+    };
+
+    pub fn internTagUnion(self: *Interner, raw_tags: []const TagInput) std.mem.Allocator.Error!TypeId {
+        const state_ = self.state();
+        const mark_ = state_.store.mark();
+        errdefer state_.store.restore(mark_);
+
+        const lowered = try state_.allocator.alloc(Tag, raw_tags.len);
+        defer state_.allocator.free(lowered);
+        for (raw_tags, 0..) |tag, index| {
+            lowered[index] = .{
+                .name = tag.name,
+                .checked_name = tag.checked_name,
+                .payloads = try state_.store.addSpan(tag.payloads),
+            };
+        }
+
+        const span_ = try state_.store.addTagVariants(state_.name_store, lowered);
+        const ty = try state_.store.add(.{ .tag_union = span_ });
         return try self.internCandidate(mark_, ty);
     }
 
-    pub fn internNamed(self: *Interner, named: NamedContent) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const ty = try self.store.add(.{ .named = named });
+    pub const NamedInput = struct {
+        named_type: NamedType,
+        def: TypeDef,
+        kind: NamedKind,
+        builtin_owner: ?static_dispatch.BuiltinOwner = null,
+        args: []const TypeId = &.{},
+        backing: ?NamedBacking = null,
+        declared_order: []const DeclaredField = &.{},
+    };
+
+    pub fn internNamed(self: *Interner, named: NamedInput) std.mem.Allocator.Error!TypeId {
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        errdefer store_.restore(mark_);
+
+        const args = try store_.addSpan(named.args);
+        const declared_order = try store_.addDeclaredFields(named.declared_order);
+        const content: NamedContent = .{
+            .named_type = named.named_type,
+            .def = named.def,
+            .kind = named.kind,
+            .builtin_owner = named.builtin_owner,
+            .args = args,
+            .backing = named.backing,
+            .declared_order = declared_order,
+        };
+        const ty = try store_.add(.{ .named = content });
         return try self.internCandidate(mark_, ty);
     }
 
     pub fn internErased(self: *Interner, digest: names.TypeDigest) std.mem.Allocator.Error!TypeId {
-        const mark_ = self.store.mark();
-        const ty = try self.store.add(.{ .erased = digest });
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        const ty = try store_.add(.{ .erased = digest });
         return try self.internCandidate(mark_, ty);
     }
 
@@ -1571,19 +1677,21 @@ pub const Interner = struct {
             Common.invariant("Monotype recursive type group root is outside the group");
         }
 
-        const mark_ = self.store.mark();
-        errdefer self.store.restore(mark_);
+        const store_ = self.store();
+        const mark_ = store_.mark();
+        errdefer store_.restore(mark_);
 
-        const ids = try self.allocator.alloc(TypeId, contents.len);
-        defer self.allocator.free(ids);
+        const allocator = self.state().allocator;
+        const ids = try allocator.alloc(TypeId, contents.len);
+        defer allocator.free(ids);
 
         for (ids) |*id| {
-            id.* = try self.store.reserveSlot();
+            id.* = try store_.reserveSlot();
         }
         const root = ids[@intFromEnum(root_node)];
         for (contents, 0..) |content, index| {
             const lowered = try self.lowerRecursiveContent(ids, root, content);
-            self.store.fillReservedSlot(ids[index], lowered);
+            store_.fillReservedSlot(ids[index], lowered);
         }
         return try self.internCandidate(mark_, root);
     }
@@ -1607,12 +1715,13 @@ pub const Interner = struct {
         links: []const RecursiveLink,
     ) std.mem.Allocator.Error!Span {
         if (links.len == 0) return .empty();
-        const lowered = try self.allocator.alloc(TypeId, links.len);
-        defer self.allocator.free(lowered);
+        const state_ = self.state();
+        const lowered = try state_.allocator.alloc(TypeId, links.len);
+        defer state_.allocator.free(lowered);
         for (links, 0..) |link, index| {
             lowered[index] = self.lowerRecursiveLink(ids, root, link);
         }
-        return try self.store.addSpan(lowered);
+        return try state_.store.addSpan(lowered);
     }
 
     fn lowerRecursiveFields(
@@ -1622,15 +1731,16 @@ pub const Interner = struct {
         fields: []const RecursiveField,
     ) std.mem.Allocator.Error!Span {
         if (fields.len == 0) return .empty();
-        const lowered = try self.allocator.alloc(Field, fields.len);
-        defer self.allocator.free(lowered);
+        const state_ = self.state();
+        const lowered = try state_.allocator.alloc(Field, fields.len);
+        defer state_.allocator.free(lowered);
         for (fields, 0..) |field, index| {
             lowered[index] = .{
                 .name = field.name,
                 .ty = self.lowerRecursiveLink(ids, root, field.ty),
             };
         }
-        return try self.store.addRecordFields(self.name_store, lowered);
+        return try state_.store.addRecordFields(state_.name_store, lowered);
     }
 
     fn lowerRecursiveTags(
@@ -1640,8 +1750,9 @@ pub const Interner = struct {
         tags_: []const RecursiveTag,
     ) std.mem.Allocator.Error!Span {
         if (tags_.len == 0) return .empty();
-        const lowered = try self.allocator.alloc(Tag, tags_.len);
-        defer self.allocator.free(lowered);
+        const state_ = self.state();
+        const lowered = try state_.allocator.alloc(Tag, tags_.len);
+        defer state_.allocator.free(lowered);
         for (tags_, 0..) |tag, index| {
             lowered[index] = .{
                 .name = tag.name,
@@ -1649,7 +1760,7 @@ pub const Interner = struct {
                 .payloads = try self.lowerRecursiveLinkSpan(ids, root, tag.payloads),
             };
         }
-        return try self.store.addTagVariants(self.name_store, lowered);
+        return try state_.store.addTagVariants(state_.name_store, lowered);
     }
 
     fn lowerRecursiveNamed(
@@ -1696,25 +1807,26 @@ pub const Interner = struct {
     }
 
     fn internCandidate(self: *Interner, mark_: Store.Mark, candidate: TypeId) std.mem.Allocator.Error!TypeId {
-        errdefer self.store.restore(mark_);
+        const state_ = self.state();
+        errdefer state_.store.restore(mark_);
 
-        const digest = self.store.typeDigestCached(self.name_store, candidate, null);
+        const digest = state_.store.typeDigestCached(state_.name_store, candidate, null);
         const key = InternerLookupDigest.from(digest);
-        if (self.by_digest.getPtr(key)) |bucket| {
+        if (state_.by_digest.getPtr(key)) |bucket| {
             for (bucket.items) |existing| {
-                if (try self.store.typeEql(self.name_store, existing, candidate)) {
-                    self.store.restore(mark_);
+                if (try state_.store.typeEql(state_.name_store, existing, candidate)) {
+                    state_.store.restore(mark_);
                     return existing;
                 }
             }
-            try bucket.append(self.allocator, candidate);
+            try bucket.append(state_.allocator, candidate);
             return candidate;
         }
 
         var bucket = std.ArrayList(TypeId).empty;
-        errdefer bucket.deinit(self.allocator);
-        try bucket.append(self.allocator, candidate);
-        try self.by_digest.put(key, bucket);
+        errdefer bucket.deinit(state_.allocator);
+        try bucket.append(state_.allocator, candidate);
+        try state_.by_digest.put(key, bucket);
         return candidate;
     }
 };
@@ -1811,7 +1923,7 @@ test "monotype type interner reuses child-first function nodes" {
     var name_store = names.NameStore.init(std.testing.allocator);
     defer name_store.deinit();
 
-    var interner = Interner.init(std.testing.allocator, &name_store);
+    const interner = try Interner.init(std.testing.allocator, &name_store);
     defer interner.deinit();
 
     const unit = try interner.internZst();
@@ -1831,7 +1943,7 @@ test "monotype type interner normalizes record and tag rows" {
     const a_tag = try name_store.internTagLabel("A");
     const b_tag = try name_store.internTagLabel("B");
 
-    var interner = Interner.init(std.testing.allocator, &name_store);
+    const interner = try Interner.init(std.testing.allocator, &name_store);
     defer interner.deinit();
 
     const unit = try interner.internZst();
@@ -1845,21 +1957,20 @@ test "monotype type interner normalizes record and tag rows" {
     });
     try std.testing.expectEqual(first_record, second_record);
 
-    const payloads = try interner.store.addSpan(&.{unit});
     const first_tags = try interner.internTagUnion(&.{
-        .{ .name = b_tag, .checked_name = b_tag, .payloads = payloads },
-        .{ .name = a_tag, .checked_name = a_tag, .payloads = payloads },
+        .{ .name = b_tag, .checked_name = b_tag, .payloads = &.{unit} },
+        .{ .name = a_tag, .checked_name = a_tag, .payloads = &.{unit} },
     });
     const second_tags = try interner.internTagUnion(&.{
-        .{ .name = a_tag, .checked_name = a_tag, .payloads = payloads },
-        .{ .name = b_tag, .checked_name = b_tag, .payloads = payloads },
+        .{ .name = a_tag, .checked_name = a_tag, .payloads = &.{unit} },
+        .{ .name = b_tag, .checked_name = b_tag, .payloads = &.{unit} },
     });
     try std.testing.expectEqual(first_tags, second_tags);
 
-    const record_fields = interner.store.fieldSpan(interner.store.get(first_record).record);
+    const record_fields = interner.fieldSpan(interner.get(first_record).record);
     try std.testing.expectEqual(a_field, record_fields[0].name);
     try std.testing.expectEqual(b_field, record_fields[1].name);
-    const tag_fields = interner.store.tagSpan(interner.store.get(first_tags).tag_union);
+    const tag_fields = interner.tagSpan(interner.get(first_tags).tag_union);
     try std.testing.expectEqual(a_tag, tag_fields[0].name);
     try std.testing.expectEqual(b_tag, tag_fields[1].name);
 }
@@ -1870,18 +1981,17 @@ test "monotype type interner preserves tag payload order" {
 
     const tag_name = try name_store.internTagLabel("Pair");
 
-    var interner = Interner.init(std.testing.allocator, &name_store);
+    const interner = try Interner.init(std.testing.allocator, &name_store);
     defer interner.deinit();
 
     const first = try interner.internPrimitive(.i64);
     const second = try interner.internPrimitive(.str);
-    const payloads = try interner.store.addSpan(&.{ first, second });
     const tag_ty = try interner.internTagUnion(&.{
-        .{ .name = tag_name, .checked_name = tag_name, .payloads = payloads },
+        .{ .name = tag_name, .checked_name = tag_name, .payloads = &.{ first, second } },
     });
 
-    const tags_ = interner.store.tagSpan(interner.store.get(tag_ty).tag_union);
-    const stored_payloads = interner.store.span(tags_[0].payloads);
+    const tags_ = interner.tagSpan(interner.get(tag_ty).tag_union);
+    const stored_payloads = interner.span(tags_[0].payloads);
     try std.testing.expectEqual(first, stored_payloads[0]);
     try std.testing.expectEqual(second, stored_payloads[1]);
 }
@@ -1894,26 +2004,24 @@ test "monotype type interner checks exact equality after digest match" {
     const first_name = try name_store.internTypeName("First");
     const second_name = try name_store.internTypeName("Second");
 
-    var interner = Interner.init(std.testing.allocator, &name_store);
+    const interner = try Interner.init(std.testing.allocator, &name_store);
     defer interner.deinit();
 
     const first = try interner.internNamed(.{
         .named_type = .{ .module = .{}, .ty = @enumFromInt(1) },
         .def = .{ .module_name = module_name, .type_name = first_name },
         .kind = .alias,
-        .args = Span.empty(),
         .backing = null,
     });
     const second = try interner.internNamed(.{
         .named_type = .{ .module = .{}, .ty = @enumFromInt(2) },
         .def = .{ .module_name = module_name, .type_name = second_name },
         .kind = .alias,
-        .args = Span.empty(),
         .backing = null,
     });
 
-    const first_digest = interner.store.typeDigestCached(&name_store, first, null);
-    const second_digest = interner.store.typeDigestCached(&name_store, second, null);
+    const first_digest = interner.typeDigest(first);
+    const second_digest = interner.typeDigest(second);
     try std.testing.expectEqualSlices(u8, first_digest.bytes[0..], second_digest.bytes[0..]);
     try std.testing.expect(first != second);
 }
@@ -1924,17 +2032,17 @@ test "monotype type interner seals recursive root before exposing type id" {
 
     const field_name = try name_store.internRecordFieldLabel("next");
 
-    var interner = Interner.init(std.testing.allocator, &name_store);
+    const interner = try Interner.init(std.testing.allocator, &name_store);
     defer interner.deinit();
 
     const root = try interner.internRecursiveRoot(.{ .record = &.{
         .{ .name = field_name, .ty = .root },
     } });
 
-    const fields = interner.store.fieldSpan(interner.store.get(root).record);
+    const fields = interner.fieldSpan(interner.get(root).record);
     try std.testing.expectEqual(@as(usize, 1), fields.len);
     try std.testing.expectEqual(root, fields[0].ty);
-    try std.testing.expectEqual(@as(?Store.VerifyError, null), interner.store.verify(&name_store));
+    try std.testing.expectEqual(@as(?Store.VerifyError, null), interner.verify());
 }
 
 test "monotype type interner reuses equivalent recursive roots" {
@@ -1943,7 +2051,7 @@ test "monotype type interner reuses equivalent recursive roots" {
 
     const field_name = try name_store.internRecordFieldLabel("next");
 
-    var interner = Interner.init(std.testing.allocator, &name_store);
+    const interner = try Interner.init(std.testing.allocator, &name_store);
     defer interner.deinit();
 
     const first = try interner.internRecursiveRoot(.{ .record = &.{
@@ -1963,7 +2071,7 @@ test "monotype type interner seals multi-node recursive group privately" {
 
     const field_name = try name_store.internRecordFieldLabel("step");
 
-    var interner = Interner.init(std.testing.allocator, &name_store);
+    const interner = try Interner.init(std.testing.allocator, &name_store);
     defer interner.deinit();
 
     const record_node = Interner.recursiveNodeId(0);
@@ -1990,8 +2098,8 @@ test "monotype type interner seals multi-node recursive group privately" {
     try std.testing.expectEqual(first, second);
     try std.testing.expectEqual(@as(usize, 2), interner.view().types.len);
 
-    const step_ty = interner.store.fieldSpan(interner.store.get(first).record)[0].ty;
-    const step_fn = interner.store.get(step_ty).func;
+    const step_ty = interner.fieldSpan(interner.get(first).record)[0].ty;
+    const step_fn = interner.get(step_ty).func;
     try std.testing.expectEqual(first, step_fn.ret);
 }
 
@@ -2002,7 +2110,7 @@ test "monotype type interner keeps distinct recursive roots with different child
     const next_name = try name_store.internRecordFieldLabel("next");
     const done_name = try name_store.internRecordFieldLabel("done");
 
-    var interner = Interner.init(std.testing.allocator, &name_store);
+    const interner = try Interner.init(std.testing.allocator, &name_store);
     defer interner.deinit();
 
     const bool_ty = try interner.internPrimitive(.bool);
@@ -2015,7 +2123,7 @@ test "monotype type interner keeps distinct recursive roots with different child
     } });
 
     try std.testing.expect(recursive_only != recursive_with_bool);
-    try std.testing.expect(!try interner.store.typeEql(&name_store, recursive_only, recursive_with_bool));
+    try std.testing.expect(!try interner.typeEql(recursive_only, recursive_with_bool));
 }
 
 test "monotype named type digest includes generic arguments" {
