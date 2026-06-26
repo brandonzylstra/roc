@@ -18,6 +18,7 @@ const NodeId = solve.NodeId;
 const InstTag = solve.InstTag;
 const InstField = solve.InstField;
 const InstBacking = solve.InstBacking;
+const InstDeclaredField = solve.InstDeclaredField;
 const InstVariable = solve.InstVariable;
 const GraphTypeFinals = solve.GraphTypeFinals;
 
@@ -4320,8 +4321,50 @@ const BodyContext = struct {
             .builtin_owner = builtinOwner(nominal.builtin),
             .args = args,
             .backing = backing,
-            .declared_order = try self.builder.declaredOrderForNominal(self.view, nominal),
+            .declared_order = try self.instDeclaredOrderForNominal(nominal),
         } });
+    }
+
+    fn instDeclaredOrderForNominal(
+        self: *BodyContext,
+        nominal: checked.CheckedNominalType,
+    ) Allocator.Error![]const InstDeclaredField {
+        const lookup = self.builder.nominalDeclarationFor(self.view, nominal) orelse return &.{};
+        const source_decl = lookup.declaration.nominal.source_decl orelse return &.{};
+        const module_env = lookup.view.module_env;
+        const anno_idx = switch (module_env.store.getStatement(@enumFromInt(source_decl))) {
+            .s_nominal_decl => |decl| decl.anno,
+            else => return &.{},
+        };
+
+        var record_anno = anno_idx;
+        const record = while (true) {
+            switch (module_env.store.getTypeAnno(record_anno)) {
+                .parens => |parens| record_anno = parens.anno,
+                .record => |record| break record,
+                else => return &.{},
+            }
+        };
+        const fields = module_env.store.sliceAnnoRecordFields(record.fields);
+        if (fields.len == 0) return &.{};
+
+        const entries = try self.graph.arena().alloc(InstDeclaredField, fields.len);
+        const padding_types = lookup.padding_field_tys;
+        var padding_cursor: usize = 0;
+        for (fields, 0..) |field_idx, index| {
+            const field = module_env.store.getAnnoRecordField(field_idx);
+            if (field.is_unnamed) {
+                if (padding_cursor >= padding_types.len) {
+                    Common.invariant("nominal declaration had more unnamed fields than recorded padding types");
+                }
+                const checked_ty = padding_types[padding_cursor];
+                padding_cursor += 1;
+                entries[index] = .{ .padding = try self.instNode(self.checkedTypeInCurrentView(lookup.view, checked_ty)) };
+            } else {
+                entries[index] = .{ .named = try self.builder.program.names.internRecordFieldLabel(module_env.getIdentText(field.name)) };
+            }
+        }
+        return entries;
     }
 
     /// Instantiate a nominal instance's backing. A local declaration's
@@ -8973,19 +9016,14 @@ const BodyContext = struct {
         }
         try self.graph.drainDirty();
         if (saw_generated_opaque_evidence) {
-            const args = try self.allocator.alloc(Type.TypeId, function.args.len);
-            defer self.allocator.free(args);
+            const args = try self.graph.arena().alloc(NodeId, function.args.len);
             for (function.args, generated_arg_overrides, 0..) |formal_ty, override, index| {
                 args[index] = if (override) |ty|
-                    ty
+                    try self.graph.importMono(ty)
                 else
-                    try self.graph.monoFor(try self.instNode(formal_ty));
+                    try self.instNode(formal_ty);
             }
-            const generated_fn = try self.builder.program.types.add(.{ .func = .{
-                .args = try self.builder.program.types.addSpan(args),
-                .ret = try self.graph.monoFor(try self.instNode(function.ret)),
-            } });
-            return generated_fn;
+            return try self.graphFunctionType(args, try self.instNode(function.ret));
         }
         return try self.graph.monoFor(fn_node);
     }

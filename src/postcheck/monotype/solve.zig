@@ -101,6 +101,12 @@ pub const InstBacking = struct {
     use: Type.BackingUse,
 };
 
+/// Declared field order while a named type is still in the instantiation graph.
+pub const InstDeclaredField = union(enum(u8)) {
+    named: names.RecordFieldNameId,
+    padding: NodeId,
+};
+
 /// Named (alias/nominal/opaque) instantiation-graph node.
 pub const InstNamed = struct {
     named_type: Type.NamedType,
@@ -110,10 +116,9 @@ pub const InstNamed = struct {
     args: []NodeId,
     backing: ?InstBacking,
     /// Declared field order for a nominal/opaque record backing (empty
-    /// otherwise). Carried verbatim into the materialized monotype `.named`
-    /// content; the entries already reference the shared monotype declared-field
-    /// store, so materialization copies the span as-is.
-    declared_order: Type.Span = Type.Span.empty(),
+    /// otherwise). Padding field types are graph nodes so sealing maps them to
+    /// immutable type ids with the rest of the named type.
+    declared_order: []const InstDeclaredField = &.{},
 };
 
 /// Content of an instantiation-graph node. Rows carry explicit extension
@@ -1190,7 +1195,7 @@ pub const InstGraph = struct {
                     .node = try self.importMono(backing.ty),
                     .use = backing.use,
                 } else null,
-                .declared_order = named.declared_order,
+                .declared_order = try self.importDeclaredFields(named.declared_order),
             } },
             .erased => |digest| .{ .erased = digest },
             .zst => .zst,
@@ -1203,6 +1208,19 @@ pub const InstGraph = struct {
         const out = try self.arena().alloc(NodeId, tys.len);
         for (tys, 0..) |ty, index| {
             out[index] = try self.importMono(ty);
+        }
+        return out;
+    }
+
+    fn importDeclaredFields(self: *InstGraph, span: Type.Span) Allocator.Error![]const InstDeclaredField {
+        const fields = self.types.declaredFieldSpan(span);
+        if (fields.len == 0) return &.{};
+        const out = try self.arena().alloc(InstDeclaredField, fields.len);
+        for (fields, 0..) |field, index| {
+            out[index] = switch (field) {
+                .named => |name| .{ .named = name },
+                .padding => |ty| .{ .padding = try self.importMono(ty) },
+            };
         }
         return out;
     }
@@ -1402,7 +1420,10 @@ pub const InstGraph = struct {
                         else => null,
                     }),
                     .backing = backing,
-                    .declared_order = named.declared_order,
+                    .declared_order = try self.declaredFieldSpanWithReuse(named.declared_order, switch (previous) {
+                        .named => |old| old.declared_order,
+                        else => null,
+                    }),
                 } };
             },
             .erased => |digest| .{ .erased = digest },
@@ -1429,6 +1450,26 @@ pub const InstGraph = struct {
             if (typeSpanEql(self.types.span(span), values)) return span;
         }
         return try self.types.addSpan(values);
+    }
+
+    fn declaredFieldSpanWithReuse(
+        self: *InstGraph,
+        fields: []const InstDeclaredField,
+        existing: ?Type.Span,
+    ) Allocator.Error!Type.Span {
+        if (fields.len == 0) return .empty();
+        const materialized = try self.allocator.alloc(Type.DeclaredField, fields.len);
+        defer self.allocator.free(materialized);
+        for (fields, 0..) |field, index| {
+            materialized[index] = switch (field) {
+                .named => |name| .{ .named = name },
+                .padding => |node| .{ .padding = try self.monoFor(node) },
+            };
+        }
+        if (existing) |span| {
+            if (declaredFieldSpanEql(self.types.declaredFieldSpan(span), materialized)) return span;
+        }
+        return try self.types.addDeclaredFields(materialized);
     }
 
     fn recordSpanWithReuse(
@@ -1500,25 +1541,31 @@ pub const InstGraph = struct {
 pub const GraphTypeFinals = struct {
     graph: *InstGraph,
     sealed: std.AutoHashMap(NodeId, Type.TypeId),
+    sealed_types: std.AutoHashMap(Type.TypeId, Type.TypeId),
 
     pub fn init(graph: *InstGraph) GraphTypeFinals {
         return .{
             .graph = graph,
             .sealed = std.AutoHashMap(NodeId, Type.TypeId).init(graph.allocator),
+            .sealed_types = std.AutoHashMap(Type.TypeId, Type.TypeId).init(graph.allocator),
         };
     }
 
     pub fn deinit(self: *GraphTypeFinals) void {
+        self.sealed_types.deinit();
         self.sealed.deinit();
     }
 
     pub fn sealType(self: *GraphTypeFinals, ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        const raw_node = self.graph.mono_nodes.get(ty) orelse return ty;
-        const node = self.graph.find(raw_node);
-        const views = self.graph.node_monos.get(node) orelse return ty;
-        for (views.items) |view| {
-            if (view == ty) return try self.sealNode(node);
+        if (self.graph.mono_nodes.get(ty)) |raw_node| {
+            const node = self.graph.find(raw_node);
+            if (self.graph.node_monos.get(node)) |views| {
+                for (views.items) |view| {
+                    if (view == ty) return try self.sealNode(node);
+                }
+            }
         }
+        if (try self.typeHasGraphViews(ty)) return try self.sealStoreType(ty);
         return ty;
     }
 
@@ -1567,7 +1614,57 @@ pub const GraphTypeFinals = struct {
                         .use = raw_backing.use,
                     };
                 } else null,
-                .declared_order = named.declared_order,
+                .declared_order = try self.sealDeclaredFieldSpan(named.declared_order),
+            } },
+            .erased => |digest| .{ .erased = digest },
+            .zst => .zst,
+        };
+    }
+
+    fn typeHasGraphViews(self: *GraphTypeFinals, ty: Type.TypeId) Allocator.Error!bool {
+        var seen = std.AutoHashMap(Type.TypeId, void).init(self.graph.allocator);
+        defer seen.deinit();
+        return try self.graph.typeContainsGraphView(ty, &seen);
+    }
+
+    fn sealStoreType(self: *GraphTypeFinals, ty: Type.TypeId) Allocator.Error!Type.TypeId {
+        if (self.sealed_types.get(ty)) |existing| return existing;
+
+        const Context = struct {
+            sealer: *GraphTypeFinals,
+            ty: Type.TypeId,
+
+            fn fill(context: @This(), reserved: Type.TypeId) Allocator.Error!Type.Content {
+                try context.sealer.sealed_types.put(context.ty, reserved);
+                return try context.sealer.sealStoreContent(context.ty);
+            }
+        };
+        return try self.graph.types.addRecursive(Context{ .sealer = self, .ty = ty }, Context.fill);
+    }
+
+    fn sealStoreContent(self: *GraphTypeFinals, ty: Type.TypeId) Allocator.Error!Type.Content {
+        return switch (self.graph.types.get(ty)) {
+            .primitive => |primitive| .{ .primitive = primitive },
+            .list => |elem| .{ .list = try self.sealType(elem) },
+            .box => |elem| .{ .box = try self.sealType(elem) },
+            .tuple => |items| .{ .tuple = try self.sealTypeSpan(items) },
+            .func => |func| .{ .func = .{
+                .args = try self.sealTypeSpan(func.args),
+                .ret = try self.sealType(func.ret),
+            } },
+            .tag_union => |tags| .{ .tag_union = try self.sealStoredTagSpan(tags) },
+            .record => |fields| .{ .record = try self.sealStoredFieldSpan(fields) },
+            .named => |named| .{ .named = .{
+                .named_type = named.named_type,
+                .def = named.def,
+                .kind = named.kind,
+                .builtin_owner = named.builtin_owner,
+                .args = try self.sealTypeSpan(named.args),
+                .backing = if (named.backing) |backing| .{
+                    .ty = try self.sealType(backing.ty),
+                    .use = backing.use,
+                } else null,
+                .declared_order = try self.sealStoredDeclaredFieldSpan(named.declared_order),
             } },
             .erased => |digest| .{ .erased = digest },
             .zst => .zst,
@@ -1584,6 +1681,17 @@ pub const GraphTypeFinals = struct {
         return try self.graph.types.addSpan(sealed_nodes);
     }
 
+    fn sealTypeSpan(self: *GraphTypeFinals, span: Type.Span) Allocator.Error!Type.Span {
+        const values = self.graph.types.span(span);
+        if (values.len == 0) return .empty();
+        const sealed = try self.graph.allocator.alloc(Type.TypeId, values.len);
+        defer self.graph.allocator.free(sealed);
+        for (values, 0..) |ty, index| {
+            sealed[index] = try self.sealType(ty);
+        }
+        return try self.graph.types.addSpan(sealed);
+    }
+
     fn sealRecordRow(self: *GraphTypeFinals, node: NodeId) Allocator.Error!Type.Span {
         const flat = try self.graph.flattenRecordRow(node);
         if (flat.fields.len == 0) return .empty();
@@ -1593,6 +1701,20 @@ pub const GraphTypeFinals = struct {
             fields[index] = .{
                 .name = field.name,
                 .ty = try self.sealNode(field.ty),
+            };
+        }
+        return try self.graph.types.addRecordFields(self.graph.name_store, fields);
+    }
+
+    fn sealStoredFieldSpan(self: *GraphTypeFinals, span: Type.Span) Allocator.Error!Type.Span {
+        const old_fields = self.graph.types.fieldSpan(span);
+        if (old_fields.len == 0) return .empty();
+        const fields = try self.graph.allocator.alloc(Type.Field, old_fields.len);
+        defer self.graph.allocator.free(fields);
+        for (old_fields, 0..) |field, index| {
+            fields[index] = .{
+                .name = field.name,
+                .ty = try self.sealType(field.ty),
             };
         }
         return try self.graph.types.addRecordFields(self.graph.name_store, fields);
@@ -1611,6 +1733,48 @@ pub const GraphTypeFinals = struct {
             };
         }
         return try self.graph.types.addTagVariants(self.graph.name_store, tags);
+    }
+
+    fn sealStoredTagSpan(self: *GraphTypeFinals, span: Type.Span) Allocator.Error!Type.Span {
+        const old_tags = self.graph.types.tagSpan(span);
+        if (old_tags.len == 0) return .empty();
+        const tags = try self.graph.allocator.alloc(Type.Tag, old_tags.len);
+        defer self.graph.allocator.free(tags);
+        for (old_tags, 0..) |tag, index| {
+            tags[index] = .{
+                .name = tag.name,
+                .checked_name = tag.checked_name,
+                .payloads = try self.sealTypeSpan(tag.payloads),
+            };
+        }
+        return try self.graph.types.addTagVariants(self.graph.name_store, tags);
+    }
+
+    fn sealDeclaredFieldSpan(self: *GraphTypeFinals, fields: []const InstDeclaredField) Allocator.Error!Type.Span {
+        if (fields.len == 0) return .empty();
+        const sealed = try self.graph.allocator.alloc(Type.DeclaredField, fields.len);
+        defer self.graph.allocator.free(sealed);
+        for (fields, 0..) |field, index| {
+            sealed[index] = switch (field) {
+                .named => |name| .{ .named = name },
+                .padding => |node| .{ .padding = try self.sealNode(node) },
+            };
+        }
+        return try self.graph.types.addDeclaredFields(sealed);
+    }
+
+    fn sealStoredDeclaredFieldSpan(self: *GraphTypeFinals, span: Type.Span) Allocator.Error!Type.Span {
+        const old_fields = self.graph.types.declaredFieldSpan(span);
+        if (old_fields.len == 0) return .empty();
+        const sealed = try self.graph.allocator.alloc(Type.DeclaredField, old_fields.len);
+        defer self.graph.allocator.free(sealed);
+        for (old_fields, 0..) |field, index| {
+            sealed[index] = switch (field) {
+                .named => |name| .{ .named = name },
+                .padding => |ty| .{ .padding = try self.sealType(ty) },
+            };
+        }
+        return try self.graph.types.addDeclaredFields(sealed);
     }
 };
 
@@ -1695,6 +1859,23 @@ fn tagSpanEql(types: *const Type.Store, left: []const Type.Tag, right: []const I
     for (left, right) |left_tag, right_tag| {
         if (left_tag.name != right_tag.name or left_tag.checked_name != right_tag.checked_name) return false;
         if (!typeSpanEql(types.span(left_tag.payloads), right_tag.payloads)) return false;
+    }
+    return true;
+}
+
+fn declaredFieldSpanEql(left: []const Type.DeclaredField, right: []const Type.DeclaredField) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |left_field, right_field| {
+        switch (left_field) {
+            .named => |left_name| switch (right_field) {
+                .named => |right_name| if (left_name != right_name) return false,
+                .padding => return false,
+            },
+            .padding => |left_ty| switch (right_field) {
+                .named => return false,
+                .padding => |right_ty| if (left_ty != right_ty) return false,
+            },
+        }
     }
     return true;
 }
@@ -1791,7 +1972,25 @@ fn instNamedEql(left: InstNamed, right: InstNamed) bool {
         left.kind == right.kind and
         std.meta.eql(left.builtin_owner, right.builtin_owner) and
         nodeSliceEql(left.args, right.args) and
-        backingEql(left.backing, right.backing);
+        backingEql(left.backing, right.backing) and
+        instDeclaredFieldSliceEql(left.declared_order, right.declared_order);
+}
+
+fn instDeclaredFieldSliceEql(left: []const InstDeclaredField, right: []const InstDeclaredField) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |left_field, right_field| {
+        switch (left_field) {
+            .named => |left_name| switch (right_field) {
+                .named => |right_name| if (left_name != right_name) return false,
+                .padding => return false,
+            },
+            .padding => |left_node| switch (right_field) {
+                .named => return false,
+                .padding => |right_node| if (left_node != right_node) return false,
+            },
+        }
+    }
+    return true;
 }
 
 fn backingEql(left: ?InstBacking, right: ?InstBacking) bool {
