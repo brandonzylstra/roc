@@ -56,11 +56,43 @@ pub const InstField = struct {
     ty: NodeId,
 };
 
+/// Source of an unresolved instantiation-graph node. Sealing may default a
+/// checked variable, but a compiler-owned placeholder that survives to sealing
+/// means an earlier instantiation step failed to write explicit data.
+pub const InstVariableOrigin = enum(u8) {
+    checked_variable,
+    row_extension,
+    placeholder,
+};
+
 /// Defaulting evidence carried by an unresolved instantiation-graph node until
 /// unification resolves it or materialization applies the default.
 pub const InstVariable = struct {
+    origin: InstVariableOrigin,
     numeric_default_phase: ?checked.NumericDefaultPhase = null,
     row_default: ?checked.RowDefault = null,
+
+    pub fn checkedVariable(
+        numeric_default_phase: ?checked.NumericDefaultPhase,
+        row_default: ?checked.RowDefault,
+    ) InstVariable {
+        return .{
+            .origin = .checked_variable,
+            .numeric_default_phase = numeric_default_phase,
+            .row_default = row_default,
+        };
+    }
+
+    pub fn row(default: checked.RowDefault) InstVariable {
+        return .{
+            .origin = .row_extension,
+            .row_default = default,
+        };
+    }
+
+    pub fn placeholder() InstVariable {
+        return .{ .origin = .placeholder };
+    }
 };
 
 /// Backing of a named instantiation-graph node.
@@ -459,9 +491,16 @@ pub const InstGraph = struct {
 
     fn mergeVariables(a: InstVariable, b: InstVariable) InstVariable {
         return .{
+            .origin = mergeVariableOrigin(a.origin, b.origin),
             .numeric_default_phase = a.numeric_default_phase orelse b.numeric_default_phase,
             .row_default = a.row_default orelse b.row_default,
         };
+    }
+
+    fn mergeVariableOrigin(a: InstVariableOrigin, b: InstVariableOrigin) InstVariableOrigin {
+        if (a == .checked_variable or b == .checked_variable) return .checked_variable;
+        if (a == .row_extension or b == .row_extension) return .row_extension;
+        return .placeholder;
     }
 
     fn unifyConcrete(
@@ -788,7 +827,7 @@ pub const InstGraph = struct {
                 // A cyclic extension chain contributes no further tags — every
                 // tag on the cycle is already collected — but the row remains
                 // extensible, so the chain terminates open.
-                ext = try self.newNode(.{ .unresolved = .{ .row_default = .empty_tag_union } });
+                ext = try self.newNode(.{ .unresolved = InstVariable.row(.empty_tag_union) });
                 break;
             }
             try seen.put(ext, {});
@@ -839,7 +878,7 @@ pub const InstGraph = struct {
                 // A cyclic extension chain contributes no further fields —
                 // every field on the cycle is already collected — but the row
                 // remains extensible, so the chain terminates open.
-                ext = try self.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+                ext = try self.newNode(.{ .unresolved = InstVariable.row(.empty_record) });
                 break;
             }
             try seen.put(ext, {});
@@ -921,7 +960,7 @@ pub const InstGraph = struct {
             try self.writeOrQueueTagRest(flat_right.ext, only_left.items, flat_left.ext, pending);
             merged_ext = flat_left.ext;
         } else {
-            const new_ext = try self.newNode(.{ .unresolved = .{ .row_default = .empty_tag_union } });
+            const new_ext = try self.newNode(.{ .unresolved = InstVariable.row(.empty_tag_union) });
             if (self.find(flat_left.ext) == self.find(flat_right.ext)) {
                 var rest = std.ArrayList(InstTag).empty;
                 defer rest.deinit(self.allocator);
@@ -1023,7 +1062,7 @@ pub const InstGraph = struct {
             try self.writeOrQueueRecordRest(flat_right.ext, only_left.items, flat_left.ext, pending);
             merged_ext = flat_left.ext;
         } else {
-            const new_ext = try self.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+            const new_ext = try self.newNode(.{ .unresolved = InstVariable.row(.empty_record) });
             if (self.find(flat_left.ext) == self.find(flat_right.ext)) {
                 var rest = std.ArrayList(InstField).empty;
                 defer rest.deinit(self.allocator);
@@ -1083,7 +1122,7 @@ pub const InstGraph = struct {
     /// mutation of another specialization's final type.
     pub fn importMono(self: *InstGraph, ty: Type.TypeId) Allocator.Error!NodeId {
         if (self.mono_nodes.get(ty)) |existing| return existing;
-        const node = try self.newNode(.{ .unresolved = .{} });
+        const node = try self.newNode(.{ .unresolved = InstVariable.placeholder() });
         // One-way memo: every import is a finished Monotype from outside this
         // graph (ids materialized here hit the memo above), so it enters as a
         // snapshot. Registering a view would let this specialization's
@@ -1107,7 +1146,7 @@ pub const InstGraph = struct {
                 // value reached: either genuinely uninhabited or a variable
                 // defaulted at materialization. Local evidence supersedes it,
                 // so it imports as an unresolved node rather than a closed row.
-                if (span.len == 0) break :blk .{ .unresolved = .{ .row_default = .empty_tag_union } };
+                if (span.len == 0) break :blk .{ .unresolved = InstVariable.row(.empty_tag_union) };
                 const inst_tags = try self.arena().alloc(InstTag, span.len);
                 for (span, 0..) |tag, index| {
                     inst_tags[index] = .{
@@ -1123,7 +1162,7 @@ pub const InstGraph = struct {
                 // post-lowering unification of request and definition types.
                 break :blk .{ .tag_union = .{
                     .tags = inst_tags,
-                    .ext = try self.newNode(.{ .unresolved = .{ .row_default = .empty_tag_union } }),
+                    .ext = try self.newNode(.{ .unresolved = InstVariable.row(.empty_tag_union) }),
                 } };
             },
             .record => |fields| blk: {
@@ -1138,7 +1177,7 @@ pub const InstGraph = struct {
                 }
                 break :blk .{ .record = .{
                     .fields = inst_fields,
-                    .ext = try self.newNode(.{ .unresolved = .{ .row_default = .empty_record } }),
+                    .ext = try self.newNode(.{ .unresolved = InstVariable.row(.empty_record) }),
                 } };
             },
             .named => |named| .{ .named = .{
@@ -1213,18 +1252,7 @@ pub const InstGraph = struct {
         const previous = types.get(ty);
         const filled: Type.Content = switch (self.nodes.items[@intFromEnum(root)]) {
             .redirect => unreachable,
-            .unresolved => |variable| blk: {
-                if (variable.numeric_default_phase) |phase| switch (phase) {
-                    .mono_specialization => break :blk .{ .primitive = .dec },
-                    .mono_specialization_str => break :blk .{ .primitive = .str },
-                    .checking_finalized => Common.invariant("checking-finalized numeric variable reached Monotype unresolved"),
-                };
-                if (variable.row_default) |row_default| switch (row_default) {
-                    .empty_record => break :blk .{ .record = Type.Span.empty() },
-                    .empty_tag_union => break :blk .{ .tag_union = Type.Span.empty() },
-                };
-                break :blk .{ .tag_union = Type.Span.empty() };
-            },
+            .unresolved => |variable| materializeUnresolved(variable),
             .primitive => |primitive| .{ .primitive = primitive },
             .list => |elem| .{ .list = try self.monoFor(elem) },
             .box => |elem| .{ .box = try self.monoFor(elem) },
@@ -1433,18 +1461,7 @@ pub const GraphTypeFinals = struct {
     fn sealContent(self: *GraphTypeFinals, node: NodeId) Allocator.Error!Type.Content {
         return switch (self.graph.nodes.items[@intFromEnum(node)]) {
             .redirect => unreachable,
-            .unresolved => |variable| blk: {
-                if (variable.numeric_default_phase) |phase| switch (phase) {
-                    .mono_specialization => break :blk .{ .primitive = .dec },
-                    .mono_specialization_str => break :blk .{ .primitive = .str },
-                    .checking_finalized => Common.invariant("checking-finalized numeric variable reached Monotype unresolved"),
-                };
-                if (variable.row_default) |row_default| switch (row_default) {
-                    .empty_record => break :blk .{ .record = Type.Span.empty() },
-                    .empty_tag_union => break :blk .{ .tag_union = Type.Span.empty() },
-                };
-                break :blk .{ .tag_union = Type.Span.empty() };
-            },
+            .unresolved => |variable| materializeUnresolved(variable),
             .primitive => |primitive| .{ .primitive = primitive },
             .list => |elem| .{ .list = try self.sealNode(elem) },
             .box => |elem| .{ .box = try self.sealNode(elem) },
@@ -1516,6 +1533,23 @@ pub const GraphTypeFinals = struct {
         return try self.graph.types.addTagVariants(self.graph.name_store, tags);
     }
 };
+
+fn materializeUnresolved(variable: InstVariable) Type.Content {
+    if (variable.numeric_default_phase) |phase| switch (phase) {
+        .mono_specialization => return .{ .primitive = .dec },
+        .mono_specialization_str => return .{ .primitive = .str },
+        .checking_finalized => Common.invariant("checking-finalized numeric variable reached Monotype unresolved"),
+    };
+    if (variable.row_default) |row_default| switch (row_default) {
+        .empty_record => return .{ .record = Type.Span.empty() },
+        .empty_tag_union => return .{ .tag_union = Type.Span.empty() },
+    };
+    return switch (variable.origin) {
+        .checked_variable => .{ .tag_union = Type.Span.empty() },
+        .row_extension => Common.invariant("row extension reached Monotype materialization without row default"),
+        .placeholder => Common.invariant("instantiation placeholder reached Monotype materialization"),
+    };
+}
 
 /// Orders record fields by label text for layout-stable sorting.
 pub fn recordFieldLessThan(name_store: *const names.NameStore, lhs: Type.Field, rhs: Type.Field) bool {
@@ -1752,7 +1786,7 @@ test "issue 9647: row refills do not duplicate dependencies or materialized span
     const fields = try graph.arena().alloc(InstField, 1);
     fields[0] = .{ .name = field_name, .ty = field_ty };
 
-    const ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+    const ext = try graph.newNode(.{ .unresolved = InstVariable.row(.empty_record) });
     const row = try graph.newNode(.{ .record = .{
         .fields = fields,
         .ext = ext,
@@ -1791,7 +1825,7 @@ test "sealed monotype copy is not refilled by later graph evidence" {
 
     const fields = try graph.arena().alloc(InstField, 1);
     fields[0] = .{ .name = a_name, .ty = a_ty };
-    const ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+    const ext = try graph.newNode(.{ .unresolved = InstVariable.row(.empty_record) });
     const row = try graph.newNode(.{ .record = .{
         .fields = fields,
         .ext = ext,
@@ -1840,7 +1874,7 @@ test "sealed graph function copy recursively seals graph-owned argument views" {
 
     const fields = try graph.arena().alloc(InstField, 1);
     fields[0] = .{ .name = a_name, .ty = a_ty };
-    const ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+    const ext = try graph.newNode(.{ .unresolved = InstVariable.row(.empty_record) });
     const row = try graph.newNode(.{ .record = .{
         .fields = fields,
         .ext = ext,
@@ -1898,7 +1932,7 @@ test "sealed graph node does not allocate a mutable monotype view" {
 
     const fields = try graph.arena().alloc(InstField, 1);
     fields[0] = .{ .name = a_name, .ty = a_ty };
-    const ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+    const ext = try graph.newNode(.{ .unresolved = InstVariable.row(.empty_record) });
     const row = try graph.newNode(.{ .record = .{
         .fields = fields,
         .ext = ext,
@@ -1920,6 +1954,27 @@ test "sealed graph node does not allocate a mutable monotype view" {
     try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
 }
 
+test "unconstrained checked graph node seals to empty tag union" {
+    const gpa = std.testing.allocator;
+
+    var type_store = Type.Store.init(gpa);
+    defer type_store.deinit();
+
+    var name_store = names.NameStore.init(gpa);
+    defer name_store.deinit();
+
+    var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
+    defer unsolved_monos.deinit();
+
+    const graph = try InstGraph.create(gpa, &type_store, &name_store, &unsolved_monos);
+    defer graph.destroy();
+
+    const node = try graph.newNode(.{ .unresolved = InstVariable.checkedVariable(null, null) });
+    const sealed = try graph.sealNode(node);
+    const content = type_store.get(sealed);
+    try std.testing.expectEqual(Type.Span.empty(), content.tag_union);
+}
+
 test "issue 9647: unresolved tag row extension absorbs rest without allocating a rest node" {
     const gpa = std.testing.allocator;
 
@@ -1938,8 +1993,8 @@ test "issue 9647: unresolved tag row extension absorbs rest without allocating a
     const shared_name = try name_store.internTagLabel("Shared");
     const extra_name = try name_store.internTagLabel("Extra");
 
-    const left_ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_tag_union } });
-    const right_ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_tag_union } });
+    const left_ext = try graph.newNode(.{ .unresolved = InstVariable.row(.empty_tag_union) });
+    const right_ext = try graph.newNode(.{ .unresolved = InstVariable.row(.empty_tag_union) });
 
     const left_tags = try graph.arena().alloc(InstTag, 1);
     left_tags[0] = .{ .name = shared_name, .checked_name = shared_name, .payloads = try graph.arena().alloc(NodeId, 0) };
@@ -2045,7 +2100,7 @@ test "issue 9647: recursive nominal backing cycle is not chased as structural ba
     const named_type: Type.NamedType = .{ .module = .{}, .ty = testCheckedTypeId(2) };
     const def: Type.TypeDef = .{ .module_name = module_name, .type_name = type_name };
 
-    const nominal = try graph.newNode(.{ .unresolved = .{} });
+    const nominal = try graph.newNode(.{ .unresolved = InstVariable.placeholder() });
     try graph.setContent(nominal, .{ .named = .{
         .named_type = named_type,
         .def = def,
@@ -2090,7 +2145,7 @@ test "recursive nominal backing can meet an alias to that nominal" {
     const nominal_def: Type.TypeDef = .{ .module_name = module_name, .type_name = nominal_name };
     const alias_def: Type.TypeDef = .{ .module_name = module_name, .type_name = alias_name };
 
-    const nominal = try graph.newNode(.{ .unresolved = .{} });
+    const nominal = try graph.newNode(.{ .unresolved = InstVariable.placeholder() });
     try graph.setContent(nominal, .{ .named = .{
         .named_type = nominal_type,
         .def = nominal_def,

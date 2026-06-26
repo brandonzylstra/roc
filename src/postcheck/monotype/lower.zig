@@ -18,6 +18,7 @@ const NodeId = solve.NodeId;
 const InstTag = solve.InstTag;
 const InstField = solve.InstField;
 const InstBacking = solve.InstBacking;
+const InstVariable = solve.InstVariable;
 const GraphTypeFinals = solve.GraphTypeFinals;
 
 const Allocator = std.mem.Allocator;
@@ -4164,12 +4165,12 @@ const BodyContext = struct {
         // descriptions. One checked id serves many unrelated slots, so each
         // occurrence instantiates independently.
         switch (checkedPayload(self.view, checked_ty)) {
-            .empty_tag_union => return try self.graph.newNode(.{ .unresolved = .{ .row_default = .empty_tag_union } }),
+            .empty_tag_union => return try self.graph.newNode(.{ .unresolved = InstVariable.checkedVariable(null, .empty_tag_union) }),
             else => {},
         }
         const address = self.typeAddress(checked_ty);
         if (self.scopedNode(address)) |existing| return existing;
-        const placeholder = try self.graph.newNode(.{ .unresolved = .{} });
+        const placeholder = try self.graph.newNode(.{ .unresolved = InstVariable.placeholder() });
         try self.putScopedNode(address, placeholder);
         const built = try self.instNodeContent(checked_ty);
         try self.graph.unify(placeholder, built);
@@ -4204,17 +4205,17 @@ const BodyContext = struct {
     fn instNodeContent(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!NodeId {
         return switch (checkedPayload(self.view, checked_ty)) {
             .pending => Common.invariant("pending checked type reached Monotype instantiation"),
-            .flex, .rigid => |variable| try self.graph.newNode(.{ .unresolved = .{
-                .numeric_default_phase = variable.numeric_default_phase,
-                .row_default = variable.row_default,
-            } }),
+            .flex, .rigid => |variable| try self.graph.newNode(.{ .unresolved = InstVariable.checkedVariable(
+                variable.numeric_default_phase,
+                variable.row_default,
+            ) }),
             .empty_record => try self.graph.newNode(.empty_record),
             // A checked empty tag union records that no value reaches the
             // slot. Sibling descriptions of the same slot may still carry
             // tags (which are then unreachable), so the slot yields to them
             // and defaults to the empty union only when nothing else claims
             // it.
-            .empty_tag_union => try self.graph.newNode(.{ .unresolved = .{ .row_default = .empty_tag_union } }),
+            .empty_tag_union => try self.graph.newNode(.{ .unresolved = InstVariable.checkedVariable(null, .empty_tag_union) }),
             .alias => |alias| try self.graph.newNode(.{ .named = .{
                 .named_type = .{ .module = self.builder.declaredModuleForAlias(self.view, alias), .ty = checked_ty },
                 .def = try self.builder.typeDef(self.view, alias.origin_module, alias.name, alias.source_decl),
