@@ -12,6 +12,9 @@ const Allocator = std.mem.Allocator;
 const LIR = lir.LIR;
 const layout_mod = @import("layout");
 const LayoutIdx = layout_mod.Idx;
+const MonoAst = postcheck.Monotype.Ast;
+const MonoLower = postcheck.Monotype.Lower;
+const MonoType = postcheck.Monotype.Type;
 
 const TestError = helpers.TestHelperError || eval.BuiltinModules.InitError || error{
     TestExpectedEqual,
@@ -146,7 +149,9 @@ fn lowerMonotypeModule(
 }
 
 const LowerMonotypeOptions = struct {
-    specialization_cache: postcheck.Monotype.Lower.SpecializationCacheControl = .{},
+    specialization_cache: MonoLower.SpecializationCacheControl = .{},
+    loaded_specialization_shards: []const MonoLower.LoadedSpecializationShard = &.{},
+    specialization_counters: ?*MonoLower.SpecializationCounters = null,
 };
 
 fn lowerMonotypeModuleWithOptions(
@@ -178,7 +183,11 @@ fn lowerMonotypeModuleWithOptions(
             .imports = import_views,
         },
         .{ .requests = resources.checked_artifact.root_requests.requests },
-        .{ .specialization_cache = options.specialization_cache },
+        .{
+            .specialization_cache = options.specialization_cache,
+            .loaded_specialization_shards = options.loaded_specialization_shards,
+            .specialization_counters = options.specialization_counters,
+        },
     );
     errdefer mono.deinit();
 
@@ -260,6 +269,111 @@ fn expectEquivalentMonotypeProgramViews(lhs: postcheck.Monotype.Ast.ProgramView,
     try std.testing.expectEqualSlices(base.Region, lhs.expr_regions, rhs.expr_regions);
     try std.testing.expectEqualSlices(base.SourceLoc, lhs.stmt_locs, rhs.stmt_locs);
     try std.testing.expectEqualSlices(base.Region, lhs.stmt_regions, rhs.stmt_regions);
+}
+
+const DurableTypeSnapshot = struct {
+    view: MonoType.DurableView,
+    type_digests: []check.CheckedNames.TypeDigest,
+
+    fn deinit(self: DurableTypeSnapshot, allocator: Allocator) void {
+        allocator.free(self.type_digests);
+    }
+};
+
+fn durableTypeSnapshot(allocator: Allocator, program: *const MonoAst.Program) Allocator.Error!DurableTypeSnapshot {
+    const store_view = program.types.view();
+    const type_digests = try allocator.alloc(check.CheckedNames.TypeDigest, store_view.types.len);
+    errdefer allocator.free(type_digests);
+
+    for (type_digests, 0..) |*digest, index| {
+        digest.* = store_view.type_digests[index] orelse
+            program.types.typeDigest(&program.names, @enumFromInt(@as(u32, @intCast(index))));
+    }
+
+    return .{
+        .view = .{
+            .types = store_view.types,
+            .type_digests = type_digests,
+            .spans = store_view.spans,
+            .fields = store_view.fields,
+            .tags = store_view.tags,
+            .declared_fields = store_view.declared_fields,
+        },
+        .type_digests = type_digests,
+    };
+}
+
+fn digestBytesEqual(lhs: check.CheckedNames.TypeDigest, rhs: check.CheckedNames.TypeDigest) bool {
+    return std.mem.eql(u8, lhs.bytes[0..], rhs.bytes[0..]);
+}
+
+fn specRecordMatches(
+    allocator: Allocator,
+    name_store: *const check.CheckedNames.NameStore,
+    candidate_types: anytype,
+    candidate: MonoAst.SpecRecord,
+    expected_types: anytype,
+    expected: MonoAst.SpecRecord,
+) Allocator.Error!bool {
+    if (!std.meta.eql(candidate.identity.callable, expected.identity.callable)) return false;
+    if (!digestBytesEqual(candidate.identity.source_fn_ty_digest, expected.identity.source_fn_ty_digest)) return false;
+    if (!digestBytesEqual(candidate.identity.mono_fn_ty_digest, expected.identity.mono_fn_ty_digest)) return false;
+    return try MonoType.typeEqlAcrossStores(
+        allocator,
+        name_store,
+        candidate_types,
+        candidate.identity.mono_fn_ty,
+        expected_types,
+        expected.identity.mono_fn_ty,
+    );
+}
+
+fn specCoveredByLocalOrLoaded(
+    allocator: Allocator,
+    cached: MonoAst.ProgramView,
+    loaded: MonoLower.LoadedSpecializationShard,
+    expected_types: anytype,
+    expected: MonoAst.SpecRecord,
+) Allocator.Error!bool {
+    for (cached.specs) |candidate| {
+        if (try specRecordMatches(allocator, cached.names, cached.types, candidate, expected_types, expected)) return true;
+    }
+
+    for (loaded.specs) |candidate| {
+        if (try specRecordMatches(allocator, cached.names, loaded.types, candidate, expected_types, expected)) return true;
+    }
+
+    return false;
+}
+
+fn expectSpecsCoveredByCachedOrLoaded(
+    allocator: Allocator,
+    no_cache: MonoAst.ProgramView,
+    cached: MonoAst.ProgramView,
+    loaded: MonoLower.LoadedSpecializationShard,
+) TestError!void {
+    for (no_cache.specs) |expected| {
+        if (!try specCoveredByLocalOrLoaded(allocator, cached, loaded, no_cache.types, expected)) {
+            return error.MissingProcSpec;
+        }
+    }
+}
+
+fn importedDirectCallCount(view: MonoAst.ProgramView) usize {
+    var count: usize = 0;
+    for (view.exprs) |expr| {
+        switch (expr.data) {
+            .call_proc => |call| switch (call.callee) {
+                .func => |slot| switch (slot) {
+                    .local => {},
+                    .imported => count += 1,
+                },
+                .lifted => {},
+            },
+            else => {},
+        }
+    }
+    return count;
 }
 
 fn lowerModuleWithDebugEffects(
@@ -1445,6 +1559,60 @@ test "disabling monotype specialization cache does not change monotype output" {
     defer disabled.deinit(allocator);
 
     try expectEquivalentMonotypeProgramViews(default.mono.view(), disabled.mono.view());
+}
+
+test "monotype specialization cache read reuses loaded hits and lowers fresh misses" {
+    const allocator = std.testing.allocator;
+    const loaded_source =
+        \\module [main]
+        \\
+        \\identity : a -> a
+        \\identity = |value| value
+        \\
+        \\main : U64
+        \\main = identity(1)
+    ;
+    const mixed_source =
+        \\module [main]
+        \\
+        \\identity : a -> a
+        \\identity = |value| value
+        \\
+        \\main : { n : U64, flag : Bool }
+        \\main = {
+        \\    { n: identity(1), flag: identity(Bool.True) }
+        \\}
+    ;
+
+    var loaded_program = try lowerMonotypeModule(allocator, loaded_source);
+    defer loaded_program.deinit(allocator);
+
+    const loaded_types = try durableTypeSnapshot(allocator, &loaded_program.mono);
+    defer loaded_types.deinit(allocator);
+    const loaded_shards = [_]MonoLower.LoadedSpecializationShard{.{
+        .shard_id = @enumFromInt(1),
+        .types = loaded_types.view,
+        .specs = loaded_program.mono.view().specs,
+    }};
+
+    var no_cache = try lowerMonotypeModuleWithOptions(allocator, mixed_source, .{
+        .specialization_cache = .disabled,
+    });
+    defer no_cache.deinit(allocator);
+
+    var counters: MonoLower.SpecializationCounters = .{};
+    var cached = try lowerMonotypeModuleWithOptions(allocator, mixed_source, .{
+        .specialization_cache = .{},
+        .loaded_specialization_shards = &loaded_shards,
+        .specialization_counters = &counters,
+    });
+    defer cached.deinit(allocator);
+
+    try std.testing.expect(cached.mono.view().imported_fns.len > 0);
+    try std.testing.expect(importedDirectCallCount(cached.mono.view()) > 0);
+    try std.testing.expect(counters.template_hits > 0);
+    try std.testing.expect(counters.template_misses > 0);
+    try expectSpecsCoveredByCachedOrLoaded(allocator, no_cache.mono.view(), cached.mono.view(), loaded_shards[0]);
 }
 
 test "nested function specializations keep equal types at different sites distinct" {
