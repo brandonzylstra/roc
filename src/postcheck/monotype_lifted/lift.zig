@@ -161,7 +161,7 @@ fn movedMonoView(source: *const Mono.Program, moved: *const Ast.Program) Mono.Pr
         .branches = moved.branches.items,
         .if_branches = moved.if_branches.items,
         .string_literals = moved.string_literals.items,
-        .proc_debug_names = &moved.proc_debug_names,
+        .proc_debug_names = moved.proc_debug_names.items.items,
         .roots = source.roots.items,
         .layout_requests = source.layout_requests.items,
         .runtime_schema_requests = moved.runtime_schema_requests.items,

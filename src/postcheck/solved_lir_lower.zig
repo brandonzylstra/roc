@@ -4855,10 +4855,9 @@ fn cloneProcDebugNameMap(allocator: std.mem.Allocator, source: *const Lifted.Pro
     var cloned = Lifted.ProcDebugNameMap.init(allocator);
     errdefer cloned.deinit();
 
-    try cloned.ensureTotalCapacity(source.count());
-    var it = source.iterator();
-    while (it.next()) |entry| {
-        cloned.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
+    try cloned.items.ensureTotalCapacityPrecise(allocator, source.items.items.len);
+    for (source.items.items) |entry| {
+        cloned.items.appendAssumeCapacity(entry);
     }
 
     return cloned;

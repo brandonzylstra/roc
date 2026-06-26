@@ -639,7 +639,52 @@ pub const NestedDef = struct {
 };
 
 /// Source procedure names for runtime diagnostics, keyed by generated symbol.
-pub const ProcDebugNameMap = std.AutoHashMap(Common.Symbol, names.ExportNameId);
+/// Procedure debug-name entry.
+pub const ProcDebugName = struct {
+    symbol: Common.Symbol,
+    name: names.ExportNameId,
+};
+
+/// Builder-owned procedure debug-name table.
+pub const ProcDebugNameMap = struct {
+    allocator: std.mem.Allocator,
+    items: std.ArrayList(ProcDebugName),
+
+    pub fn init(allocator: std.mem.Allocator) ProcDebugNameMap {
+        return .{
+            .allocator = allocator,
+            .items = .empty,
+        };
+    }
+
+    pub fn deinit(self: *ProcDebugNameMap) void {
+        self.items.deinit(self.allocator);
+    }
+
+    pub fn get(self: *const ProcDebugNameMap, symbol: Common.Symbol) ?names.ExportNameId {
+        return procDebugNameInSlice(self.items.items, symbol);
+    }
+
+    pub fn put(self: *ProcDebugNameMap, symbol: Common.Symbol, name: names.ExportNameId) std.mem.Allocator.Error!void {
+        for (self.items.items) |*entry| {
+            if (entry.symbol == symbol) {
+                entry.name = name;
+                return;
+            }
+        }
+        try self.items.append(self.allocator, .{
+            .symbol = symbol,
+            .name = name,
+        });
+    }
+};
+
+fn procDebugNameInSlice(entries: []const ProcDebugName, symbol: Common.Symbol) ?names.ExportNameId {
+    for (entries) |entry| {
+        if (entry.symbol == symbol) return entry.name;
+    }
+    return null;
+}
 
 /// Root request bound to a Monotype definition.
 pub const Root = struct {
@@ -698,7 +743,7 @@ pub const ProgramView = struct {
     branches: []const Branch,
     if_branches: []const IfBranch,
     string_literals: []const StringLiteral,
-    proc_debug_names: *const ProcDebugNameMap,
+    proc_debug_names: []const ProcDebugName,
     roots: []const Root,
     layout_requests: []const LayoutRequest,
     runtime_schema_requests: []const RuntimeSchemaRequest,
@@ -715,6 +760,10 @@ pub const ProgramView = struct {
         const raw = @intFromEnum(id);
         if (raw >= self.fns.len) Common.invariant("Monotype function id referenced a missing specialization");
         return self.fns[raw].source;
+    }
+
+    pub fn procDebugName(self: ProgramView, symbol: Common.Symbol) ?names.ExportNameId {
+        return procDebugNameInSlice(self.proc_debug_names, symbol);
     }
 
     pub fn verifyCallTargets(self: ProgramView) ?CallTargetVerifyError {
@@ -960,7 +1009,7 @@ pub const ProgramBuilder = struct {
             .branches = self.branches.items,
             .if_branches = self.if_branches.items,
             .string_literals = self.string_literals.items,
-            .proc_debug_names = &self.proc_debug_names,
+            .proc_debug_names = self.proc_debug_names.items.items,
             .roots = self.roots.items,
             .layout_requests = self.layout_requests.items,
             .runtime_schema_requests = self.runtime_schema_requests.items,
