@@ -1270,11 +1270,15 @@ pub const InstGraph = struct {
     }
 
     pub fn assertTypeHasNoGraphViews(self: *InstGraph, ty: Type.TypeId) Allocator.Error!void {
-        var seen = std.AutoHashMap(Type.TypeId, void).init(self.allocator);
-        defer seen.deinit();
-        if (try self.typeContainsGraphView(ty, &seen)) {
+        if (try self.typeHasGraphViews(ty)) {
             Common.invariant("Monotype body draft retained an instantiation graph type view after sealing");
         }
+    }
+
+    pub fn typeHasGraphViews(self: *InstGraph, ty: Type.TypeId) Allocator.Error!bool {
+        var seen = std.AutoHashMap(Type.TypeId, void).init(self.allocator);
+        defer seen.deinit();
+        return try self.typeContainsGraphView(ty, &seen);
     }
 
     fn typeContainsGraphView(

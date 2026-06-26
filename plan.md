@@ -174,11 +174,11 @@ This phase replaces the current range-sealing bridge with the final design from
 instantiation graph node ids, and final Monotype arrays receive only sealed
 immutable `TypeId`s after the graph is closed.
 
-- [ ] Add a `DraftTypeRef` representation with exactly two cases:
+- [x] Add a `DraftTypeCell` representation with exactly two cases:
       `graph_node: NodeId` for active-graph-owned type cells and
       `sealed: Type.TypeId` for closed types that were materialized before the
       graph opened.
-- [ ] Add debug checks that `DraftTypeRef.sealed` is used only for closed types
+- [x] Add debug checks that `DraftTypeCell.sealed` is used only for closed types
       with no active graph-view children.
 - [ ] Add a `BodyDraftStore` that mirrors final Monotype body sections:
       functions, definitions, nested definitions, expressions, patterns,
@@ -189,7 +189,7 @@ immutable `TypeId`s after the graph is closed.
       serialization.
 - [ ] Introduce draft expression, pattern, local, typed-local, function-template,
       definition, nested-definition, layout-request, and runtime-schema-request
-      records whose type-bearing fields store `DraftTypeRef`.
+      records whose type-bearing fields store `DraftTypeCell`.
 - [ ] Keep non-type fields in draft records in the same normalized order and
       representation as the final Monotype records, so sealing is a mechanical
       copy plus type/id/span translation.
@@ -209,7 +209,7 @@ immutable `TypeId`s after the graph is closed.
       constructors that return `NodeId`; materialize the function type only at
       draft sealing or when forming a closed external specialization request.
 - [ ] Update local binder restoration and copied binder constraints to use
-      draft local type refs rather than reading mutable final local `TypeId`
+      draft local type cells rather than reading mutable final local `TypeId`
       fields.
 - [ ] Update lambda and closure lowering so expected function types are
       represented as graph function nodes until their nested specialization
@@ -231,8 +231,8 @@ immutable `TypeId`s after the graph is closed.
 - [ ] Keep nested function drafts attached to the parent graph and append them
       to the final program only after the parent graph seals.
 - [ ] Implement a single draft sealing pass that drains dirty nodes, rejects
-      remaining deferred requests, closes every `DraftTypeRef.graph_node`
-      through `GraphTypeFinals.sealNode`, verifies every `DraftTypeRef.sealed`
+      remaining deferred requests, closes every `DraftTypeCell.graph_node`
+      through `GraphTypeFinals.sealNode`, verifies every `DraftTypeCell.sealed`
       contains no graph views, and writes final records to `ProgramBuilder`.
 - [ ] During sealing, translate draft ids and spans to final shard-local ids and
       spans exactly once.

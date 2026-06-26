@@ -3722,6 +3722,49 @@ const LoweredTemplateBody = struct {
     ret: Type.TypeId,
 };
 
+const DraftTypeCell = union(enum) {
+    graph_node: NodeId,
+    sealed: Type.TypeId,
+
+    fn fromGraphNode(node: NodeId) DraftTypeCell {
+        return .{ .graph_node = node };
+    }
+
+    fn fromSealed(graph: ?*InstGraph, ty: Type.TypeId) Allocator.Error!DraftTypeCell {
+        const cell: DraftTypeCell = .{ .sealed = ty };
+        try cell.assertSealedClosed(graph);
+        return cell;
+    }
+
+    fn seal(self: DraftTypeCell, graph: *InstGraph, sealer: *GraphTypeFinals) Allocator.Error!Type.TypeId {
+        return switch (self) {
+            .graph_node => |node| blk: {
+                const sealed = try sealer.sealNode(node);
+                try graph.assertTypeHasNoGraphViews(sealed);
+                break :blk sealed;
+            },
+            .sealed => |ty| blk: {
+                try self.assertSealedClosed(graph);
+                break :blk ty;
+            },
+        };
+    }
+
+    fn assertSealedClosed(self: DraftTypeCell, graph: ?*InstGraph) Allocator.Error!void {
+        const active_graph = graph orelse return;
+        if (try self.sealedHasGraphViews(active_graph)) {
+            Common.invariant("Monotype body draft sealed type cell contained an active graph view");
+        }
+    }
+
+    fn sealedHasGraphViews(self: DraftTypeCell, graph: *InstGraph) Allocator.Error!bool {
+        return switch (self) {
+            .graph_node => false,
+            .sealed => |ty| try graph.typeHasGraphViews(ty),
+        };
+    }
+};
+
 const BodyDraft = struct {
     specs_start: usize,
     fns_start: usize,
@@ -16479,6 +16522,58 @@ const NestedFnFamily = struct {
 
 test "monotype lower declarations are referenced" {
     std.testing.refAllDecls(@This());
+}
+
+test "draft type cell seals graph nodes into closed monotypes" {
+    const gpa = std.testing.allocator;
+
+    var type_store = Type.Store.init(gpa);
+    defer type_store.deinit();
+
+    var name_store = names.NameStore.init(gpa);
+    defer name_store.deinit();
+
+    var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
+    defer unsolved_monos.deinit();
+
+    const graph = try InstGraph.create(gpa, &type_store, &name_store, &unsolved_monos);
+    defer graph.destroy();
+
+    const node = try graph.newNode(.{ .primitive = .u64 });
+    var finals = GraphTypeFinals.init(graph);
+    defer finals.deinit();
+
+    const sealed = try DraftTypeCell.fromGraphNode(node).seal(graph, &finals);
+    try std.testing.expect(!try graph.typeHasGraphViews(sealed));
+    switch (type_store.get(sealed)) {
+        .primitive => |primitive| try std.testing.expectEqual(.u64, primitive),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "draft sealed type cell validation distinguishes closed snapshots from graph views" {
+    const gpa = std.testing.allocator;
+
+    var type_store = Type.Store.init(gpa);
+    defer type_store.deinit();
+
+    var name_store = names.NameStore.init(gpa);
+    defer name_store.deinit();
+
+    var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
+    defer unsolved_monos.deinit();
+
+    const graph = try InstGraph.create(gpa, &type_store, &name_store, &unsolved_monos);
+    defer graph.destroy();
+
+    const closed = try type_store.add(.{ .primitive = .u64 });
+    const closed_cell = try DraftTypeCell.fromSealed(graph, closed);
+    try std.testing.expect(!try closed_cell.sealedHasGraphViews(graph));
+
+    const graph_view = try graph.monoFor(try graph.newNode(.{ .primitive = .u64 }));
+    const graph_view_cell: DraftTypeCell = .{ .sealed = graph_view };
+    try std.testing.expect(try graph_view_cell.sealedHasGraphViews(graph));
+    try std.testing.expect(!try DraftTypeCell.fromGraphNode(try graph.newNode(.{ .primitive = .bool })).sealedHasGraphViews(graph));
 }
 
 test "record parser presence words cover fields wider than one u64" {

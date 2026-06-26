@@ -2447,10 +2447,10 @@ sections. While a specialization is being solved, lowering writes to a
 `BodyDraft` owned by that specialization graph. A draft mirrors the final
 Monotype sections enough for lowering to refer to expressions, patterns, locals,
 definitions, nested definitions, side-pool spans, and function signatures, but
-all type-bearing fields use a draft type reference:
+all type-bearing fields use a draft type cell:
 
 ```zig
-const DraftTypeRef = union(enum) {
+const DraftTypeCell = union(enum) {
     graph_node: InstNodeId,
     sealed: TypeId,
 };
@@ -2478,7 +2478,7 @@ post-check stage consumes them. The draft is sealed only after:
    proven to be a truly unconstrained empty tag union.
 
 Sealing performs the only transition from graph nodes to final Monotype
-`TypeId`s. It walks every draft type reference, materializes each graph node
+`TypeId`s. It walks every draft type cell, materializes each graph node
 through the Monotype type interner, preserves recursive groups privately inside
 the interner, computes and stores type digests once, and then copies the fully
 sealed records into `MonoProgramBuilder`. This copy also turns draft-local ids
