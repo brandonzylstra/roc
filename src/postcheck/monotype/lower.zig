@@ -5282,6 +5282,165 @@ const BodyContext = struct {
         self.binders.deinit();
     }
 
+    fn addExpr(self: *BodyContext, expr: Ast.Expr) Allocator.Error!Ast.ExprId {
+        return try self.builder.program.addExpr(expr);
+    }
+
+    fn addPat(self: *BodyContext, pat: Ast.Pat) Allocator.Error!Ast.PatId {
+        return try self.builder.program.addPat(pat);
+    }
+
+    fn addLocal(self: *BodyContext, symbol: Common.Symbol, ty: Type.TypeId) Allocator.Error!Ast.LocalId {
+        return try self.builder.program.addLocal(symbol, ty);
+    }
+
+    fn addLocalWithBinder(
+        self: *BodyContext,
+        symbol: Common.Symbol,
+        ty: Type.TypeId,
+        binder: ?checked.PatternBinderId,
+    ) Allocator.Error!Ast.LocalId {
+        return try self.builder.program.addLocalWithBinder(symbol, ty, binder);
+    }
+
+    fn addFn(self: *BodyContext, source: Ast.FnTemplate) Allocator.Error!Ast.FnId {
+        return try self.builder.program.addFn(source);
+    }
+
+    fn reserveDef(self: *BodyContext) Allocator.Error!Ast.DefId {
+        const id: Ast.DefId = @enumFromInt(@as(u32, @intCast(self.builder.program.defs.items.len)));
+        try self.builder.program.defs.append(self.allocator, undefined);
+        return id;
+    }
+
+    fn setDef(self: *BodyContext, id: Ast.DefId, def: Ast.Def) void {
+        self.builder.program.defs.items[@intFromEnum(id)] = def;
+    }
+
+    fn addExprSpan(self: *BodyContext, ids: []const Ast.ExprId) Allocator.Error!Ast.Span(Ast.ExprId) {
+        return try self.builder.program.addExprSpan(ids);
+    }
+
+    fn addPatSpan(self: *BodyContext, ids: []const Ast.PatId) Allocator.Error!Ast.Span(Ast.PatId) {
+        return try self.builder.program.addPatSpan(ids);
+    }
+
+    fn addTypedLocalSpan(self: *BodyContext, values: []const Ast.TypedLocal) Allocator.Error!Ast.Span(Ast.TypedLocal) {
+        return try self.builder.program.addTypedLocalSpan(values);
+    }
+
+    fn addStmt(self: *BodyContext, stmt: Ast.Stmt) Allocator.Error!Ast.StmtId {
+        return try self.builder.program.addStmt(stmt);
+    }
+
+    fn addStmtSpan(self: *BodyContext, ids: []const Ast.StmtId) Allocator.Error!Ast.Span(Ast.StmtId) {
+        return try self.builder.program.addStmtSpan(ids);
+    }
+
+    fn addFieldExprSpan(self: *BodyContext, fields: []const Ast.FieldExpr) Allocator.Error!Ast.Span(Ast.FieldExpr) {
+        return try self.builder.program.addFieldExprSpan(fields);
+    }
+
+    fn addRecordDestructSpan(self: *BodyContext, fields: []const Ast.RecordDestruct) Allocator.Error!Ast.Span(Ast.RecordDestruct) {
+        return try self.builder.program.addRecordDestructSpan(fields);
+    }
+
+    fn addBranchSpan(self: *BodyContext, branches: []const Ast.Branch) Allocator.Error!Ast.Span(Ast.Branch) {
+        return try self.builder.program.addBranchSpan(branches);
+    }
+
+    fn addIfBranchSpan(self: *BodyContext, branches: []const Ast.IfBranch) Allocator.Error!Ast.Span(Ast.IfBranch) {
+        return try self.builder.program.addIfBranchSpan(branches);
+    }
+
+    fn addStrPatternStepSpan(self: *BodyContext, steps: []const Ast.StrPatternStep) Allocator.Error!Ast.Span(Ast.StrPatternStep) {
+        return try self.builder.program.addStrPatternStepSpan(steps);
+    }
+
+    fn addStringLiteral(self: *BodyContext, text: []const u8) Allocator.Error!Ast.StringLiteralId {
+        return try self.builder.program.addStringLiteral(text);
+    }
+
+    fn addStringView(
+        self: *BodyContext,
+        backing: []const u8,
+        offset: u32,
+        len: u32,
+    ) Allocator.Error!Ast.StringLiteralId {
+        return try self.builder.program.addStringView(backing, offset, len);
+    }
+
+    fn exprLoc(self: *BodyContext, id: Ast.ExprId) base.SourceLoc {
+        return self.builder.program.exprLoc(id);
+    }
+
+    fn exprRegion(self: *BodyContext, id: Ast.ExprId) base.Region {
+        return self.builder.program.exprRegion(id);
+    }
+
+    fn exprType(self: *BodyContext, id: Ast.ExprId) Type.TypeId {
+        return self.builder.program.exprs.items[@intFromEnum(id)].ty;
+    }
+
+    fn patData(self: *BodyContext, id: Ast.PatId) Ast.PatData {
+        return self.builder.program.pats.items[@intFromEnum(id)].data;
+    }
+
+    fn localType(self: *BodyContext, id: Ast.LocalId) Type.TypeId {
+        return self.builder.program.locals.items[@intFromEnum(id)].ty;
+    }
+
+    fn localExpr(self: *BodyContext, local: Ast.LocalId, ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        return try self.addExpr(.{ .ty = ty, .data = .{ .local = local } });
+    }
+
+    fn bindPat(self: *BodyContext, local: Ast.LocalId, ty: Type.TypeId) Allocator.Error!Ast.PatId {
+        return try self.addPat(.{ .ty = ty, .data = .{ .bind = local } });
+    }
+
+    fn intLiteralExpr(self: *BodyContext, value: u64, ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        return try self.addExpr(.{
+            .ty = ty,
+            .data = .{ .int_lit = unsignedIntLiteral(value) },
+        });
+    }
+
+    fn lowLevelExpr(
+        self: *BodyContext,
+        op: can.CIR.Expr.LowLevel,
+        args: []const Ast.ExprId,
+        ret_ty: Type.TypeId,
+    ) Allocator.Error!Ast.ExprId {
+        return try self.addExpr(.{
+            .ty = ret_ty,
+            .data = .{ .low_level = .{
+                .op = op,
+                .args = try self.addExprSpan(args),
+            } },
+        });
+    }
+
+    fn concatExpr(self: *BodyContext, left: Ast.ExprId, right: Ast.ExprId, str_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
+        return try self.lowLevelExpr(.str_concat, &.{ left, right }, str_ty);
+    }
+
+    fn ifExpr(
+        self: *BodyContext,
+        cond: Ast.ExprId,
+        then_expr: Ast.ExprId,
+        else_expr: Ast.ExprId,
+        ty: Type.TypeId,
+    ) Allocator.Error!Ast.ExprId {
+        const branches = [_]Ast.IfBranch{.{ .cond = cond, .body = then_expr }};
+        return try self.addExpr(.{
+            .ty = ty,
+            .data = .{ .if_ = .{
+                .branches = try self.addIfBranchSpan(&branches),
+                .final_else = else_expr,
+            } },
+        });
+    }
+
     fn childContext(self: *BodyContext, current_fn_key: names.TypeDigest) Allocator.Error!BodyContext {
         return try self.childContextWithTypeCells(current_fn_key, true);
     }
@@ -5330,7 +5489,7 @@ const BodyContext = struct {
         var binder_iter = self.binders.iterator();
         while (binder_iter.next()) |entry| {
             const local = entry.value_ptr.*;
-            const local_ty = self.builder.program.locals.items[@intFromEnum(local)].ty;
+            const local_ty = self.localType(local);
             try self.constrainTypeToMono(checkedBinderType(self.view, entry.key_ptr.*), local_ty);
         }
     }
@@ -5781,12 +5940,12 @@ const BodyContext = struct {
         defer self.allocator.free(arg_tys);
         if (arg_tys.len != 1) Common.invariant("Str.inspect intrinsic requires exactly one argument");
 
-        const arg_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
+        const arg_local = try self.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
         const typed_arg = Ast.TypedLocal{ .local = arg_local, .ty = arg_tys[0] };
-        const local_expr = try self.builder.program.addExpr(.{ .ty = arg_tys[0], .data = .{ .local = arg_local } });
+        const local_expr = try self.addExpr(.{ .ty = arg_tys[0], .data = .{ .local = arg_local } });
         const body = try self.builder.inspectCall(local_expr, arg_tys[0], ret_ty);
         return .{
-            .args = try self.builder.program.addTypedLocalSpan(&.{typed_arg}),
+            .args = try self.addTypedLocalSpan(&.{typed_arg}),
             .body = body,
             .ret = ret_ty,
         };
@@ -5835,9 +5994,9 @@ const BodyContext = struct {
 
         for (checked_args, arg_tys, 0..) |pattern_id, arg_ty, i| {
             if (self.patternNeedsExplicitBinding(pattern_id)) {
-                const local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_ty);
+                const local = try self.addLocal(self.builder.symbols.fresh(), arg_ty);
                 args[i] = .{ .local = local, .ty = arg_ty };
-                const value = try self.builder.localExpr(local, arg_ty);
+                const value = try self.localExpr(local, arg_ty);
                 try materialized_args.append(self.allocator, .{
                     .pattern = pattern_id,
                     .value = value,
@@ -5847,12 +6006,12 @@ const BodyContext = struct {
             }
 
             const pat = try self.lowerPatternAtType(pattern_id, arg_ty);
-            switch (self.builder.program.pats.items[@intFromEnum(pat)].data) {
+            switch (self.patData(pat)) {
                 .bind => |local| args[i] = .{ .local = local, .ty = arg_ty },
                 else => {
-                    const local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_ty);
+                    const local = try self.addLocal(self.builder.symbols.fresh(), arg_ty);
                     args[i] = .{ .local = local, .ty = arg_ty };
-                    const value = try self.builder.program.addExpr(.{ .ty = arg_ty, .data = .{ .local = local } });
+                    const value = try self.addExpr(.{ .ty = arg_ty, .data = .{ .local = local } });
                     try arg_lets.append(self.allocator, .{ .pat = pat, .value = value });
                 },
             }
@@ -5863,8 +6022,8 @@ const BodyContext = struct {
             .index = 0,
             .body = checked_body,
         } }, ret_ty);
-        const body_loc = self.builder.program.exprLoc(body);
-        const body_region_after_lowering = self.builder.program.exprRegion(body);
+        const body_loc = self.exprLoc(body);
+        const body_region_after_lowering = self.exprRegion(body);
         const saved_body_loc = self.builder.program.current_loc;
         defer self.builder.program.current_loc = saved_body_loc;
         const saved_body_region = self.builder.program.current_region;
@@ -5875,7 +6034,7 @@ const BodyContext = struct {
         while (remaining > 0) {
             remaining -= 1;
             const arg_let = arg_lets.items[remaining];
-            body = try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .let_ = .{
+            body = try self.addExpr(.{ .ty = ret_ty, .data = .{ .let_ = .{
                 .bind = arg_let.pat,
                 .value = arg_let.value,
                 .rest = body,
@@ -5883,7 +6042,7 @@ const BodyContext = struct {
         }
 
         return .{
-            .args = try self.builder.program.addTypedLocalSpan(args),
+            .args = try self.addTypedLocalSpan(args),
             .body = body,
         };
     }
@@ -6167,7 +6326,7 @@ const BodyContext = struct {
             .unary_minus,
             .unary_not,
             => Common.invariant("desugared operator expression reached Monotype without checked dispatch or low-level form"),
-            .ellipsis => .{ .crash = try self.builder.program.addStringLiteral("not implemented") },
+            .ellipsis => .{ .crash = try self.addStringLiteral("not implemented") },
             .crash => |msg| .{ .crash = try self.lowerStringLiteral(msg) },
             .dbg => |child| .{ .dbg = try self.lowerDbgMessage(child) },
             .expect_err => |expect_err| .{ .expect_err = .{
@@ -6181,12 +6340,12 @@ const BodyContext = struct {
             .hosted_lambda => Common.invariant("hosted lambda expression reached ordinary Monotype expression lowering"),
             .run_low_level => |low_level| .{ .low_level = .{ .op = low_level.op, .args = try self.lowerExprSpan(low_level.args) } },
         };
-        return try self.builder.program.addExpr(.{ .ty = ty, .data = data });
+        return try self.addExpr(.{ .ty = ty, .data = data });
     }
 
     fn lowerDbgMessage(self: *BodyContext, child: checked.CheckedExprId) Allocator.Error!Ast.ExprId {
         const value = try self.lowerExpr(child);
-        const value_ty = self.builder.program.exprs.items[@intFromEnum(value)].ty;
+        const value_ty = self.exprType(value);
         const str_ty = try self.builder.primitiveType(.str);
         return try self.builder.inspectCall(value, value_ty, str_ty);
     }
@@ -6197,7 +6356,7 @@ const BodyContext = struct {
         snippet: checked.CheckedStringLiteralId,
     ) Allocator.Error!Ast.ExprId {
         const value = try self.lowerExpr(child);
-        const value_ty = self.builder.program.exprs.items[@intFromEnum(value)].ty;
+        const value_ty = self.exprType(value);
         const str_ty = try self.builder.primitiveType(.str);
         const rendered = try self.builder.inspectCall(value, value_ty, str_ty);
 
@@ -6213,9 +6372,9 @@ const BodyContext = struct {
         );
         defer self.builder.allocator.free(prefix_text);
         const prefix = try self.builder.stringExpr(prefix_text, str_ty);
-        const with_value = try self.builder.concatExpr(prefix, rendered, str_ty);
+        const with_value = try self.concatExpr(prefix, rendered, str_ty);
         const suffix = try self.builder.stringExpr(")", str_ty);
-        return try self.builder.concatExpr(with_value, suffix, str_ty);
+        return try self.concatExpr(with_value, suffix, str_ty);
     }
 
     fn lowerStr(self: *BodyContext, segments: []const checked.CheckedExprId) Allocator.Error!Ast.ExprData {
@@ -6227,7 +6386,7 @@ const BodyContext = struct {
         var out = try self.lowerExprAtType(segments[0], str_ty);
         for (segments[1..]) |segment| {
             const right = try self.lowerExprAtType(segment, str_ty);
-            out = try self.builder.concatExpr(out, right, str_ty);
+            out = try self.concatExpr(out, right, str_ty);
         }
         return .{ .nominal = out };
     }
@@ -6238,7 +6397,7 @@ const BodyContext = struct {
             Common.invariant("checked string literal id outside checked body string store");
         }
         if (self.string_literals[index]) |existing| return existing;
-        const lowered = try self.builder.program.addStringLiteral(self.view.bodies.stringLiteral(@enumFromInt(index)));
+        const lowered = try self.addStringLiteral(self.view.bodies.stringLiteral(@enumFromInt(index)));
         self.string_literals[index] = lowered;
         return lowered;
     }
@@ -6246,7 +6405,7 @@ const BodyContext = struct {
     fn lowerCallExpr(self: *BodyContext, checked_expr_id: checked.CheckedExprId, checked_ret_ty: checked.CheckedTypeId, call: anytype) Allocator.Error!Ast.ExprId {
         if (try self.lowerParseIntrinsicCallExpr(checked_expr_id, checked_ret_ty, call, null)) |expr| return expr;
         const lowered = try self.lowerCall(checked_ret_ty, call);
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = lowered.ret_ty,
             .data = lowered.data,
         });
@@ -6341,17 +6500,17 @@ const BodyContext = struct {
         switch (expr.data) {
             .lookup_local => |lookup| if (lookup.resolved) |ref_id| {
                 if (self.currentLocalForResolvedValue(ref_id)) |local_id| {
-                    return self.builder.program.locals.items[@intFromEnum(local_id)].ty;
+                    return self.localType(local_id);
                 }
             },
             .lookup_external => |resolved| if (resolved) |ref_id| {
                 if (self.currentLocalForResolvedValue(ref_id)) |local_id| {
-                    return self.builder.program.locals.items[@intFromEnum(local_id)].ty;
+                    return self.localType(local_id);
                 }
             },
             .lookup_required => |resolved| if (resolved) |ref_id| {
                 if (self.currentLocalForResolvedValue(ref_id)) |local_id| {
-                    return self.builder.program.locals.items[@intFromEnum(local_id)].ty;
+                    return self.localType(local_id);
                 }
             },
             else => {},
@@ -6373,16 +6532,16 @@ const BodyContext = struct {
         };
         if (maybe_ref) |ref_id| {
             if (self.currentLocalForResolvedValue(ref_id)) |local_id| {
-                const local_ty = self.builder.program.locals.items[@intFromEnum(local_id)].ty;
+                const local_ty = self.localType(local_id);
                 if (!self.sameType(ty, local_ty)) {
                     Common.invariant("checked parse intrinsic local argument type differed from its concrete local type");
                 }
-                return try self.builder.program.addExpr(.{ .ty = local_ty, .data = .{ .local = local_id } });
+                return try self.addExpr(.{ .ty = local_ty, .data = .{ .local = local_id } });
             }
 
             const record = self.view.resolved_refs.records[@intFromEnum(ref_id)];
             switch (record.ref) {
-                .local_proc => |local| return try self.builder.program.addExpr(.{
+                .local_proc => |local| return try self.addExpr(.{
                     .ty = ty,
                     .data = .{ .fn_def = try self.fnTemplateForLocalProcWithMono(local, expr.ty, self.view.types.rootKey(expr.ty), ty) },
                 }),
@@ -6416,7 +6575,7 @@ const BodyContext = struct {
                         const binding_source = schemeRoot(view, binding.source_scheme, "imported procedure binding source scheme was not output");
                         const fn_template = self.builder.fnDefForImportedBindingBody(view, binding.body, binding_source, view.types.rootKey(binding_source), mono_fn_ty);
                         const fn_id = try self.builder.lowerFnTemplateDef(view, fn_template);
-                        break :blk try self.builder.program.addExpr(.{
+                        break :blk try self.addExpr(.{
                             .ty = mono_fn_ty,
                             .data = .{ .fn_def = fn_id },
                         });
@@ -6435,7 +6594,7 @@ const BodyContext = struct {
                     mono_fn_ty,
                 );
                 const fn_id = try self.builder.lowerFnTemplateDefFromContext(self, fn_template);
-                break :blk try self.builder.program.addExpr(.{ .ty = mono_fn_ty, .data = .{ .fn_def = fn_id } });
+                break :blk try self.addExpr(.{ .ty = mono_fn_ty, .data = .{ .fn_def = fn_id } });
             },
             .platform_required => Common.invariant("platform required procedure reached parse intrinsic callback lowering"),
         };
@@ -6490,8 +6649,8 @@ const BodyContext = struct {
         const fields_value = try self.lowerParseIntrinsicArgAtType(args[0], arg_tys[0]);
         const rename_value = try self.lowerParseIntrinsicArgAtType(args[1], arg_tys[1]);
         if (self.generatedFieldNamesBackingValueFieldNames(arg_tys[0])) |backing_fields| {
-            const fields_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), ret_ty);
-            const rename_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_tys[1]);
+            const fields_local = try self.addLocal(self.builder.symbols.fresh(), ret_ty);
+            const rename_local = try self.addLocal(self.builder.symbols.fresh(), arg_tys[1]);
             var body = try self.lowerGeneratedFieldNamesRenameFieldNames(
                 backing_fields,
                 ret_ty,
@@ -6503,8 +6662,8 @@ const BodyContext = struct {
             return try self.wrapLet(fields_local, ret_ty, fields_value, body, ret_ty);
         }
 
-        const fields_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), ret_ty);
-        var body = try self.builder.localExpr(fields_local, ret_ty);
+        const fields_local = try self.addLocal(self.builder.symbols.fresh(), ret_ty);
+        var body = try self.localExpr(fields_local, ret_ty);
         body = try self.wrapWildcardLet(arg_tys[1], rename_value, body, ret_ty);
         return try self.wrapLet(fields_local, ret_ty, fields_value, body, ret_ty);
     }
@@ -6519,7 +6678,7 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const fields_backing_ty = self.builder.namedBackingType(fields_ty) orelse
             Common.invariant("generated FieldNames value expected a named backing type");
-        const backing_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), fields_backing_ty);
+        const backing_local = try self.addLocal(self.builder.symbols.fresh(), fields_backing_ty);
         const body = try self.lowerGeneratedFieldNamesRenameBackingRecord(
             backing_fields,
             fields_ty,
@@ -6528,14 +6687,14 @@ const BodyContext = struct {
             rename_local,
             rename_fn_ty,
         );
-        const field_pat = try self.builder.program.addPat(.{
+        const field_pat = try self.addPat(.{
             .ty = fields_ty,
-            .data = .{ .nominal = try self.builder.bindPat(backing_local, fields_backing_ty) },
+            .data = .{ .nominal = try self.bindPat(backing_local, fields_backing_ty) },
         });
         const branch = Ast.Branch{ .pat = field_pat, .body = body };
-        return try self.builder.program.addExpr(.{ .ty = fields_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(fields_local, fields_ty),
-            .branches = try self.builder.program.addBranchSpan(&[_]Ast.Branch{branch}),
+        return try self.addExpr(.{ .ty = fields_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(fields_local, fields_ty),
+            .branches = try self.addBranchSpan(&[_]Ast.Branch{branch}),
         } } });
     }
 
@@ -6563,40 +6722,40 @@ const BodyContext = struct {
         const renamed_name_exprs = try self.allocator.alloc(Ast.ExprId, info.item_fields.len);
         defer self.allocator.free(renamed_name_exprs);
 
-        const items_expr = try self.builder.program.addExpr(.{
+        const items_expr = try self.addExpr(.{
             .ty = info.items_field.ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(backing_local, fields_backing_ty),
+                .receiver = try self.localExpr(backing_local, fields_backing_ty),
                 .field = info.items_field.name,
             } },
         });
-        const items_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), info.items_field.ty);
+        const items_local = try self.addLocal(self.builder.symbols.fresh(), info.items_field.ty);
 
         for (info.item_fields, 0..) |field, index| {
             const field_ty = field.ty;
-            item_exprs[index] = try self.builder.program.addExpr(.{
+            item_exprs[index] = try self.addExpr(.{
                 .ty = field_ty,
                 .data = .{ .field_access = .{
-                    .receiver = try self.builder.localExpr(items_local, info.items_field.ty),
+                    .receiver = try self.localExpr(items_local, info.items_field.ty),
                     .field = field.name,
                 } },
             });
-            item_locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), field_ty);
+            item_locals[index] = try self.addLocal(self.builder.symbols.fresh(), field_ty);
             const current_name = try self.fieldNameFromLocal(item_locals[index], field_ty, str_ty);
-            renamed_name_exprs[index] = try self.builder.program.addExpr(.{
+            renamed_name_exprs[index] = try self.addExpr(.{
                 .ty = str_ty,
                 .data = .{ .call_value = .{
-                    .callee = try self.builder.localExpr(rename_local, rename_fn_ty),
-                    .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{current_name}),
+                    .callee = try self.localExpr(rename_local, rename_fn_ty),
+                    .args = try self.addExprSpan(&[_]Ast.ExprId{current_name}),
                 } },
             });
-            renamed_name_locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
+            renamed_name_locals[index] = try self.addLocal(self.builder.symbols.fresh(), str_ty);
             const renamed_handle = try self.lowerRecordFieldHandleWithName(
                 field_ty,
-                try self.builder.localExpr(renamed_name_locals[index], str_ty),
-                try self.builder.lowLevelExpr(
+                try self.localExpr(renamed_name_locals[index], str_ty),
+                try self.lowLevelExpr(
                     .str_count_utf8_bytes,
-                    &.{try self.builder.localExpr(renamed_name_locals[index], str_ty)},
+                    &.{try self.localExpr(renamed_name_locals[index], str_ty)},
                     try self.builder.primitiveType(.u64),
                 ),
                 index,
@@ -6607,9 +6766,9 @@ const BodyContext = struct {
             };
         }
 
-        const items_record_expr = try self.builder.program.addExpr(.{
+        const items_record_expr = try self.addExpr(.{
             .ty = info.items_field.ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(lowered_items) },
+            .data = .{ .record = try self.addFieldExprSpan(lowered_items) },
         });
         const bound_exprs = try self.fieldNameBoundExprsFromLocals(renamed_name_locals, null, info.shortest_field.ty);
         const shortest_expr = bound_exprs[0];
@@ -6631,11 +6790,11 @@ const BodyContext = struct {
                     Common.invariant("generated FieldNames backing contained an unexpected field"),
             };
         }
-        const backing_expr = try self.builder.program.addExpr(.{
+        const backing_expr = try self.addExpr(.{
             .ty = fields_backing_ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(backing_values) },
+            .data = .{ .record = try self.addFieldExprSpan(backing_values) },
         });
-        const renamed_fields = try self.builder.program.addExpr(.{
+        const renamed_fields = try self.addExpr(.{
             .ty = fields_ty,
             .data = .{ .nominal = backing_expr },
         });
@@ -6675,7 +6834,7 @@ const BodyContext = struct {
         const fields = self.recordFieldsForShape(shape_ty);
         const fields_value = try self.lowerParseIntrinsicArgAtType(args[0], arg_tys[0]);
         if (self.generatedFieldNamesBackingInfo(arg_tys[0])) |info| {
-            const fields_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
+            const fields_local = try self.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
             const body = try self.lowerGeneratedFieldNamesNameBound(
                 info,
                 arg_tys[0],
@@ -6698,7 +6857,7 @@ const BodyContext = struct {
             }
         }
 
-        const bound_expr = try self.builder.intLiteralExpr(value, ret_ty);
+        const bound_expr = try self.intLiteralExpr(value, ret_ty);
         return try self.wrapWildcardLet(arg_tys[0], fields_value, bound_expr, ret_ty);
     }
 
@@ -6712,27 +6871,27 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const fields_backing_ty = self.builder.namedBackingType(fields_ty) orelse
             Common.invariant("generated FieldNames value expected a named backing type");
-        const backing_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), fields_backing_ty);
+        const backing_local = try self.addLocal(self.builder.symbols.fresh(), fields_backing_ty);
         const bound_field = switch (bound) {
             .shortest => info.shortest_field,
             .longest => info.longest_field,
         };
         if (!self.sameType(bound_field.ty, ret_ty)) Common.invariant("generated FieldNames bound metadata type differed from result type");
-        const bound_expr = try self.builder.program.addExpr(.{
+        const bound_expr = try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(backing_local, fields_backing_ty),
+                .receiver = try self.localExpr(backing_local, fields_backing_ty),
                 .field = bound_field.name,
             } },
         });
-        const field_pat = try self.builder.program.addPat(.{
+        const field_pat = try self.addPat(.{
             .ty = fields_ty,
-            .data = .{ .nominal = try self.builder.bindPat(backing_local, fields_backing_ty) },
+            .data = .{ .nominal = try self.bindPat(backing_local, fields_backing_ty) },
         });
         const branch = Ast.Branch{ .pat = field_pat, .body = bound_expr };
-        return try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(fields_local, fields_ty),
-            .branches = try self.builder.program.addBranchSpan(&[_]Ast.Branch{branch}),
+        return try self.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(fields_local, fields_ty),
+            .branches = try self.addBranchSpan(&[_]Ast.Branch{branch}),
         } } });
     }
 
@@ -6752,23 +6911,23 @@ const BodyContext = struct {
         if (!self.sameType(name_field.ty, ret_ty)) Common.invariant("Field.name backing name field differed from Str");
 
         const field_value = try self.lowerParseIntrinsicArgAtType(args[0], field_ty);
-        const field_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), field_ty);
-        const backing_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), backing_ty);
-        const name_expr = try self.builder.program.addExpr(.{
+        const field_local = try self.addLocal(self.builder.symbols.fresh(), field_ty);
+        const backing_local = try self.addLocal(self.builder.symbols.fresh(), backing_ty);
+        const name_expr = try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(backing_local, backing_ty),
+                .receiver = try self.localExpr(backing_local, backing_ty),
                 .field = name_field.name,
             } },
         });
-        const field_pat = try self.builder.program.addPat(.{
+        const field_pat = try self.addPat(.{
             .ty = field_ty,
-            .data = .{ .nominal = try self.builder.bindPat(backing_local, backing_ty) },
+            .data = .{ .nominal = try self.bindPat(backing_local, backing_ty) },
         });
         const branch = Ast.Branch{ .pat = field_pat, .body = name_expr };
-        const matched = try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(field_local, field_ty),
-            .branches = try self.builder.program.addBranchSpan(&[_]Ast.Branch{branch}),
+        const matched = try self.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(field_local, field_ty),
+            .branches = try self.addBranchSpan(&[_]Ast.Branch{branch}),
         } } });
         return try self.wrapLet(field_local, field_ty, field_value, matched, ret_ty);
     }
@@ -6854,13 +7013,13 @@ const BodyContext = struct {
         defer self.allocator.free(item_values);
 
         for (info.item_fields, 0..) |field, index| {
-            const name_expr = try self.builder.localExpr(renamed_field_locals[index], str_ty);
+            const name_expr = try self.localExpr(renamed_field_locals[index], str_ty);
             const name_len_expr = if (renamed_field_lengths) |lengths|
-                try self.builder.intLiteralExpr(lengths[index], try self.builder.primitiveType(.u64))
+                try self.intLiteralExpr(lengths[index], try self.builder.primitiveType(.u64))
             else
-                try self.builder.lowLevelExpr(
+                try self.lowLevelExpr(
                     .str_count_utf8_bytes,
-                    &.{try self.builder.localExpr(renamed_field_locals[index], str_ty)},
+                    &.{try self.localExpr(renamed_field_locals[index], str_ty)},
                     try self.builder.primitiveType(.u64),
                 );
             item_values[index] = .{
@@ -6869,9 +7028,9 @@ const BodyContext = struct {
             };
         }
 
-        const items_expr = try self.builder.program.addExpr(.{
+        const items_expr = try self.addExpr(.{
             .ty = info.items_field.ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(item_values) },
+            .data = .{ .record = try self.addFieldExprSpan(item_values) },
         });
         const bound_exprs = try self.fieldNameBoundExprsFromLocals(
             renamed_field_locals,
@@ -6898,11 +7057,11 @@ const BodyContext = struct {
             };
         }
 
-        const backing_expr = try self.builder.program.addExpr(.{
+        const backing_expr = try self.addExpr(.{
             .ty = fields_backing_ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(backing_values) },
+            .data = .{ .record = try self.addFieldExprSpan(backing_values) },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = fields_ty,
             .data = .{ .nominal = backing_expr },
         });
@@ -6927,13 +7086,13 @@ const BodyContext = struct {
                 }
             }
             return .{
-                try self.builder.intLiteralExpr(shortest, u64_ty),
-                try self.builder.intLiteralExpr(longest, u64_ty),
+                try self.intLiteralExpr(shortest, u64_ty),
+                try self.intLiteralExpr(longest, u64_ty),
             };
         }
 
         if (renamed_field_locals.len == 0) {
-            const zero = try self.builder.intLiteralExpr(0, u64_ty);
+            const zero = try self.intLiteralExpr(0, u64_ty);
             return .{ zero, zero };
         }
 
@@ -6949,33 +7108,33 @@ const BodyContext = struct {
         u64_ty: Type.TypeId,
         bound: FieldNameBound,
     ) Allocator.Error!Ast.ExprId {
-        if (renamed_field_locals.len == 0) return try self.builder.intLiteralExpr(0, u64_ty);
+        if (renamed_field_locals.len == 0) return try self.intLiteralExpr(0, u64_ty);
 
         const str_ty = try self.builder.primitiveType(.str);
-        var body = try self.builder.lowLevelExpr(
+        var body = try self.lowLevelExpr(
             .str_count_utf8_bytes,
-            &.{try self.builder.localExpr(renamed_field_locals[0], str_ty)},
+            &.{try self.localExpr(renamed_field_locals[0], str_ty)},
             u64_ty,
         );
         for (renamed_field_locals[1..]) |field_local| {
-            const current_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), u64_ty);
-            const candidate_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), u64_ty);
-            const len_expr = try self.builder.lowLevelExpr(
+            const current_local = try self.addLocal(self.builder.symbols.fresh(), u64_ty);
+            const candidate_local = try self.addLocal(self.builder.symbols.fresh(), u64_ty);
+            const len_expr = try self.lowLevelExpr(
                 .str_count_utf8_bytes,
-                &.{try self.builder.localExpr(field_local, str_ty)},
+                &.{try self.localExpr(field_local, str_ty)},
                 u64_ty,
             );
-            const cond = try self.builder.lowLevelExpr(switch (bound) {
+            const cond = try self.lowLevelExpr(switch (bound) {
                 .shortest => .num_is_lt,
                 .longest => .num_is_gt,
             }, &.{
-                try self.builder.localExpr(candidate_local, u64_ty),
-                try self.builder.localExpr(current_local, u64_ty),
+                try self.localExpr(candidate_local, u64_ty),
+                try self.localExpr(current_local, u64_ty),
             }, try self.builder.primitiveType(.bool));
-            const selected = try self.builder.ifExpr(
+            const selected = try self.ifExpr(
                 cond,
-                try self.builder.localExpr(candidate_local, u64_ty),
-                try self.builder.localExpr(current_local, u64_ty),
+                try self.localExpr(candidate_local, u64_ty),
+                try self.localExpr(current_local, u64_ty),
                 u64_ty,
             );
             body = try self.wrapLet(
@@ -7001,22 +7160,22 @@ const BodyContext = struct {
         const index_field = self.recordFieldByText(backing_ty, "index");
         if (!self.sameType(index_field.ty, ret_ty)) Common.invariant("Field backing index field differed from U64");
 
-        const backing_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), backing_ty);
-        const index_expr = try self.builder.program.addExpr(.{
+        const backing_local = try self.addLocal(self.builder.symbols.fresh(), backing_ty);
+        const index_expr = try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(backing_local, backing_ty),
+                .receiver = try self.localExpr(backing_local, backing_ty),
                 .field = index_field.name,
             } },
         });
-        const field_pat = try self.builder.program.addPat(.{
+        const field_pat = try self.addPat(.{
             .ty = field_ty,
-            .data = .{ .nominal = try self.builder.bindPat(backing_local, backing_ty) },
+            .data = .{ .nominal = try self.bindPat(backing_local, backing_ty) },
         });
         const branch = Ast.Branch{ .pat = field_pat, .body = index_expr };
-        return try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(field_local, field_ty),
-            .branches = try self.builder.program.addBranchSpan(&[_]Ast.Branch{branch}),
+        return try self.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(field_local, field_ty),
+            .branches = try self.addBranchSpan(&[_]Ast.Branch{branch}),
         } } });
     }
 
@@ -7032,22 +7191,22 @@ const BodyContext = struct {
         const name_len_field = self.recordFieldByText(backing_ty, "name_len");
         if (!self.sameType(name_len_field.ty, ret_ty)) Common.invariant("Field backing name_len field differed from U64");
 
-        const backing_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), backing_ty);
-        const name_len_expr = try self.builder.program.addExpr(.{
+        const backing_local = try self.addLocal(self.builder.symbols.fresh(), backing_ty);
+        const name_len_expr = try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(backing_local, backing_ty),
+                .receiver = try self.localExpr(backing_local, backing_ty),
                 .field = name_len_field.name,
             } },
         });
-        const field_pat = try self.builder.program.addPat(.{
+        const field_pat = try self.addPat(.{
             .ty = field_ty,
-            .data = .{ .nominal = try self.builder.bindPat(backing_local, backing_ty) },
+            .data = .{ .nominal = try self.bindPat(backing_local, backing_ty) },
         });
         const branch = Ast.Branch{ .pat = field_pat, .body = name_len_expr };
-        return try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(field_local, field_ty),
-            .branches = try self.builder.program.addBranchSpan(&[_]Ast.Branch{branch}),
+        return try self.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(field_local, field_ty),
+            .branches = try self.addBranchSpan(&[_]Ast.Branch{branch}),
         } } });
     }
 
@@ -7080,10 +7239,10 @@ const BodyContext = struct {
         const field_handle_ty = self.iterItemType(ret_ty);
 
         const fields_value = try self.lowerParseIntrinsicArgAtType(args[0], arg_tys[0]);
-        const fields_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
+        const fields_local = try self.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
         const size_local: ?Ast.LocalId = if (mode == .for_size) blk: {
             if (!self.typeHasBuiltinOwner(arg_tys[1], .u64)) Common.invariant("FieldNames.for_size size argument was not U64");
-            break :blk try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_tys[1]);
+            break :blk try self.addLocal(self.builder.symbols.fresh(), arg_tys[1]);
         } else null;
 
         var iter_expr = if (self.generatedFieldNamesBackingFieldNames(arg_tys[0], field_handle_ty, fields.len)) |backing_fields|
@@ -7295,15 +7454,15 @@ const BodyContext = struct {
         const info = self.generatedFieldNamesBackingInfoFromBacking(fields_backing_ty) orelse
             Common.invariant("generated FieldNames value expected a generated backing type");
         if (backing_fields.len != info.item_fields.len) Common.invariant("generated FieldNames iterator arity differed from item count");
-        const backing_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), fields_backing_ty);
-        const items_expr = try self.builder.program.addExpr(.{
+        const backing_local = try self.addLocal(self.builder.symbols.fresh(), fields_backing_ty);
+        const items_expr = try self.addExpr(.{
             .ty = info.items_field.ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(backing_local, fields_backing_ty),
+                .receiver = try self.localExpr(backing_local, fields_backing_ty),
                 .field = info.items_field.name,
             } },
         });
-        const items_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), info.items_field.ty);
+        const items_local = try self.addLocal(self.builder.symbols.fresh(), info.items_field.ty);
         const body = try self.lowerFieldNamesValueIterFromIndex(
             info.item_fields,
             info.items_field.ty,
@@ -7321,14 +7480,14 @@ const BodyContext = struct {
             source_expr_id,
         );
         const body_with_items = try self.wrapLet(items_local, info.items_field.ty, items_expr, body, iter_ty);
-        const field_pat = try self.builder.program.addPat(.{
+        const field_pat = try self.addPat(.{
             .ty = fields_ty,
-            .data = .{ .nominal = try self.builder.bindPat(backing_local, fields_backing_ty) },
+            .data = .{ .nominal = try self.bindPat(backing_local, fields_backing_ty) },
         });
         const branch = Ast.Branch{ .pat = field_pat, .body = body_with_items };
-        return try self.builder.program.addExpr(.{ .ty = iter_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(fields_local, fields_ty),
-            .branches = try self.builder.program.addBranchSpan(&[_]Ast.Branch{branch}),
+        return try self.addExpr(.{ .ty = iter_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(fields_local, fields_ty),
+            .branches = try self.addBranchSpan(&[_]Ast.Branch{branch}),
         } } });
     }
 
@@ -7372,10 +7531,10 @@ const BodyContext = struct {
             checked_source_ty,
             source_expr_id,
         );
-        const item_expr = try self.builder.program.addExpr(.{
+        const item_expr = try self.addExpr(.{
             .ty = field_handle_ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(items_local, items_ty),
+                .receiver = try self.localExpr(items_local, items_ty),
                 .field = backing_fields[index].name,
             } },
         });
@@ -7502,10 +7661,10 @@ const BodyContext = struct {
                 source_expr_id,
                 len,
             );
-            const size_expr = try self.builder.localExpr(size_local, size_ty);
-            const len_expr = try self.builder.intLiteralExpr(@intCast(len), size_ty);
-            const cond = try self.builder.lowLevelExpr(.num_is_eq, &.{ size_expr, len_expr }, try self.builder.primitiveType(.bool));
-            body = try self.builder.ifExpr(cond, bucket, body, iter_ty);
+            const size_expr = try self.localExpr(size_local, size_ty);
+            const len_expr = try self.intLiteralExpr(@intCast(len), size_ty);
+            const cond = try self.lowLevelExpr(.num_is_eq, &.{ size_expr, len_expr }, try self.builder.primitiveType(.bool));
+            body = try self.ifExpr(cond, bucket, body, iter_ty);
         }
         return body;
     }
@@ -7630,7 +7789,7 @@ const BodyContext = struct {
             .all => try self.lowerInterpolationLenIfKnown(remaining, ty),
             .for_size => blk: {
                 const unknown_tag = self.monoTagByText(ty, "Unknown");
-                break :blk try self.builder.program.addExpr(.{ .ty = ty, .data = .{ .tag = .{
+                break :blk try self.addExpr(.{ .ty = ty, .data = .{ .tag = .{
                     .name = unknown_tag.name,
                     .payloads = .empty(),
                 } } });
@@ -7648,7 +7807,7 @@ const BodyContext = struct {
         step_ret_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
         const done_tag = self.monoTagByText(step_ret_ty, "Done");
-        const body = try self.builder.program.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
+        const body = try self.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
             .name = done_tag.name,
             .payloads = .empty(),
         } } });
@@ -7669,9 +7828,9 @@ const BodyContext = struct {
         const one_payloads = self.builder.program.types.span(one_tag.payloads);
         if (one_payloads.len != 1) Common.invariant("Iter step One tag did not have one record payload");
         const one_payload = try self.lowerInterpolationOnePayload(one_payloads[0], item_expr, rest_expr);
-        const one_body = try self.builder.program.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
+        const one_body = try self.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
             .name = one_tag.name,
-            .payloads = try self.builder.program.addExprSpan(&[_]Ast.ExprId{one_payload}),
+            .payloads = try self.addExprSpan(&[_]Ast.ExprId{one_payload}),
         } } });
 
         return try self.lowerFieldNamesStepLambda(checked_source_ty, source_expr_id, index, .all, step_fn_ty, one_body);
@@ -7689,38 +7848,38 @@ const BodyContext = struct {
         size_local: Ast.LocalId,
         size_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
-        const field_handle_ty = self.builder.program.exprs.items[@intFromEnum(item_expr)].ty;
-        const item_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), field_handle_ty);
-        const item_local_expr = try self.builder.localExpr(item_local, field_handle_ty);
+        const field_handle_ty = self.exprType(item_expr);
+        const item_local = try self.addLocal(self.builder.symbols.fresh(), field_handle_ty);
+        const item_local_expr = try self.localExpr(item_local, field_handle_ty);
 
         const one_tag = self.monoTagByText(step_ret_ty, "One");
         const one_payloads = self.builder.program.types.span(one_tag.payloads);
         if (one_payloads.len != 1) Common.invariant("Iter step One tag did not have one record payload");
         const one_payload = try self.lowerInterpolationOnePayload(one_payloads[0], item_local_expr, rest_expr);
-        const one_body = try self.builder.program.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
+        const one_body = try self.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
             .name = one_tag.name,
-            .payloads = try self.builder.program.addExprSpan(&[_]Ast.ExprId{one_payload}),
+            .payloads = try self.addExprSpan(&[_]Ast.ExprId{one_payload}),
         } } });
 
         const skip_tag = self.monoTagByText(step_ret_ty, "Skip");
         const skip_payloads = self.builder.program.types.span(skip_tag.payloads);
         if (skip_payloads.len != 1) Common.invariant("Iter step Skip tag did not have one record payload");
         const skip_payload = try self.lowerInterpolationSkipPayload(skip_payloads[0], rest_expr);
-        const skip_body = try self.builder.program.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
+        const skip_body = try self.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
             .name = skip_tag.name,
-            .payloads = try self.builder.program.addExprSpan(&[_]Ast.ExprId{skip_payload}),
+            .payloads = try self.addExprSpan(&[_]Ast.ExprId{skip_payload}),
         } } });
 
         const len_expr = try self.fieldNameLenFromLocal(item_local, field_handle_ty, size_ty);
-        const cond = try self.builder.lowLevelExpr(.num_is_eq, &.{
+        const cond = try self.lowLevelExpr(.num_is_eq, &.{
             len_expr,
-            try self.builder.localExpr(size_local, size_ty),
+            try self.localExpr(size_local, size_ty),
         }, try self.builder.primitiveType(.bool));
         const body = try self.wrapLet(
             item_local,
             field_handle_ty,
             item_expr,
-            try self.builder.ifExpr(cond, one_body, skip_body, step_ret_ty),
+            try self.ifExpr(cond, one_body, skip_body, step_ret_ty),
             step_ret_ty,
         );
         return try self.lowerFieldNamesStepLambda(checked_source_ty, source_expr_id, index, .for_size, step_fn_ty, body);
@@ -7746,9 +7905,9 @@ const BodyContext = struct {
             };
         }
 
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(lowered) },
+            .data = .{ .record = try self.addFieldExprSpan(lowered) },
         });
     }
 
@@ -7763,22 +7922,22 @@ const BodyContext = struct {
         const name_field = self.recordFieldByText(backing_ty, "name");
         if (!self.sameType(name_field.ty, ret_ty)) Common.invariant("Field.name backing name field differed from Str");
 
-        const backing_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), backing_ty);
-        const name_expr = try self.builder.program.addExpr(.{
+        const backing_local = try self.addLocal(self.builder.symbols.fresh(), backing_ty);
+        const name_expr = try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(backing_local, backing_ty),
+                .receiver = try self.localExpr(backing_local, backing_ty),
                 .field = name_field.name,
             } },
         });
-        const field_pat = try self.builder.program.addPat(.{
+        const field_pat = try self.addPat(.{
             .ty = field_ty,
-            .data = .{ .nominal = try self.builder.bindPat(backing_local, backing_ty) },
+            .data = .{ .nominal = try self.bindPat(backing_local, backing_ty) },
         });
         const branch = Ast.Branch{ .pat = field_pat, .body = name_expr };
-        return try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(field_local, field_ty),
-            .branches = try self.builder.program.addBranchSpan(&[_]Ast.Branch{branch}),
+        return try self.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(field_local, field_ty),
+            .branches = try self.addBranchSpan(&[_]Ast.Branch{branch}),
         } } });
     }
 
@@ -7791,15 +7950,15 @@ const BodyContext = struct {
         step_fn_ty: Type.TypeId,
         body: Ast.ExprId,
     ) Allocator.Error!Ast.ExprId {
-        const fn_id = try self.builder.program.addFn(.{
+        const fn_id = try self.addFn(.{
             .fn_def = .{ .checked_generated = self.owner_template },
             .source_fn_ty = checked_source_ty,
             .source_fn_key = generatedFieldNamesIterStepKey(self.current_fn_key, source_expr_id, index, mode),
             .mono_fn_ty = step_fn_ty,
         });
-        return try self.builder.program.addExpr(.{ .ty = step_fn_ty, .data = .{ .lambda = .{
+        return try self.addExpr(.{ .ty = step_fn_ty, .data = .{ .lambda = .{
             .fn_id = fn_id,
-            .args = try self.builder.program.addTypedLocalSpan(&.{}),
+            .args = try self.addTypedLocalSpan(&.{}),
             .body = body,
         } } });
     }
@@ -7815,7 +7974,7 @@ const BodyContext = struct {
         return try self.lowerRecordFieldHandleWithName(
             field_handle_ty,
             try self.builder.stringExpr(field_text, str_ty),
-            try self.builder.intLiteralExpr(@intCast(field_text.len), try self.builder.primitiveType(.u64)),
+            try self.intLiteralExpr(@intCast(field_text.len), try self.builder.primitiveType(.u64)),
             index,
         );
     }
@@ -7847,7 +8006,7 @@ const BodyContext = struct {
                 } else if (Ident.textEql(label, "index")) blk: {
                     saw_index = true;
                     if (!self.typeHasBuiltinOwner(field.ty, .u64)) Common.invariant("Field backing index was not U64");
-                    break :blk try self.builder.intLiteralExpr(@intCast(index), field.ty);
+                    break :blk try self.intLiteralExpr(@intCast(index), field.ty);
                 } else if (Ident.textEql(label, "name_len")) blk: {
                     saw_name_len = true;
                     if (!self.typeHasBuiltinOwner(field.ty, .u64)) Common.invariant("Field backing name_len was not U64");
@@ -7859,11 +8018,11 @@ const BodyContext = struct {
         }
         if (!saw_name or !saw_index or !saw_name_len) Common.invariant("Field backing record did not contain name, index, and name_len");
 
-        const backing_expr = try self.builder.program.addExpr(.{
+        const backing_expr = try self.addExpr(.{
             .ty = backing_ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(lowered) },
+            .data = .{ .record = try self.addFieldExprSpan(lowered) },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = field_handle_ty,
             .data = .{ .nominal = backing_expr },
         });
@@ -8038,7 +8197,7 @@ const BodyContext = struct {
         if (plan.next_capture_id > std.math.maxInt(u32)) Common.invariant("encode_to generated too many captures");
 
         for (fields, 0..) |field, index| {
-            locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
+            locals[index] = try self.addLocal(self.builder.symbols.fresh(), str_ty);
             self.builder.program.setLocalCaptureId(
                 locals[index],
                 self.parserFieldCaptureIdForRecordField(fields, index, base_capture_id),
@@ -8085,7 +8244,7 @@ const BodyContext = struct {
             const capture_id = self.parserFieldCaptureIdForRecordField(fields, index, base_capture_id);
             const node = constGeneratedCaptureNode(fn_value, capture_id) orelse
                 Common.invariant("stored encode_to runtime function was missing a renamed field capture");
-            locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
+            locals[index] = try self.addLocal(self.builder.symbols.fresh(), str_ty);
             self.builder.program.setLocalCaptureId(locals[index], capture_id);
             values[index] = try self.builder.restoreConstNodeAtType(store_view, fn_view, node, str_ty);
         }
@@ -8125,7 +8284,7 @@ const BodyContext = struct {
         if (plan.next_capture_id > std.math.maxInt(u32)) Common.invariant("parser generated too many captures");
 
         for (fields, 0..) |field, index| {
-            locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
+            locals[index] = try self.addLocal(self.builder.symbols.fresh(), str_ty);
             self.builder.program.setLocalCaptureId(
                 locals[index],
                 self.parserFieldCaptureIdForRecordField(fields, index, base_capture_id),
@@ -8303,24 +8462,24 @@ const BodyContext = struct {
             for (inner_fields, precomputed.renamed_field_locals, 0..) |inner_field, renamed_local, field_index| {
                 inner_values[field_index] = .{
                     .name = inner_field.name,
-                    .value = try self.builder.localExpr(renamed_local, str_ty),
+                    .value = try self.localExpr(renamed_local, str_ty),
                 };
             }
 
             outer_values[record_index] = .{
                 .name = backing_field.name,
-                .value = try self.builder.program.addExpr(.{
+                .value = try self.addExpr(.{
                     .ty = backing_field.ty,
-                    .data = .{ .record = try self.builder.program.addFieldExprSpan(inner_values) },
+                    .data = .{ .record = try self.addFieldExprSpan(inner_values) },
                 }),
             };
         }
 
-        const backing_expr = try self.builder.program.addExpr(.{
+        const backing_expr = try self.addExpr(.{
             .ty = spec_backing_ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(outer_values) },
+            .data = .{ .record = try self.addFieldExprSpan(outer_values) },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = spec_ty,
             .data = .{ .nominal = backing_expr },
         });
@@ -8359,10 +8518,10 @@ const BodyContext = struct {
                 self.allocator.free(values);
             };
 
-            const record_expr = try self.builder.program.addExpr(.{
+            const record_expr = try self.addExpr(.{
                 .ty = backing_field.ty,
                 .data = .{ .field_access = .{
-                    .receiver = try self.builder.localExpr(spec_backing_local, spec_backing_ty),
+                    .receiver = try self.localExpr(spec_backing_local, spec_backing_ty),
                     .field = backing_field.name,
                 } },
             });
@@ -8371,8 +8530,8 @@ const BodyContext = struct {
                 if (!self.sameType(field.ty, str_ty)) {
                     Common.invariant("generated tag-union spec field name value was not Str");
                 }
-                locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
-                values[index] = try self.builder.program.addExpr(.{
+                locals[index] = try self.addLocal(self.builder.symbols.fresh(), str_ty);
+                values[index] = try self.addExpr(.{
                     .ty = str_ty,
                     .data = .{ .field_access = .{
                         .receiver = record_expr,
@@ -8425,7 +8584,7 @@ const BodyContext = struct {
             const capture_id = self.parserFieldCaptureIdForRecordField(fields, index, base_capture_id);
             const node = constGeneratedCaptureNode(fn_value, capture_id) orelse
                 Common.invariant("stored parser runtime function was missing a renamed field capture");
-            locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
+            locals[index] = try self.addLocal(self.builder.symbols.fresh(), str_ty);
             self.builder.program.setLocalCaptureId(locals[index], capture_id);
             values[index] = try self.builder.restoreConstNodeAtType(store_view, fn_view, node, str_ty);
             lengths[index] = constStrNodeByteLen(store_view, node);
@@ -8495,11 +8654,11 @@ const BodyContext = struct {
             if (!self.sameType(parse_arg_tys[1], state_ty)) Common.invariant("parser target state type differed from input state type");
 
             const parse_args = [_]Ast.ExprId{ encoding_expr, state_expr };
-            return try self.builder.program.addExpr(.{
+            return try self.addExpr(.{
                 .ty = ret_ty,
                 .data = .{ .call_proc = .{
                     .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(parse_lookup, parse_mono_ty)),
-                    .args = try self.builder.program.addExprSpan(&parse_args),
+                    .args = try self.addExprSpan(&parse_args),
                 } },
             });
         }
@@ -8534,15 +8693,15 @@ const BodyContext = struct {
             const spec_backing_ty = self.builder.namedBackingType(spec_ty) orelse
                 Common.invariant("generated tag-union spec had no backing type");
             break :blk try self.lowerParseTagUnionSpecValue(spec_ty, spec_backing_ty, record_shapes, plan);
-        } else try self.builder.program.addExpr(.{
+        } else try self.addExpr(.{
             .ty = spec_ty,
             .data = .unit,
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, final_spec_expr, state_expr }),
+                .args = try self.addExprSpan(&[_]Ast.ExprId{ encoding_expr, final_spec_expr, state_expr }),
             } },
         });
     }
@@ -8580,9 +8739,9 @@ const BodyContext = struct {
         const initial_presence_values = try self.allocator.alloc(Ast.ExprId, presence_word_count);
         defer self.allocator.free(initial_presence_values);
         for (presence_locals, 0..) |*local, index| {
-            local.* = try self.builder.program.addLocal(self.builder.symbols.fresh(), u64_ty);
+            local.* = try self.addLocal(self.builder.symbols.fresh(), u64_ty);
             presence_tys[index] = u64_ty;
-            initial_presence_values[index] = try self.builder.intLiteralExpr(0, u64_ty);
+            initial_presence_values[index] = try self.intLiteralExpr(0, u64_ty);
         }
 
         const payload_locals = try self.allocator.alloc(Ast.LocalId, record_fields.len);
@@ -8593,7 +8752,7 @@ const BodyContext = struct {
         defer self.allocator.free(initial_payload_values);
         for (record_fields, 0..) |field, index| {
             payload_tys[index] = field.ty;
-            payload_locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), field.ty);
+            payload_locals[index] = try self.addLocal(self.builder.symbols.fresh(), field.ty);
             initial_payload_values[index] = try self.uninitializedPayloadExpr(
                 field.ty,
                 presence_locals[recordPresenceWordIndex(index)],
@@ -8652,7 +8811,7 @@ const BodyContext = struct {
             owned_renamed_field_values = values;
 
             for (record_fields, 0..) |field, index| {
-                locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
+                locals[index] = try self.addLocal(self.builder.symbols.fresh(), str_ty);
                 values[index] = try self.renamedRecordFieldNameExpr(encoding_expr, encoding_ty, field, str_ty);
             }
 
@@ -8667,22 +8826,22 @@ const BodyContext = struct {
             break :blk texts;
         } else null;
 
-        const cursor_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
+        const cursor_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
         const fields_expr = try self.lowerFieldNamesValue(fields_ty, fields_backing_ty, field_handle_ty, renamed_field_locals, renamed_field_lengths);
-        const fields_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), fields_ty);
-        const step_expr = try self.builder.program.addExpr(.{
+        const fields_local = try self.addLocal(self.builder.symbols.fresh(), fields_ty);
+        const step_expr = try self.addExpr(.{
             .ty = step_try_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(parse_lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{
+                .args = try self.addExprSpan(&[_]Ast.ExprId{
                     encoding_expr,
-                    try self.builder.localExpr(fields_local, fields_ty),
-                    try self.builder.localExpr(cursor_local, state_ty),
+                    try self.localExpr(fields_local, fields_ty),
+                    try self.localExpr(cursor_local, state_ty),
                 }),
             } },
         });
 
-        const event_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), event_ty);
+        const event_local = try self.addLocal(self.builder.symbols.fresh(), event_ty);
         const event_body = try self.lowerParseRecordEvent(
             shape_ty,
             encoding_expr,
@@ -8720,9 +8879,9 @@ const BodyContext = struct {
         initial_values[0] = state_expr;
         @memcpy(initial_values[1 .. 1 + initial_payload_values.len], initial_payload_values);
         @memcpy(initial_values[1 + initial_payload_values.len ..], initial_presence_values);
-        var loop_expr = try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .loop_ = .{
-            .params = try self.builder.program.addTypedLocalSpan(params),
-            .initial_values = try self.builder.program.addExprSpan(initial_values),
+        var loop_expr = try self.addExpr(.{ .ty = ret_ty, .data = .{ .loop_ = .{
+            .params = try self.addTypedLocalSpan(params),
+            .initial_values = try self.addExprSpan(initial_values),
             .body = loop_body,
         } } });
         loop_expr = try self.wrapLet(fields_local, fields_ty, fields_expr, loop_expr, ret_ty);
@@ -8762,11 +8921,11 @@ const BodyContext = struct {
         const try_field_payload_ty = self.singleTagPayloadType(try_field_tag, "record parse TryField event");
         const try_field_caseless_payload_ty = self.singleTagPayloadType(try_field_caseless_tag, "record parse TryFieldCaseless event");
 
-        const continue_payload_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), continue_payload_ty);
-        const continue_payload_pat = try self.builder.bindPat(continue_payload_local, continue_payload_ty);
-        const continue_pat = try self.builder.program.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
+        const continue_payload_local = try self.addLocal(self.builder.symbols.fresh(), continue_payload_ty);
+        const continue_payload_pat = try self.bindPat(continue_payload_local, continue_payload_ty);
+        const continue_pat = try self.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
             .name = continue_tag.name,
-            .payloads = try self.builder.program.addPatSpan(&[_]Ast.PatId{continue_payload_pat}),
+            .payloads = try self.addPatSpan(&[_]Ast.PatId{continue_payload_pat}),
         } } });
         const continue_body = try self.lowerParseRecordContinueEvent(
             ret_ty,
@@ -8775,11 +8934,11 @@ const BodyContext = struct {
             continue_payload_ty,
         );
 
-        const done_payload_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), done_payload_ty);
-        const done_payload_pat = try self.builder.bindPat(done_payload_local, done_payload_ty);
-        const done_pat = try self.builder.program.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
+        const done_payload_local = try self.addLocal(self.builder.symbols.fresh(), done_payload_ty);
+        const done_payload_pat = try self.bindPat(done_payload_local, done_payload_ty);
+        const done_pat = try self.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
             .name = done_tag.name,
-            .payloads = try self.builder.program.addPatSpan(&[_]Ast.PatId{done_payload_pat}),
+            .payloads = try self.addPatSpan(&[_]Ast.PatId{done_payload_pat}),
         } } });
         const done_body = try self.lowerParseRecordDoneEvent(
             shape_ty,
@@ -8793,11 +8952,11 @@ const BodyContext = struct {
             done_payload_ty,
         );
 
-        const field_payload_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), field_payload_ty);
-        const field_payload_pat = try self.builder.bindPat(field_payload_local, field_payload_ty);
-        const field_pat = try self.builder.program.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
+        const field_payload_local = try self.addLocal(self.builder.symbols.fresh(), field_payload_ty);
+        const field_payload_pat = try self.bindPat(field_payload_local, field_payload_ty);
+        const field_pat = try self.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
             .name = field_tag.name,
-            .payloads = try self.builder.program.addPatSpan(&[_]Ast.PatId{field_payload_pat}),
+            .payloads = try self.addPatSpan(&[_]Ast.PatId{field_payload_pat}),
         } } });
         const field_body = try self.lowerParseRecordDirectFieldEvent(
             shape_ty,
@@ -8811,11 +8970,11 @@ const BodyContext = struct {
             field_payload_ty,
         );
 
-        const try_field_payload_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), try_field_payload_ty);
-        const try_field_payload_pat = try self.builder.bindPat(try_field_payload_local, try_field_payload_ty);
-        const try_field_pat = try self.builder.program.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
+        const try_field_payload_local = try self.addLocal(self.builder.symbols.fresh(), try_field_payload_ty);
+        const try_field_payload_pat = try self.bindPat(try_field_payload_local, try_field_payload_ty);
+        const try_field_pat = try self.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
             .name = try_field_tag.name,
-            .payloads = try self.builder.program.addPatSpan(&[_]Ast.PatId{try_field_payload_pat}),
+            .payloads = try self.addPatSpan(&[_]Ast.PatId{try_field_payload_pat}),
         } } });
         const try_field_body = try self.lowerParseRecordNamedFieldEvent(
             shape_ty,
@@ -8833,11 +8992,11 @@ const BodyContext = struct {
             .exact,
         );
 
-        const try_field_caseless_payload_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), try_field_caseless_payload_ty);
-        const try_field_caseless_payload_pat = try self.builder.bindPat(try_field_caseless_payload_local, try_field_caseless_payload_ty);
-        const try_field_caseless_pat = try self.builder.program.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
+        const try_field_caseless_payload_local = try self.addLocal(self.builder.symbols.fresh(), try_field_caseless_payload_ty);
+        const try_field_caseless_payload_pat = try self.bindPat(try_field_caseless_payload_local, try_field_caseless_payload_ty);
+        const try_field_caseless_pat = try self.addPat(.{ .ty = event_ty, .data = .{ .tag = .{
             .name = try_field_caseless_tag.name,
-            .payloads = try self.builder.program.addPatSpan(&[_]Ast.PatId{try_field_caseless_payload_pat}),
+            .payloads = try self.addPatSpan(&[_]Ast.PatId{try_field_caseless_payload_pat}),
         } } });
         const try_field_caseless_body = try self.lowerParseRecordNamedFieldEvent(
             shape_ty,
@@ -8862,9 +9021,9 @@ const BodyContext = struct {
             .{ .pat = try_field_pat, .body = try_field_body },
             .{ .pat = try_field_caseless_pat, .body = try_field_caseless_body },
         };
-        return try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(event_local, event_ty),
-            .branches = try self.builder.program.addBranchSpan(&branches),
+        return try self.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(event_local, event_ty),
+            .branches = try self.addBranchSpan(&branches),
         } } });
     }
 
@@ -8899,7 +9058,7 @@ const BodyContext = struct {
         var index = matched_bodies.len;
         while (index > 0) {
             index -= 1;
-            const renamed_field_expr = try self.builder.localExpr(renamed_field_locals[index], key_ty);
+            const renamed_field_expr = try self.localExpr(renamed_field_locals[index], key_ty);
             const cond = try self.recordFieldNameMatch(
                 key_local,
                 key_ty,
@@ -8907,7 +9066,7 @@ const BodyContext = struct {
                 if (renamed_field_texts) |texts| texts[index] else null,
                 mode,
             );
-            body = try self.builder.ifExpr(cond, matched_bodies[index], body, ret_ty);
+            body = try self.ifExpr(cond, matched_bodies[index], body, ret_ty);
         }
         return body;
     }
@@ -8926,7 +9085,7 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const u64_ty = try self.builder.primitiveType(.u64);
         const bool_ty = try self.builder.primitiveType(.bool);
-        const key_len_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), u64_ty);
+        const key_len_local = try self.addLocal(self.builder.symbols.fresh(), u64_ty);
 
         var body = unknown_body;
         var index = matched_bodies.len;
@@ -8945,7 +9104,7 @@ const BodyContext = struct {
                 field_index -= 1;
                 if (renamed_field_lengths[field_index] != length) continue;
 
-                const renamed_field_expr = try self.builder.localExpr(renamed_field_locals[field_index], key_ty);
+                const renamed_field_expr = try self.localExpr(renamed_field_locals[field_index], key_ty);
                 if (static_lane) |lane| {
                     const texts = renamed_field_texts orelse Common.invariant("static field lane requested without field text");
                     const field_text = texts[field_index];
@@ -8962,9 +9121,9 @@ const BodyContext = struct {
                             .exact => try self.recordFieldNameStaticSmallExactMatch(key_local, key_ty, field_text),
                             .caseless => try self.recordFieldNameStaticSmallCaselessMatch(key_local, key_ty, field_text),
                         };
-                        break :blk try self.builder.ifExpr(full_cond, matched_bodies[field_index], group_body, ret_ty);
+                        break :blk try self.ifExpr(full_cond, matched_bodies[field_index], group_body, ret_ty);
                     };
-                    group_body = try self.builder.ifExpr(probe, matched_or_next, group_body, ret_ty);
+                    group_body = try self.ifExpr(probe, matched_or_next, group_body, ret_ty);
                 } else {
                     const cond = try self.recordFieldNameMatch(
                         key_local,
@@ -8973,18 +9132,18 @@ const BodyContext = struct {
                         if (renamed_field_texts) |texts| texts[field_index] else null,
                         mode,
                     );
-                    group_body = try self.builder.ifExpr(cond, matched_bodies[field_index], group_body, ret_ty);
+                    group_body = try self.ifExpr(cond, matched_bodies[field_index], group_body, ret_ty);
                 }
             }
 
-            const key_len_expr = try self.builder.localExpr(key_len_local, u64_ty);
-            const length_expr = try self.builder.intLiteralExpr(length, u64_ty);
-            const length_matches = try self.builder.lowLevelExpr(.num_is_eq, &.{ key_len_expr, length_expr }, bool_ty);
-            body = try self.builder.ifExpr(length_matches, group_body, body, ret_ty);
+            const key_len_expr = try self.localExpr(key_len_local, u64_ty);
+            const length_expr = try self.intLiteralExpr(length, u64_ty);
+            const length_matches = try self.lowLevelExpr(.num_is_eq, &.{ key_len_expr, length_expr }, bool_ty);
+            body = try self.ifExpr(length_matches, group_body, body, ret_ty);
         }
 
-        const key_expr = try self.builder.localExpr(key_local, key_ty);
-        const key_len_expr = try self.builder.lowLevelExpr(.str_count_utf8_bytes, &.{key_expr}, u64_ty);
+        const key_expr = try self.localExpr(key_local, key_ty);
+        const key_len_expr = try self.lowLevelExpr(.str_count_utf8_bytes, &.{key_expr}, u64_ty);
         return try self.wrapLet(key_len_local, u64_ty, key_len_expr, body, ret_ty);
     }
 
@@ -9001,11 +9160,11 @@ const BodyContext = struct {
         // writes must happen before the presence word marks them initialized.
         const payload_offset = 1;
         for (record_slots.payload_locals, record_slots.payload_tys, 0..) |local, ty, index| {
-            values[payload_offset + index] = try self.builder.localExpr(local, ty);
+            values[payload_offset + index] = try self.localExpr(local, ty);
         }
         const presence_offset = payload_offset + record_slots.payload_locals.len;
         for (record_slots.presence_locals, record_slots.presence_tys, 0..) |local, ty, index| {
-            values[presence_offset + index] = try self.builder.localExpr(local, ty);
+            values[presence_offset + index] = try self.localExpr(local, ty);
         }
         return try self.continueWith(ret_ty, values);
     }
@@ -9031,15 +9190,15 @@ const BodyContext = struct {
         for (record_slots.payload_locals, record_slots.payload_tys, 0..) |local, ty, index| {
             values[payload_offset + index] = if (index == replace_index) blk: {
                 if (!self.sameType(ty, field_value_ty)) Common.invariant("record parser field payload type differed from slot payload type");
-                break :blk try self.builder.localExpr(field_value_local, field_value_ty);
-            } else try self.builder.localExpr(local, ty);
+                break :blk try self.localExpr(field_value_local, field_value_ty);
+            } else try self.localExpr(local, ty);
         }
         const presence_offset = payload_offset + record_slots.payload_locals.len;
         for (record_slots.presence_locals, record_slots.presence_tys, 0..) |local, ty, index| {
             values[presence_offset + index] = if (index == presence_word)
                 try self.recordPresenceWithBit(local, ty, presence_mask)
             else
-                try self.builder.localExpr(local, ty);
+                try self.localExpr(local, ty);
         }
         return try self.continueWith(ret_ty, values);
     }
@@ -9062,12 +9221,12 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const str_ty = try self.builder.primitiveType(.str);
         const key_expr = try self.recordPayloadFieldAccess(payload_local, payload_ty, "name");
-        if (!self.sameType(self.builder.program.exprs.items[@intFromEnum(key_expr)].ty, str_ty)) {
+        if (!self.sameType(self.exprType(key_expr), str_ty)) {
             Common.invariant("record named-field event key was not Str");
         }
         const rest_expr = try self.recordPayloadFieldAccess(payload_local, payload_ty, "rest");
-        const key_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
-        const rest_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
+        const key_local = try self.addLocal(self.builder.symbols.fresh(), str_ty);
+        const rest_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
         const body = try self.lowerRecordNamedFieldDispatchBody(
             shape_ty,
             encoding_expr,
@@ -9123,10 +9282,10 @@ const BodyContext = struct {
             state_ty,
             renamed_field_locals,
         );
-        const record_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), shape_ty);
+        const record_local = try self.addLocal(self.builder.symbols.fresh(), shape_ty);
         const ok_body = try self.parseResultOk(
             ret_ty,
-            try self.builder.localExpr(record_local, shape_ty),
+            try self.localExpr(record_local, shape_ty),
             rest_expr,
             state_ty,
         );
@@ -9147,9 +9306,9 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const rest_expr = try self.recordPayloadFieldAccess(field_payload_local, field_payload_ty, "rest");
         const field_expr = try self.recordPayloadFieldAccess(field_payload_local, field_payload_ty, "field");
-        const field_ty = self.builder.program.exprs.items[@intFromEnum(field_expr)].ty;
-        const field_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), field_ty);
-        const rest_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
+        const field_ty = self.exprType(field_expr);
+        const field_local = try self.addLocal(self.builder.symbols.fresh(), field_ty);
+        const rest_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
         const body = try self.lowerRecordDirectFieldDispatchBody(
             shape_ty,
             encoding_expr,
@@ -9198,7 +9357,7 @@ const BodyContext = struct {
         }
 
         const u64_ty = try self.builder.primitiveType(.u64);
-        const index_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), u64_ty);
+        const index_local = try self.addLocal(self.builder.symbols.fresh(), u64_ty);
         var body = try self.lowerParseMatchedRecordFieldNext(
             fields[fields.len - 1],
             fields.len - 1,
@@ -9224,10 +9383,10 @@ const BodyContext = struct {
                 rest_local,
                 ret_ty,
             );
-            const index_expr = try self.builder.localExpr(index_local, u64_ty);
-            const literal_expr = try self.builder.intLiteralExpr(@intCast(index), u64_ty);
-            const cond = try self.builder.lowLevelExpr(.num_is_eq, &.{ index_expr, literal_expr }, try self.builder.primitiveType(.bool));
-            body = try self.builder.ifExpr(cond, matched, body, ret_ty);
+            const index_expr = try self.localExpr(index_local, u64_ty);
+            const literal_expr = try self.intLiteralExpr(@intCast(index), u64_ty);
+            const cond = try self.lowLevelExpr(.num_is_eq, &.{ index_expr, literal_expr }, try self.builder.primitiveType(.bool));
+            body = try self.ifExpr(cond, matched, body, ret_ty);
         }
 
         const handle_index = try self.fieldHandleIndexExpr(field_local, field_ty, u64_ty);
@@ -9323,17 +9482,17 @@ const BodyContext = struct {
         if (!self.sameType(arg_tys[0], encoding_ty)) Common.invariant("skip_record_field encoding type differed from record encoding type");
         if (!self.sameType(arg_tys[1], state_ty)) Common.invariant("skip_record_field state type differed from record state type");
 
-        const skip_expr = try self.builder.program.addExpr(.{
+        const skip_expr = try self.addExpr(.{
             .ty = skip_try_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, try self.builder.localExpr(rest_local, state_ty) }),
+                .args = try self.addExprSpan(&[_]Ast.ExprId{ encoding_expr, try self.localExpr(rest_local, state_ty) }),
             } },
         });
-        const skipped_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
+        const skipped_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
         const ok_body = try self.continueRecordLoopWithCurrentSlots(
             ret_ty,
-            try self.builder.localExpr(skipped_local, state_ty),
+            try self.localExpr(skipped_local, state_ty),
             record_slots,
         );
         return try self.sequenceTry(skip_expr, skip_try_ty, skipped_local, ok_body, ret_ty);
@@ -9359,21 +9518,21 @@ const BodyContext = struct {
             field_parse_ty,
             encoding_expr,
             encoding_ty,
-            try self.builder.localExpr(rest_local, state_ty),
+            try self.localExpr(rest_local, state_ty),
             state_ty,
             parse_ret_ty,
             precomputed_plan,
         );
         const value_name = try self.builder.program.names.internRecordFieldLabel("value");
         const rest_name = try self.builder.program.names.internRecordFieldLabel("rest");
-        const parsed_value_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), field_parse_ty);
+        const parsed_value_local = try self.addLocal(self.builder.symbols.fresh(), field_parse_ty);
         const field_value = if (self.tryOptionalInfo(field.ty) != null)
-            try self.tryOk(field.ty, try self.builder.localExpr(parsed_value_local, field_parse_ty))
+            try self.tryOk(field.ty, try self.localExpr(parsed_value_local, field_parse_ty))
         else
-            try self.builder.localExpr(parsed_value_local, field_parse_ty);
-        const field_value_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), field.ty);
-        const parsed_rest_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
-        const ok_body = try self.continueRecordLoopWithUpdatedField(ret_ty, try self.builder.localExpr(parsed_rest_local, state_ty), record_slots, field_value_local, field.ty, field_index);
+            try self.localExpr(parsed_value_local, field_parse_ty);
+        const field_value_local = try self.addLocal(self.builder.symbols.fresh(), field.ty);
+        const parsed_rest_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
+        const ok_body = try self.continueRecordLoopWithUpdatedField(ret_ty, try self.localExpr(parsed_rest_local, state_ty), record_slots, field_value_local, field.ty, field_index);
         const with_field_value = try self.wrapLet(field_value_local, field.ty, field_value, ok_body, ret_ty);
         return try self.sequenceTryRecord(parse_expr, parse_ret_ty, parsed_value_local, value_name, parsed_rest_local, rest_name, with_field_value, ret_ty);
     }
@@ -9430,18 +9589,18 @@ const BodyContext = struct {
         }
         if (!found_value) Common.invariant("custom parser result was missing value field");
 
-        const parser_expr = try self.builder.program.addExpr(.{
+        const parser_expr = try self.addExpr(.{
             .ty = runtime_fn_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{encoding_expr}),
+                .args = try self.addExprSpan(&[_]Ast.ExprId{encoding_expr}),
             } },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .call_value = .{
                 .callee = parser_expr,
-                .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{state_expr}),
+                .args = try self.addExprSpan(&[_]Ast.ExprId{state_expr}),
             } },
         });
     }
@@ -9468,16 +9627,16 @@ const BodyContext = struct {
         rest_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
         const try_info = self.tryInfo(try_ty);
-        const value_ty = self.builder.program.exprs.items[@intFromEnum(value_expr)].ty;
+        const value_ty = self.exprType(value_expr);
         const rest_name = try self.builder.program.names.internRecordFieldLabel("rest");
         const value_name = try self.builder.program.names.internRecordFieldLabel("value");
         const fields = [_]Ast.FieldExpr{
             .{ .name = rest_name, .value = rest_expr },
             .{ .name = value_name, .value = value_expr },
         };
-        const record_expr = try self.builder.program.addExpr(.{
+        const record_expr = try self.addExpr(.{
             .ty = try_info.ok_ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(&fields) },
+            .data = .{ .record = try self.addFieldExprSpan(&fields) },
         });
         const parse_ok_ty = try self.parseResultOkType(value_ty, rest_ty);
         if (!self.sameType(try_info.ok_ty, parse_ok_ty)) Common.invariant("parse result Ok type differed from generated parse result record");
@@ -9485,7 +9644,7 @@ const BodyContext = struct {
     }
 
     fn uninitializedPayloadExpr(self: *BodyContext, ty: Type.TypeId, condition_local: Ast.LocalId, condition_mask: u64) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
             .data = .{ .uninitialized_payload = .{ .condition = condition_local, .mask = condition_mask } },
         });
@@ -9497,9 +9656,9 @@ const BodyContext = struct {
         presence_ty: Type.TypeId,
         mask: u64,
     ) Allocator.Error!Ast.ExprId {
-        const current = try self.builder.localExpr(presence_local, presence_ty);
-        const bit = try self.builder.intLiteralExpr(mask, presence_ty);
-        return try self.builder.lowLevelExpr(.num_bitwise_or, &.{ current, bit }, presence_ty);
+        const current = try self.localExpr(presence_local, presence_ty);
+        const bit = try self.intLiteralExpr(mask, presence_ty);
+        return try self.lowLevelExpr(.num_bitwise_or, &.{ current, bit }, presence_ty);
     }
 
     fn parseRecordFieldEventType(
@@ -9585,10 +9744,10 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const field_name = try self.builder.program.names.internRecordFieldLabel(field_text);
         const field_ty = self.builder.recordFieldType(payload_ty, field_name);
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = field_ty,
             .data = .{ .field_access = .{
-                .receiver = try self.builder.localExpr(payload_local, payload_ty),
+                .receiver = try self.localExpr(payload_local, payload_ty),
                 .field = field_name,
             } },
         });
@@ -9617,7 +9776,7 @@ const BodyContext = struct {
         if (record_fields.len != record_slots.fieldCount()) Common.invariant("record parse state arity did not match finish record field count");
         if (record_fields.len != renamed_field_locals.len) Common.invariant("record parse renamed field arity did not match finish record field count");
 
-        const rest_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
+        const rest_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
 
         const out_fields = try self.allocator.alloc(Ast.FieldExpr, record_fields.len);
         defer self.allocator.free(out_fields);
@@ -9630,12 +9789,12 @@ const BodyContext = struct {
         const field_locals = try self.allocator.alloc(Ast.LocalId, record_fields.len);
         defer self.allocator.free(field_locals);
         for (record_fields, 0..) |field, index| {
-            field_locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), field.ty);
+            field_locals[index] = try self.addLocal(self.builder.symbols.fresh(), field.ty);
             if (self.tryOptionalInfo(field.ty) == null) {
                 const field_try_ty = try self.tryTypeLike(ret_ty, field.ty, ret_info.err_ty);
                 field_try_tys[index] = field_try_ty;
                 const presence_word = recordPresenceWordIndex(index);
-                const is_present = try self.builder.localExpr(record_slots.presence_locals[presence_word], record_slots.presence_tys[presence_word]);
+                const is_present = try self.localExpr(record_slots.presence_locals[presence_word], record_slots.presence_tys[presence_word]);
                 field_tries[index] = try self.parseRecordFieldFromPresencePayload(
                     is_present,
                     recordPresenceMask(index),
@@ -9652,13 +9811,13 @@ const BodyContext = struct {
             }
             out_fields[index] = .{
                 .name = field.name,
-                .value = try self.builder.localExpr(field_locals[index], field.ty),
+                .value = try self.localExpr(field_locals[index], field.ty),
             };
         }
 
-        const record_expr = try self.builder.program.addExpr(.{
+        const record_expr = try self.addExpr(.{
             .ty = ret_info.ok_ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(out_fields) },
+            .data = .{ .record = try self.addFieldExprSpan(out_fields) },
         });
         var body = try self.tryOk(ret_ty, record_expr);
         var field_index = record_fields.len;
@@ -9729,16 +9888,16 @@ const BodyContext = struct {
         const state_ty = self.builder.recordFieldType(options_ty, try self.builder.program.names.internRecordFieldLabel("state"));
         const missing_ty = self.builder.recordFieldType(options_ty, try self.builder.program.names.internRecordFieldLabel("missing"));
 
-        const options_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), options_ty);
+        const options_local = try self.addLocal(self.builder.symbols.fresh(), options_ty);
         const key_value = try self.recordPayloadFieldAccess(options_local, options_ty, "tag");
         const encoding_value = try self.recordPayloadFieldAccess(options_local, options_ty, "encoding");
         const slot_value = try self.recordPayloadFieldAccess(options_local, options_ty, "state");
         const missing_value = try self.recordPayloadFieldAccess(options_local, options_ty, "missing");
 
-        const key_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), key_ty);
-        const encoding_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), encoding_ty);
-        const slot_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
-        const missing_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), missing_ty);
+        const key_local = try self.addLocal(self.builder.symbols.fresh(), key_ty);
+        const encoding_local = try self.addLocal(self.builder.symbols.fresh(), encoding_ty);
+        const slot_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
+        const missing_local = try self.addLocal(self.builder.symbols.fresh(), missing_ty);
         const tags = try self.allocator.dupe(Type.Tag, self.builder.program.types.tagSpan(tag_span));
         defer self.allocator.free(tags);
 
@@ -9749,11 +9908,11 @@ const BodyContext = struct {
         else
             null;
         const spec_local = if (maybe_spec_backing_ty != null)
-            try self.builder.program.addLocal(self.builder.symbols.fresh(), spec_ty)
+            try self.addLocal(self.builder.symbols.fresh(), spec_ty)
         else
             null;
         const spec_backing_local = if (maybe_spec_backing_ty) |spec_backing_ty| blk: {
-            const local = try self.builder.program.addLocal(self.builder.symbols.fresh(), spec_backing_ty);
+            const local = try self.addLocal(self.builder.symbols.fresh(), spec_backing_ty);
             try self.buildParserPrecomputedPlanFromTagUnionSpec(&precomputed_plan, local, spec_backing_ty, value_ty);
             break :blk local;
         } else null;
@@ -9773,7 +9932,7 @@ const BodyContext = struct {
                 if (maybe_spec_backing_ty != null) &precomputed_plan else null,
             );
             const cond = try self.parseTagExactMatch(key_local, key_ty, tags[index]);
-            body = try self.builder.ifExpr(cond, tag_expr, body, ret_ty);
+            body = try self.ifExpr(cond, tag_expr, body, ret_ty);
         }
 
         body = try self.wrapLet(missing_local, missing_ty, missing_value, body, ret_ty);
@@ -9789,14 +9948,14 @@ const BodyContext = struct {
                 body = try self.wrapLet(capture.local, try self.builder.primitiveType(.str), capture.value, body, ret_ty);
             }
             const backing_local = spec_backing_local orelse Common.invariant("generated tag-union spec backing local was missing");
-            const spec_pat = try self.builder.program.addPat(.{
+            const spec_pat = try self.addPat(.{
                 .ty = spec_ty,
-                .data = .{ .nominal = try self.builder.bindPat(backing_local, spec_backing_ty) },
+                .data = .{ .nominal = try self.bindPat(backing_local, spec_backing_ty) },
             });
             const branch = Ast.Branch{ .pat = spec_pat, .body = body };
-            const matched = try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
-                .scrutinee = try self.builder.localExpr(spec_local orelse Common.invariant("generated tag-union spec local was missing"), spec_ty),
-                .branches = try self.builder.program.addBranchSpan(&[_]Ast.Branch{branch}),
+            const matched = try self.addExpr(.{ .ty = ret_ty, .data = .{ .match_ = .{
+                .scrutinee = try self.localExpr(spec_local orelse Common.invariant("generated tag-union spec local was missing"), spec_ty),
+                .branches = try self.addBranchSpan(&[_]Ast.Branch{branch}),
             } } });
             return try self.wrapLet(spec_local orelse Common.invariant("generated tag-union spec local was missing"), spec_ty, spec_value, matched, ret_ty);
         }
@@ -9829,23 +9988,23 @@ const BodyContext = struct {
         for (payload_tys, 0..) |payload_ty, index| {
             payload_parse_ok_tys[index] = try self.parseResultOkType(payload_ty, slot_ty);
             payload_parse_ret_tys[index] = try self.tryTypeLike(ret_ty, payload_parse_ok_tys[index], ret_info.err_ty);
-            payload_parse_locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), payload_parse_ok_tys[index]);
-            payloads[index] = try self.builder.program.addExpr(.{
+            payload_parse_locals[index] = try self.addLocal(self.builder.symbols.fresh(), payload_parse_ok_tys[index]);
+            payloads[index] = try self.addExpr(.{
                 .ty = payload_ty,
                 .data = .{ .field_access = .{
-                    .receiver = try self.builder.localExpr(payload_parse_locals[index], payload_parse_ok_tys[index]),
+                    .receiver = try self.localExpr(payload_parse_locals[index], payload_parse_ok_tys[index]),
                     .field = value_name,
                 } },
             });
         }
         const tag_expr = try self.tagUnionValue(union_ty, tag, payloads);
         const final_rest_expr = if (payload_tys.len == 0)
-            try self.builder.localExpr(slot_local, slot_ty)
+            try self.localExpr(slot_local, slot_ty)
         else
-            try self.builder.program.addExpr(.{
+            try self.addExpr(.{
                 .ty = slot_ty,
                 .data = .{ .field_access = .{
-                    .receiver = try self.builder.localExpr(payload_parse_locals[payload_tys.len - 1], payload_parse_ok_tys[payload_tys.len - 1]),
+                    .receiver = try self.localExpr(payload_parse_locals[payload_tys.len - 1], payload_parse_ok_tys[payload_tys.len - 1]),
                     .field = rest_name,
                 } },
             });
@@ -9854,18 +10013,18 @@ const BodyContext = struct {
         while (index > 0) {
             index -= 1;
             const slot_expr = if (index == 0)
-                try self.builder.localExpr(slot_local, slot_ty)
+                try self.localExpr(slot_local, slot_ty)
             else
-                try self.builder.program.addExpr(.{
+                try self.addExpr(.{
                     .ty = slot_ty,
                     .data = .{ .field_access = .{
-                        .receiver = try self.builder.localExpr(payload_parse_locals[index - 1], payload_parse_ok_tys[index - 1]),
+                        .receiver = try self.localExpr(payload_parse_locals[index - 1], payload_parse_ok_tys[index - 1]),
                         .field = rest_name,
                     } },
                 });
             const payload_parse = try self.lowerParseResultFromState(
                 payload_tys[index],
-                try self.builder.localExpr(encoding_local, encoding_ty),
+                try self.localExpr(encoding_local, encoding_ty),
                 encoding_ty,
                 slot_expr,
                 slot_ty,
@@ -9885,15 +10044,15 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const backing_ty = self.builder.namedBackingType(ret_ty);
         const tag_ty = backing_ty orelse ret_ty;
-        const backing_expr = try self.builder.program.addExpr(.{
+        const backing_expr = try self.addExpr(.{
             .ty = tag_ty,
             .data = .{ .tag = .{
                 .name = tag.name,
-                .payloads = try self.builder.program.addExprSpan(payloads),
+                .payloads = try self.addExprSpan(payloads),
             } },
         });
         if (backing_ty == null) return backing_expr;
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .nominal = backing_expr },
         });
@@ -9905,7 +10064,7 @@ const BodyContext = struct {
         missing_local: Ast.LocalId,
         missing_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
-        return try self.tryErr(ret_ty, try self.builder.localExpr(missing_local, missing_ty));
+        return try self.tryErr(ret_ty, try self.localExpr(missing_local, missing_ty));
     }
 
     fn parseTagExactMatch(
@@ -9917,8 +10076,8 @@ const BodyContext = struct {
         if (!self.typeHasBuiltinOwner(key_ty, .str)) Common.invariant("ParseTagUnionSpec.parse key was not Str");
         const tag_text = self.builder.program.names.tagLabelText(tag.name);
         const tag_expr = try self.builder.stringExpr(tag_text, key_ty);
-        const key_expr = try self.builder.localExpr(key_local, key_ty);
-        return try self.builder.lowLevelExpr(.str_is_eq, &.{ key_expr, tag_expr }, try self.builder.primitiveType(.bool));
+        const key_expr = try self.localExpr(key_local, key_ty);
+        return try self.lowLevelExpr(.str_is_eq, &.{ key_expr, tag_expr }, try self.builder.primitiveType(.bool));
     }
 
     fn recordFieldNameExactMatch(
@@ -9927,8 +10086,8 @@ const BodyContext = struct {
         key_ty: Type.TypeId,
         field_expr: Ast.ExprId,
     ) Allocator.Error!Ast.ExprId {
-        const key_expr = try self.builder.localExpr(key_local, key_ty);
-        return try self.builder.lowLevelExpr(.str_is_eq, &.{ key_expr, field_expr }, try self.builder.primitiveType(.bool));
+        const key_expr = try self.localExpr(key_local, key_ty);
+        return try self.lowLevelExpr(.str_is_eq, &.{ key_expr, field_expr }, try self.builder.primitiveType(.bool));
     }
 
     fn recordFieldNameStaticSmallExactMatch(
@@ -9945,15 +10104,15 @@ const BodyContext = struct {
         }
 
         const u64_ty = try self.builder.primitiveType(.u64);
-        const key_expr = try self.builder.localExpr(key_local, key_ty);
+        const key_expr = try self.localExpr(key_local, key_ty);
         const args = [_]Ast.ExprId{
             key_expr,
-            try self.builder.intLiteralExpr(@intCast(field_text.len), u64_ty),
-            try self.builder.intLiteralExpr(words[0], u64_ty),
-            try self.builder.intLiteralExpr(words[1], u64_ty),
-            try self.builder.intLiteralExpr(words[2], u64_ty),
+            try self.intLiteralExpr(@intCast(field_text.len), u64_ty),
+            try self.intLiteralExpr(words[0], u64_ty),
+            try self.intLiteralExpr(words[1], u64_ty),
+            try self.intLiteralExpr(words[2], u64_ty),
         };
-        return try self.builder.lowLevelExpr(.str_is_eq_static_small, &args, try self.builder.primitiveType(.bool));
+        return try self.lowLevelExpr(.str_is_eq_static_small, &args, try self.builder.primitiveType(.bool));
     }
 
     fn recordFieldNameStaticSmallWordMatch(
@@ -9968,14 +10127,14 @@ const BodyContext = struct {
         const word = staticFieldLaneWord(field_text, offset, active_len);
 
         const u64_ty = try self.builder.primitiveType(.u64);
-        const key_expr = try self.builder.localExpr(key_local, key_ty);
+        const key_expr = try self.localExpr(key_local, key_ty);
         const args = [_]Ast.ExprId{
             key_expr,
-            try self.builder.intLiteralExpr(offset, u64_ty),
-            try self.builder.intLiteralExpr(active_len, u64_ty),
-            try self.builder.intLiteralExpr(word, u64_ty),
+            try self.intLiteralExpr(offset, u64_ty),
+            try self.intLiteralExpr(active_len, u64_ty),
+            try self.intLiteralExpr(word, u64_ty),
         };
-        return try self.builder.lowLevelExpr(.str_static_small_word_eq, &args, try self.builder.primitiveType(.bool));
+        return try self.lowLevelExpr(.str_static_small_word_eq, &args, try self.builder.primitiveType(.bool));
     }
 
     fn recordFieldNameStaticSmallCaselessMatch(
@@ -9994,15 +10153,15 @@ const BodyContext = struct {
             const remaining: u32 = @intCast(field_text.len - offset);
             const active_len: u32 = @min(remaining, 8);
             const cond = try self.recordFieldNameStaticSmallWordCaselessMatch(key_local, key_ty, field_text, offset, active_len);
-            body = try self.builder.ifExpr(cond, body, try self.boolLiteral(false, bool_ty), bool_ty);
+            body = try self.ifExpr(cond, body, try self.boolLiteral(false, bool_ty), bool_ty);
         }
 
         const u64_ty = try self.builder.primitiveType(.u64);
-        const key_expr = try self.builder.localExpr(key_local, key_ty);
-        const key_len_expr = try self.builder.lowLevelExpr(.str_count_utf8_bytes, &.{key_expr}, u64_ty);
-        const length_expr = try self.builder.intLiteralExpr(@intCast(field_text.len), u64_ty);
-        const length_matches = try self.builder.lowLevelExpr(.num_is_eq, &.{ key_len_expr, length_expr }, bool_ty);
-        return try self.builder.ifExpr(length_matches, body, try self.boolLiteral(false, bool_ty), bool_ty);
+        const key_expr = try self.localExpr(key_local, key_ty);
+        const key_len_expr = try self.lowLevelExpr(.str_count_utf8_bytes, &.{key_expr}, u64_ty);
+        const length_expr = try self.intLiteralExpr(@intCast(field_text.len), u64_ty);
+        const length_matches = try self.lowLevelExpr(.num_is_eq, &.{ key_len_expr, length_expr }, bool_ty);
+        return try self.ifExpr(length_matches, body, try self.boolLiteral(false, bool_ty), bool_ty);
     }
 
     fn recordFieldNameStaticSmallWordCaselessMatch(
@@ -10017,14 +10176,14 @@ const BodyContext = struct {
         const word = staticFieldLaneWord(field_text, offset, active_len);
 
         const u64_ty = try self.builder.primitiveType(.u64);
-        const key_expr = try self.builder.localExpr(key_local, key_ty);
+        const key_expr = try self.localExpr(key_local, key_ty);
         const args = [_]Ast.ExprId{
             key_expr,
-            try self.builder.intLiteralExpr(offset, u64_ty),
-            try self.builder.intLiteralExpr(active_len, u64_ty),
-            try self.builder.intLiteralExpr(word, u64_ty),
+            try self.intLiteralExpr(offset, u64_ty),
+            try self.intLiteralExpr(active_len, u64_ty),
+            try self.intLiteralExpr(word, u64_ty),
         };
-        return try self.builder.lowLevelExpr(.str_static_small_word_caseless_eq, &args, try self.builder.primitiveType(.bool));
+        return try self.lowLevelExpr(.str_static_small_word_caseless_eq, &args, try self.builder.primitiveType(.bool));
     }
 
     fn renamedRecordFieldNameExpr(
@@ -10044,11 +10203,11 @@ const BodyContext = struct {
         if (!self.sameType(arg_tys[0], encoding_ty)) Common.invariant("rename_field encoding argument differed from parser encoding type");
         if (!self.sameType(arg_tys[1], str_ty)) Common.invariant("rename_field name argument differed from Str");
         if (!self.sameType(rename_fn.ret, str_ty)) Common.invariant("rename_field return type differed from Str");
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = str_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ encoding_expr, field_expr }),
+                .args = try self.addExprSpan(&[_]Ast.ExprId{ encoding_expr, field_expr }),
             } },
         });
     }
@@ -10074,8 +10233,8 @@ const BodyContext = struct {
                 if (precomputed_field_text) |field_text| {
                     if (field_text.len <= 24) break :blk try self.recordFieldNameStaticSmallCaselessMatch(key_local, key_ty, field_text);
                 }
-                const key_expr = try self.builder.localExpr(key_local, key_ty);
-                break :blk try self.builder.lowLevelExpr(.str_caseless_ascii_equals, &.{ key_expr, field_expr }, try self.builder.primitiveType(.bool));
+                const key_expr = try self.localExpr(key_local, key_ty);
+                break :blk try self.lowLevelExpr(.str_caseless_ascii_equals, &.{ key_expr, field_expr }, try self.builder.primitiveType(.bool));
             },
         };
     }
@@ -10088,8 +10247,8 @@ const BodyContext = struct {
         rest: Ast.ExprId,
         ret_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .let_ = .{
-            .bind = try self.builder.bindPat(local, ty),
+        return try self.addExpr(.{ .ty = ret_ty, .data = .{ .let_ = .{
+            .bind = try self.bindPat(local, ty),
             .value = value,
             .rest = rest,
         } } });
@@ -10102,8 +10261,8 @@ const BodyContext = struct {
         rest: Ast.ExprId,
         ret_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .let_ = .{
-            .bind = try self.builder.program.addPat(.{ .ty = ty, .data = .wildcard }),
+        return try self.addExpr(.{ .ty = ret_ty, .data = .{ .let_ = .{
+            .bind = try self.addPat(.{ .ty = ty, .data = .wildcard }),
             .value = value,
             .rest = rest,
         } } });
@@ -10173,7 +10332,7 @@ const BodyContext = struct {
         };
         const ref_id = maybe_ref orelse Common.invariant("checked callee lookup reached Monotype without resolved value ref");
         const local_id = self.currentLocalForResolvedValue(ref_id) orelse return null;
-        return self.builder.program.locals.items[@intFromEnum(local_id)].ty;
+        return self.localType(local_id);
     }
 
     fn directCallInstantiationSourceFnType(
@@ -10523,7 +10682,7 @@ const BodyContext = struct {
             => {},
         }
         if (self.currentLocalForResolvedValue(ref_id)) |local_id| {
-            const local_ty = self.builder.program.locals.items[@intFromEnum(local_id)].ty;
+            const local_ty = self.localType(local_id);
             try self.constrainTypeToMono(checked_ty, try self.publicOpaqueUnificationType(local_ty));
             return local_ty;
         }
@@ -10763,7 +10922,7 @@ const BodyContext = struct {
         }
         if (self.currentLocalBindingForResolvedValue(ref_id)) |binding| {
             const local_id = binding.local;
-            const local_ty = self.builder.program.locals.items[@intFromEnum(local_id)].ty;
+            const local_ty = self.localType(local_id);
             const binder_ty = checkedBinderType(self.view, binding.binder);
             // The local's Monotype identifies the binder's node in the
             // context that bound it; importing it unifies this context's
@@ -10779,7 +10938,7 @@ const BodyContext = struct {
             else
                 Common.invariant("checked local lookup type differed from its expected Monotype use type");
             if (use_ty != local_ty) self.builder.program.setLocalType(local_id, use_ty);
-            return try self.builder.program.addExpr(.{ .ty = use_ty, .data = .{ .local = local_id } });
+            return try self.addExpr(.{ .ty = use_ty, .data = .{ .local = local_id } });
         }
 
         switch (record.ref) {
@@ -10822,7 +10981,7 @@ const BodyContext = struct {
             => unreachable,
             .platform_required_declaration => Common.invariant("platform required declaration reached Monotype without a binding"),
         };
-        return try self.builder.program.addExpr(.{ .ty = ty, .data = data });
+        return try self.addExpr(.{ .ty = ty, .data = data });
     }
 
     fn lowerProcedureUseValue(
@@ -10864,7 +11023,7 @@ const BodyContext = struct {
                     mono_fn_ty,
                 );
                 const fn_id = try self.builder.lowerFnTemplateDefFromContext(self, fn_template);
-                break :blk try self.builder.program.addExpr(.{ .ty = mono_fn_ty, .data = .{ .fn_def = fn_id } });
+                break :blk try self.addExpr(.{ .ty = mono_fn_ty, .data = .{ .fn_def = fn_id } });
             },
             .platform_required => |required| blk: {
                 const view = self.builder.moduleForId(checked.requiredProcedureModuleId(required));
@@ -10984,7 +11143,7 @@ const BodyContext = struct {
             else => {},
         }
         const data = try self.restoreConstData(store_view, type_view, value, ty);
-        const expr = try self.builder.program.addExpr(.{ .ty = ty, .data = data });
+        const expr = try self.addExpr(.{ .ty = ty, .data = data });
         try self.builder.const_expr_cache.put(address, expr);
         return expr;
     }
@@ -11000,12 +11159,12 @@ const BodyContext = struct {
             .pending => Common.invariant("pending ConstStore node reached Monotype restore"),
             .zst => .unit,
             .scalar => |scalar| restoreScalar(scalar),
-            .str => |str| .{ .str_lit = try self.builder.program.addStringView(
+            .str => |str| .{ .str_lit = try self.addStringView(
                 store_view.const_store.strData(str.data),
                 str.offset,
                 str.len,
             ) },
-            .crash => |str| .{ .crash = try self.builder.program.addStringView(
+            .crash => |str| .{ .crash = try self.addStringView(
                 store_view.const_store.strData(str.data),
                 str.offset,
                 str.len,
@@ -11015,7 +11174,7 @@ const BodyContext = struct {
                 const child = try self.restoreConstNodeAtType(store_view, type_view, payload, self.constBoxPayloadType(ty));
                 break :blk .{ .low_level = .{
                     .op = .box_box,
-                    .args = try self.builder.program.addExprSpan(&.{child}),
+                    .args = try self.addExprSpan(&.{child}),
                 } };
             },
             .tuple => |items| .{ .tuple = try self.restoreConstTuple(store_view, type_view, ty, items) },
@@ -11042,7 +11201,7 @@ const BodyContext = struct {
         for (items, 0..) |item, index| {
             lowered[index] = try self.restoreConstNodeAtType(store_view, type_view, item, elem_ty);
         }
-        return try self.builder.program.addExprSpan(lowered);
+        return try self.addExprSpan(lowered);
     }
 
     fn restoreConstTuple(
@@ -11061,7 +11220,7 @@ const BodyContext = struct {
             const item_ty = self.builder.program.types.span(item_span)[index];
             lowered[index] = try self.restoreConstNodeAtType(store_view, type_view, item, item_ty);
         }
-        return try self.builder.program.addExprSpan(lowered);
+        return try self.addExprSpan(lowered);
     }
 
     fn restoreConstRecord(
@@ -11083,7 +11242,7 @@ const BodyContext = struct {
                 .value = try self.restoreConstNodeAtType(store_view, type_view, item, field.ty),
             };
         }
-        return try self.builder.program.addFieldExprSpan(lowered);
+        return try self.addFieldExprSpan(lowered);
     }
 
     fn restoreConstTagPayloads(
@@ -11103,7 +11262,7 @@ const BodyContext = struct {
             const payload_ty = self.builder.program.types.span(payload_span)[index];
             lowered[index] = try self.restoreConstNodeAtType(store_view, type_view, payload, payload_ty);
         }
-        return try self.builder.program.addExprSpan(lowered);
+        return try self.addExprSpan(lowered);
     }
 
     fn constListElemType(self: *BodyContext, ty: Type.TypeId) Type.TypeId {
@@ -11140,7 +11299,7 @@ const BodyContext = struct {
         for (checked_exprs, 0..) |child, i| {
             lowered[i] = try self.lowerExpr(child);
         }
-        return try self.builder.program.addExprSpan(lowered);
+        return try self.addExprSpan(lowered);
     }
 
     fn lowerListExpr(self: *BodyContext, checked_exprs: []const checked.CheckedExprId, ty: Type.TypeId) Allocator.Error!Ast.Span(Ast.ExprId) {
@@ -11153,7 +11312,7 @@ const BodyContext = struct {
         for (checked_exprs, 0..) |child, i| {
             lowered[i] = try self.lowerExprAtType(child, elem_ty);
         }
-        return try self.builder.program.addExprSpan(lowered);
+        return try self.addExprSpan(lowered);
     }
 
     fn lowerExprSpanAtTypes(
@@ -11169,7 +11328,7 @@ const BodyContext = struct {
         for (checked_exprs, stable_tys, 0..) |child, ty, i| {
             lowered[i] = try self.lowerExprAtType(child, ty);
         }
-        return try self.builder.program.addExprSpan(lowered);
+        return try self.addExprSpan(lowered);
     }
 
     const PreLoweredOperand = struct {
@@ -11197,7 +11356,7 @@ const BodyContext = struct {
             }
             lowered[i] = try self.lowerDispatchOperandAtType(operand, ty);
         }
-        return try self.builder.program.addExprSpan(lowered);
+        return try self.addExprSpan(lowered);
     }
 
     fn lowerDispatchOperandAtType(
@@ -11275,9 +11434,9 @@ const BodyContext = struct {
             step_fn_ty,
             step_ret_ty,
         );
-        const rest_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), iter_ty);
-        const rest_pat = try self.builder.bindPat(rest_local, iter_ty);
-        const rest_ref = try self.builder.localExpr(rest_local, iter_ty);
+        const rest_local = try self.addLocal(self.builder.symbols.fresh(), iter_ty);
+        const rest_pat = try self.bindPat(rest_local, iter_ty);
+        const rest_ref = try self.localExpr(rest_local, iter_ty);
         const step_expr = try self.lowerInterpolationOneStep(
             interpolation,
             index,
@@ -11289,7 +11448,7 @@ const BodyContext = struct {
             step_ret_ty,
         );
         const iter_expr = try self.lowerInterpolationIterRecord(iter_ty, backing_ty, len_expr, step_expr);
-        return try self.builder.program.addExpr(.{ .ty = iter_ty, .data = .{ .let_ = .{
+        return try self.addExpr(.{ .ty = iter_ty, .data = .{ .let_ = .{
             .bind = rest_pat,
             .value = rest_expr,
             .rest = iter_expr,
@@ -11320,11 +11479,11 @@ const BodyContext = struct {
             };
         }
 
-        const record_expr = try self.builder.program.addExpr(.{
+        const record_expr = try self.addExpr(.{
             .ty = backing_ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(lowered) },
+            .data = .{ .record = try self.addFieldExprSpan(lowered) },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = iter_ty,
             .data = .{ .nominal = record_expr },
         });
@@ -11338,10 +11497,10 @@ const BodyContext = struct {
         const known_tag = self.monoTagByText(ty, "Known");
         const payloads = self.builder.program.types.span(known_tag.payloads);
         if (payloads.len != 1) Common.invariant("Iter.len_if_known Known tag did not have one payload");
-        const count = try self.builder.intLiteralExpr(@intCast(remaining), payloads[0]);
-        return try self.builder.program.addExpr(.{ .ty = ty, .data = .{ .tag = .{
+        const count = try self.intLiteralExpr(@intCast(remaining), payloads[0]);
+        return try self.addExpr(.{ .ty = ty, .data = .{ .tag = .{
             .name = known_tag.name,
-            .payloads = try self.builder.program.addExprSpan(&[_]Ast.ExprId{count}),
+            .payloads = try self.addExprSpan(&[_]Ast.ExprId{count}),
         } } });
     }
 
@@ -11354,7 +11513,7 @@ const BodyContext = struct {
         step_ret_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
         const done_tag = self.monoTagByText(step_ret_ty, "Done");
-        const body = try self.builder.program.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
+        const body = try self.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
             .name = done_tag.name,
             .payloads = .empty(),
         } } });
@@ -11379,8 +11538,8 @@ const BodyContext = struct {
         const part = interpolation.parts[index];
         const value_expr = try self.lowerExprAtType(part.value, item_fields[0]);
         const segment_expr = try self.lowerExprAtType(part.following_segment, item_fields[1]);
-        const item_expr = try self.builder.program.addExpr(.{ .ty = item_ty, .data = .{
-            .tuple = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ value_expr, segment_expr }),
+        const item_expr = try self.addExpr(.{ .ty = item_ty, .data = .{
+            .tuple = try self.addExprSpan(&[_]Ast.ExprId{ value_expr, segment_expr }),
         } });
 
         const one_tag = self.monoTagByText(step_ret_ty, "One");
@@ -11389,9 +11548,9 @@ const BodyContext = struct {
         const payload_ty = payloads[0];
         const payload_expr = try self.lowerInterpolationOnePayload(payload_ty, item_expr, rest_expr);
 
-        const body = try self.builder.program.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
+        const body = try self.addExpr(.{ .ty = step_ret_ty, .data = .{ .tag = .{
             .name = one_tag.name,
-            .payloads = try self.builder.program.addExprSpan(&[_]Ast.ExprId{payload_expr}),
+            .payloads = try self.addExprSpan(&[_]Ast.ExprId{payload_expr}),
         } } });
         return try self.lowerInterpolationStepLambda(source_fn_ty, source_expr_id, index, step_fn_ty, body);
     }
@@ -11419,9 +11578,9 @@ const BodyContext = struct {
             };
         }
 
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(lowered) },
+            .data = .{ .record = try self.addFieldExprSpan(lowered) },
         });
     }
 
@@ -11433,15 +11592,15 @@ const BodyContext = struct {
         step_fn_ty: Type.TypeId,
         body: Ast.ExprId,
     ) Allocator.Error!Ast.ExprId {
-        const fn_id = try self.builder.program.addFn(.{
+        const fn_id = try self.addFn(.{
             .fn_def = .{ .checked_generated = self.owner_template },
             .source_fn_ty = source_fn_ty,
             .source_fn_key = generatedInterpolationStepKey(self.current_fn_key, source_expr_id, index),
             .mono_fn_ty = step_fn_ty,
         });
-        return try self.builder.program.addExpr(.{ .ty = step_fn_ty, .data = .{ .lambda = .{
+        return try self.addExpr(.{ .ty = step_fn_ty, .data = .{ .lambda = .{
             .fn_id = fn_id,
-            .args = try self.builder.program.addTypedLocalSpan(&.{}),
+            .args = try self.addTypedLocalSpan(&.{}),
             .body = body,
         } } });
     }
@@ -11496,7 +11655,7 @@ const BodyContext = struct {
                 if (!self.sameType(ty, lowered.ret_ty)) {
                     Common.invariant("checked call expression lowered at a type different from its context type");
                 }
-                return try self.builder.program.addExpr(.{
+                return try self.addExpr(.{
                     .ty = ty,
                     .data = lowered.data,
                 });
@@ -11511,7 +11670,7 @@ const BodyContext = struct {
             .structural_eq => |eq| {
                 try self.constrainKnownType(expr.ty, ty);
                 const lowered = try self.lowerDirectStructuralEqAtType(eq, ty);
-                if (!self.sameType(ty, self.builder.program.exprs.items[@intFromEnum(lowered)].ty)) {
+                if (!self.sameType(ty, self.exprType(lowered))) {
                     Common.invariant("checked structural equality lowered at a type different from its context type");
                 }
                 return lowered;
@@ -11519,7 +11678,7 @@ const BodyContext = struct {
             .structural_hash => |h| {
                 try self.constrainKnownType(expr.ty, ty);
                 const lowered = try self.lowerDirectStructuralHashAtType(h, ty);
-                if (!self.sameType(ty, self.builder.program.exprs.items[@intFromEnum(lowered)].ty)) {
+                if (!self.sameType(ty, self.exprType(lowered))) {
                     Common.invariant("checked structural hash lowered at a type different from its context type");
                 }
                 return lowered;
@@ -11528,7 +11687,7 @@ const BodyContext = struct {
             .closure,
             => {
                 const lowered = try self.lowerExprWithType(checked_expr, ty);
-                if (!self.sameType(ty, self.builder.program.exprs.items[@intFromEnum(lowered)].ty)) {
+                if (!self.sameType(ty, self.exprType(lowered))) {
                     Common.invariant("checked function expression lowered at a type different from its context type");
                 }
                 return lowered;
@@ -11537,7 +11696,7 @@ const BodyContext = struct {
         }
         try self.constrainKnownType(expr.ty, ty);
         const lowered = try self.lowerExprWithType(checked_expr, ty);
-        if (!self.sameType(ty, self.builder.program.exprs.items[@intFromEnum(lowered)].ty)) {
+        if (!self.sameType(ty, self.exprType(lowered))) {
             Common.invariant("checked expression lowered at a type different from its call operand type");
         }
         return lowered;
@@ -11662,16 +11821,16 @@ const BodyContext = struct {
         const lowered = try self.allocator.alloc(Ast.FieldExpr, target_field_count);
         defer self.allocator.free(lowered);
         const base_record = if (record.ext) |ext| try self.lowerExpr(ext) else null;
-        const base_ty = if (base_record) |base_expr| self.builder.program.exprs.items[@intFromEnum(base_expr)].ty else ty;
-        const base_local = if (base_record) |_| try self.builder.program.addLocal(self.builder.symbols.fresh(), base_ty) else null;
-        const base_expr = if (base_local) |local| try self.builder.localExpr(local, base_ty) else null;
+        const base_ty = if (base_record) |base_expr| self.exprType(base_expr) else ty;
+        const base_local = if (base_record) |_| try self.addLocal(self.builder.symbols.fresh(), base_ty) else null;
+        const base_expr = if (base_local) |local| try self.localExpr(local, base_ty) else null;
 
         for (0..target_field_count) |i| {
             const field = self.builder.program.types.fieldSpan(target_fields)[i];
             const value = if (try self.recordUpdateFieldValue(record.fields, field.name)) |field_value|
                 try self.lowerExprAtType(field_value, field.ty)
             else if (base_expr) |base_value|
-                try self.builder.program.addExpr(.{
+                try self.addExpr(.{
                     .ty = field.ty,
                     .data = .{ .field_access = .{
                         .receiver = base_value,
@@ -11685,10 +11844,10 @@ const BodyContext = struct {
                 .value = value,
             };
         }
-        const record_expr = try self.builder.program.addExpr(.{ .ty = ty, .data = .{ .record = try self.builder.program.addFieldExprSpan(lowered) } });
+        const record_expr = try self.addExpr(.{ .ty = ty, .data = .{ .record = try self.addFieldExprSpan(lowered) } });
         if (base_record) |base_value| {
-            return try self.builder.program.addExpr(.{ .ty = ty, .data = .{ .let_ = .{
-                .bind = try self.builder.bindPat(base_local orelse Common.invariant("record update lowered base without a base local"), base_ty),
+            return try self.addExpr(.{ .ty = ty, .data = .{ .let_ = .{
+                .bind = try self.bindPat(base_local orelse Common.invariant("record update lowered base without a base local"), base_ty),
                 .value = base_value,
                 .rest = record_expr,
             } } });
@@ -11848,7 +12007,7 @@ const BodyContext = struct {
         if (expected_ret_ty) |expected| {
             if (!self.sameType(expected, fn_data.ret)) Common.invariant("checked dispatch expression lowered at a type different from its call operand type");
         }
-        const call_expr = try self.builder.program.addExpr(.{
+        const call_expr = try self.addExpr(.{
             .ty = fn_data.ret,
             .data = try self.lowerResolvedDispatch(plan, resolved, target_mono_ty, self, pre_lowered),
         });
@@ -11867,7 +12026,7 @@ const BodyContext = struct {
             .encode_to => expr,
             .equality => |eq| if (eq.negated) blk: {
                 if (!self.typeHasBuiltinOwner(expr_ty, .bool)) Common.invariant("checked equality dispatch returned a non-Bool value");
-                break :blk try self.builder.lowLevelExpr(.bool_not, &.{expr}, expr_ty);
+                break :blk try self.lowLevelExpr(.bool_not, &.{expr}, expr_ty);
             } else expr,
             // A resolved `to_hash` dispatch returns its Hasher result directly.
             .hash => expr,
@@ -11922,7 +12081,7 @@ const BodyContext = struct {
         }
 
         const fn_data = self.builder.functionShape(target_mono_ty, "checked from_numeral target had a non-function type");
-        const call_expr = try self.builder.program.addExpr(.{
+        const call_expr = try self.addExpr(.{
             .ty = fn_data.ret,
             .data = try self.lowerResolvedDispatch(plan, resolved, target_mono_ty, self, null),
         });
@@ -12007,10 +12166,10 @@ const BodyContext = struct {
         // a too-narrow type after monomorphization) matches the existing generic
         // from_numeral behavior: a runtime crash on the conversion's Err branch.
         const data = folded orelse blk: {
-            const msg = try self.builder.program.addStringLiteral("invalid numeric literal");
+            const msg = try self.addStringLiteral("invalid numeric literal");
             break :blk Ast.ExprData{ .crash = msg };
         };
-        return try self.builder.program.addExpr(.{ .ty = target_ty, .data = data });
+        return try self.addExpr(.{ .ty = target_ty, .data = data });
     }
 
     /// Materialize a string literal as the `Str` argument of a `from_quote`
@@ -12020,7 +12179,7 @@ const BodyContext = struct {
         literal: checked.CheckedStringLiteralId,
         ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
             .data = .{ .str_lit = try self.lowerStringLiteral(literal) },
         });
@@ -12038,14 +12197,14 @@ const BodyContext = struct {
         if (payloads.len != 1) Common.invariant("Numeral Literal tag must have one record payload");
 
         const record_expr = try self.lowerNumeralRecord(literal, payloads[0]);
-        const backing_expr = try self.builder.program.addExpr(.{
+        const backing_expr = try self.addExpr(.{
             .ty = backing_ty,
             .data = .{ .tag = .{
                 .name = literal_tag.name,
-                .payloads = try self.builder.program.addExprSpan(&[_]Ast.ExprId{record_expr}),
+                .payloads = try self.addExprSpan(&[_]Ast.ExprId{record_expr}),
             } },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
             .data = .{ .nominal = backing_expr },
         });
@@ -12076,15 +12235,15 @@ const BodyContext = struct {
             else if (Ident.textEql(label, "digits_after_pt"))
                 try self.lowerU8List(after, field.ty)
             else if (Ident.textEql(label, "digits_after_pt_count"))
-                try self.builder.intLiteralExpr(literal.after_decimal_digit_count, field.ty)
+                try self.intLiteralExpr(literal.after_decimal_digit_count, field.ty)
             else
                 Common.invariant("Numeral record contained an unexpected field");
             lowered[i] = .{ .name = field.name, .value = value };
         }
 
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
-            .data = .{ .record = try self.builder.program.addFieldExprSpan(lowered) },
+            .data = .{ .record = try self.addFieldExprSpan(lowered) },
         });
     }
 
@@ -12100,11 +12259,11 @@ const BodyContext = struct {
         const items = try self.allocator.alloc(Ast.ExprId, values.len);
         defer self.allocator.free(items);
         for (values, 0..) |value, i| {
-            items[i] = try self.builder.intLiteralExpr(value, elem_ty);
+            items[i] = try self.intLiteralExpr(value, elem_ty);
         }
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
-            .data = .{ .list = try self.builder.program.addExprSpan(items) },
+            .data = .{ .list = try self.addExprSpan(items) },
         });
     }
 
@@ -12123,33 +12282,33 @@ const BodyContext = struct {
             Common.invariant("Try.Ok from from_numeral carried a type different from the literal target type");
         }
 
-        const ok_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), target_ty);
-        const ok_payload_pat = try self.builder.bindPat(ok_local, target_ty);
-        const ok_pat = try self.builder.program.addPat(.{ .ty = try_ty, .data = .{ .tag = .{
+        const ok_local = try self.addLocal(self.builder.symbols.fresh(), target_ty);
+        const ok_payload_pat = try self.bindPat(ok_local, target_ty);
+        const ok_pat = try self.addPat(.{ .ty = try_ty, .data = .{ .tag = .{
             .name = ok_tag.name,
-            .payloads = try self.builder.program.addPatSpan(&[_]Ast.PatId{ok_payload_pat}),
+            .payloads = try self.addPatSpan(&[_]Ast.PatId{ok_payload_pat}),
         } } });
-        const ok_body = try self.builder.localExpr(ok_local, target_ty);
+        const ok_body = try self.localExpr(ok_local, target_ty);
 
         const err_payload_pats = try self.allocator.alloc(Ast.PatId, err_payloads.len);
         defer self.allocator.free(err_payload_pats);
         for (err_payloads, 0..) |payload_ty, i| {
-            err_payload_pats[i] = try self.builder.program.addPat(.{ .ty = payload_ty, .data = .wildcard });
+            err_payload_pats[i] = try self.addPat(.{ .ty = payload_ty, .data = .wildcard });
         }
-        const err_pat = try self.builder.program.addPat(.{ .ty = try_ty, .data = .{ .tag = .{
+        const err_pat = try self.addPat(.{ .ty = try_ty, .data = .{ .tag = .{
             .name = err_tag.name,
-            .payloads = try self.builder.program.addPatSpan(err_payload_pats),
+            .payloads = try self.addPatSpan(err_payload_pats),
         } } });
-        const msg = try self.builder.program.addStringLiteral("invalid numeric literal");
-        const err_body = try self.builder.program.addExpr(.{ .ty = target_ty, .data = .{ .crash = msg } });
+        const msg = try self.addStringLiteral("invalid numeric literal");
+        const err_body = try self.addExpr(.{ .ty = target_ty, .data = .{ .crash = msg } });
 
         const branches = [_]Ast.Branch{
             .{ .pat = ok_pat, .body = ok_body },
             .{ .pat = err_pat, .body = err_body },
         };
-        return try self.builder.program.addExpr(.{ .ty = target_ty, .data = .{ .match_ = .{
+        return try self.addExpr(.{ .ty = target_ty, .data = .{ .match_ = .{
             .scrutinee = result,
-            .branches = try self.builder.program.addBranchSpan(&branches),
+            .branches = try self.addBranchSpan(&branches),
         } } });
     }
 
@@ -12442,7 +12601,7 @@ const BodyContext = struct {
                 const operands = try self.lowerStructuralBinaryOperands("equality", plan, callable_mono_ty, arg_ctx, pre_lowered);
                 var result = try self.lowerEqualityExpr(operands.derived_ty, operands.first, operands.second, self.view.names.methodNameText(plan.method), ret_ty);
                 if (eq.negated) {
-                    result = try self.builder.lowLevelExpr(.bool_not, &.{result}, ret_ty);
+                    result = try self.lowLevelExpr(.bool_not, &.{result}, ret_ty);
                 }
                 break :blk result;
             } else Common.invariant("structural equality dispatch plan did not permit structural equality"),
@@ -12549,9 +12708,9 @@ const BodyContext = struct {
             pre_lowered.?.expr
         else
             try arg_ctx.lowerDispatchOperandAtType(plan_args[0], arg_tys[0]);
-        const encoding_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
+        const encoding_local = try self.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
         self.builder.program.setLocalCaptureId(encoding_local, parserEncodingCaptureId());
-        const state_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), runtime_arg_tys[0]);
+        const state_local = try self.addLocal(self.builder.symbols.fresh(), runtime_arg_tys[0]);
 
         const str_ty = try self.builder.primitiveType(.str);
         var precomputed_plan = ParserPrecomputedPlan.init(self.allocator);
@@ -12559,21 +12718,21 @@ const BodyContext = struct {
         try self.buildParserConstructionPrecomputedPlan(
             &precomputed_plan,
             shape_ty,
-            try self.builder.localExpr(encoding_local, arg_tys[0]),
+            try self.localExpr(encoding_local, arg_tys[0]),
             arg_tys[0],
             str_ty,
         );
 
         const parsed = try self.lowerParseShapeFromState(
             shape_ty,
-            try self.builder.localExpr(encoding_local, arg_tys[0]),
+            try self.localExpr(encoding_local, arg_tys[0]),
             arg_tys[0],
-            try self.builder.localExpr(state_local, runtime_arg_tys[0]),
+            try self.localExpr(state_local, runtime_arg_tys[0]),
             runtime_arg_tys[0],
             runtime_fn.ret,
             &precomputed_plan,
         );
-        const fn_id = try self.builder.program.addFn(.{
+        const fn_id = try self.addFn(.{
             .fn_def = .{ .parser_runtime = .{
                 .owner = self.owner_template,
                 .expr = plan.expr,
@@ -12582,9 +12741,9 @@ const BodyContext = struct {
             .source_fn_key = generatedParserRuntimeKey(self.current_fn_key, plan.expr),
             .mono_fn_ty = ret_ty,
         });
-        var parser_expr = try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .lambda = .{
+        var parser_expr = try self.addExpr(.{ .ty = ret_ty, .data = .{ .lambda = .{
             .fn_id = fn_id,
-            .args = try self.builder.program.addTypedLocalSpan(&.{
+            .args = try self.addTypedLocalSpan(&.{
                 .{ .local = state_local, .ty = runtime_arg_tys[0] },
             }),
             .body = parsed,
@@ -12636,9 +12795,9 @@ const BodyContext = struct {
         else
             try arg_ctx.lowerDispatchOperandAtType(plan_args[1], arg_tys[1]);
 
-        const value_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
-        const encoding_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), arg_tys[1]);
-        const state_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), runtime_arg_tys[0]);
+        const value_local = try self.addLocal(self.builder.symbols.fresh(), arg_tys[0]);
+        const encoding_local = try self.addLocal(self.builder.symbols.fresh(), arg_tys[1]);
+        const state_local = try self.addLocal(self.builder.symbols.fresh(), runtime_arg_tys[0]);
         self.builder.program.setLocalCaptureId(value_local, encodeToValueCaptureId());
         self.builder.program.setLocalCaptureId(encoding_local, encodeToEncodingCaptureId());
 
@@ -12649,22 +12808,22 @@ const BodyContext = struct {
         try self.buildEncodeConstructionPrecomputedPlan(
             &precomputed_plan,
             shape_ty,
-            try self.builder.localExpr(encoding_local, arg_tys[1]),
+            try self.localExpr(encoding_local, arg_tys[1]),
             arg_tys[1],
             str_ty,
         );
 
         const encoded = try self.lowerEncodeShapeToState(
             shape_ty,
-            try self.builder.localExpr(value_local, arg_tys[0]),
-            try self.builder.localExpr(encoding_local, arg_tys[1]),
+            try self.localExpr(value_local, arg_tys[0]),
+            try self.localExpr(encoding_local, arg_tys[1]),
             arg_tys[1],
-            try self.builder.localExpr(state_local, runtime_arg_tys[0]),
+            try self.localExpr(state_local, runtime_arg_tys[0]),
             runtime_arg_tys[0],
             runtime_fn.ret,
             &precomputed_plan,
         );
-        const fn_id = try self.builder.program.addFn(.{
+        const fn_id = try self.addFn(.{
             .fn_def = .{ .encode_to_runtime = .{
                 .owner = self.owner_template,
                 .expr = plan.expr,
@@ -12673,9 +12832,9 @@ const BodyContext = struct {
             .source_fn_key = generatedEncodeToRuntimeKey(self.current_fn_key, plan.expr),
             .mono_fn_ty = ret_ty,
         });
-        var encoder_expr = try self.builder.program.addExpr(.{ .ty = ret_ty, .data = .{ .lambda = .{
+        var encoder_expr = try self.addExpr(.{ .ty = ret_ty, .data = .{ .lambda = .{
             .fn_id = fn_id,
-            .args = try self.builder.program.addTypedLocalSpan(&.{
+            .args = try self.addTypedLocalSpan(&.{
                 .{ .local = state_local, .ty = runtime_arg_tys[0] },
             }),
             .body = encoded,
@@ -12753,20 +12912,20 @@ const BodyContext = struct {
             owned_renamed_field_locals = locals;
             owned_renamed_field_values = values;
             for (record_fields, 0..) |field, index| {
-                locals[index] = try self.builder.program.addLocal(self.builder.symbols.fresh(), str_ty);
+                locals[index] = try self.addLocal(self.builder.symbols.fresh(), str_ty);
                 values[index] = try self.renamedRecordFieldNameExpr(encoding_expr, encoding_ty, field, str_ty);
             }
             break :blk locals;
         };
 
         const begin_try = try self.lowerEncodeFormatMethod("begin_record", &.{state_expr}, &.{state_ty}, encoding_ty, ret_ty);
-        const begin_state_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
+        const begin_state_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
         const fields_body = try self.lowerEncodeRecordFieldNamesFrom(
             shape_ty,
             value_expr,
             encoding_expr,
             encoding_ty,
-            try self.builder.localExpr(begin_state_local, state_ty),
+            try self.localExpr(begin_state_local, state_ty),
             state_ty,
             ret_ty,
             precomputed_plan,
@@ -12805,11 +12964,11 @@ const BodyContext = struct {
 
         const field = record_fields[field_index];
         const str_ty = try self.builder.primitiveType(.str);
-        const renamed_field_expr = try self.builder.localExpr(renamed_field_locals[field_index], str_ty);
+        const renamed_field_expr = try self.localExpr(renamed_field_locals[field_index], str_ty);
         const field_name_try = try self.lowerEncodeFormatMethod("encode_record_field", &.{ renamed_field_expr, state_expr }, &.{ str_ty, state_ty }, encoding_ty, ret_ty);
-        const after_name_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
+        const after_name_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
 
-        const field_value_expr = try self.builder.program.addExpr(.{
+        const field_value_expr = try self.addExpr(.{
             .ty = field.ty,
             .data = .{ .field_access = .{
                 .receiver = value_expr,
@@ -12821,18 +12980,18 @@ const BodyContext = struct {
             field_value_expr,
             encoding_expr,
             encoding_ty,
-            try self.builder.localExpr(after_name_local, state_ty),
+            try self.localExpr(after_name_local, state_ty),
             state_ty,
             ret_ty,
             precomputed_plan,
         );
-        const after_value_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), state_ty);
+        const after_value_local = try self.addLocal(self.builder.symbols.fresh(), state_ty);
         const rest_body = try self.lowerEncodeRecordFieldNamesFrom(
             shape_ty,
             value_expr,
             encoding_expr,
             encoding_ty,
-            try self.builder.localExpr(after_value_local, state_ty),
+            try self.localExpr(after_value_local, state_ty),
             state_ty,
             ret_ty,
             precomputed_plan,
@@ -12867,18 +13026,18 @@ const BodyContext = struct {
         if (!self.sameType(encode_arg_tys[1], encoding_ty)) Common.invariant("custom encode_to encoding type differed from input encoding type");
         if (!self.sameType(encode_fn.ret, runtime_fn_ty)) Common.invariant("custom encode_to runtime function type differed from expected type");
 
-        const encoder_expr = try self.builder.program.addExpr(.{
+        const encoder_expr = try self.addExpr(.{
             .ty = runtime_fn_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{ value_expr, encoding_expr }),
+                .args = try self.addExprSpan(&[_]Ast.ExprId{ value_expr, encoding_expr }),
             } },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .call_value = .{
                 .callee = encoder_expr,
-                .args = try self.builder.program.addExprSpan(&[_]Ast.ExprId{state_expr}),
+                .args = try self.addExprSpan(&[_]Ast.ExprId{state_expr}),
             } },
         });
     }
@@ -12900,11 +13059,11 @@ const BodyContext = struct {
             if (!self.sameType(actual, expected)) Common.invariant("encode_to target method argument type differed from expected type");
         }
         if (!self.sameType(encode_fn.ret, ret_ty)) Common.invariant("encode_to target method return type differed from expected type");
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ret_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(arg_exprs),
+                .args = try self.addExprSpan(arg_exprs),
             } },
         });
     }
@@ -13087,16 +13246,16 @@ const BodyContext = struct {
 
     fn tryOk(self: *BodyContext, try_ty: Type.TypeId, value_expr: Ast.ExprId) Allocator.Error!Ast.ExprId {
         const info = self.tryInfo(try_ty);
-        const value_ty = self.builder.program.exprs.items[@intFromEnum(value_expr)].ty;
+        const value_ty = self.exprType(value_expr);
         if (!self.sameType(value_ty, info.ok_ty)) Common.invariant("Try.Ok payload type differed from Try Ok type");
-        const backing_expr = try self.builder.program.addExpr(.{
+        const backing_expr = try self.addExpr(.{
             .ty = info.backing_ty,
             .data = .{ .tag = .{
                 .name = info.ok_tag.name,
-                .payloads = try self.builder.program.addExprSpan(&[_]Ast.ExprId{value_expr}),
+                .payloads = try self.addExprSpan(&[_]Ast.ExprId{value_expr}),
             } },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = try_ty,
             .data = .{ .nominal = backing_expr },
         });
@@ -13104,16 +13263,16 @@ const BodyContext = struct {
 
     fn tryErr(self: *BodyContext, try_ty: Type.TypeId, err_expr: Ast.ExprId) Allocator.Error!Ast.ExprId {
         const info = self.tryInfo(try_ty);
-        const err_ty = self.builder.program.exprs.items[@intFromEnum(err_expr)].ty;
+        const err_ty = self.exprType(err_expr);
         if (!self.sameType(err_ty, info.err_ty)) Common.invariant("Try.Err payload type differed from Try Err type");
-        const backing_expr = try self.builder.program.addExpr(.{
+        const backing_expr = try self.addExpr(.{
             .ty = info.backing_ty,
             .data = .{ .tag = .{
                 .name = info.err_tag.name,
-                .payloads = try self.builder.program.addExprSpan(&[_]Ast.ExprId{err_expr}),
+                .payloads = try self.addExprSpan(&[_]Ast.ExprId{err_expr}),
             } },
         });
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = try_ty,
             .data = .{ .nominal = backing_expr },
         });
@@ -13131,7 +13290,7 @@ const BodyContext = struct {
         const out_info = self.tryInfo(out_try_ty);
         if (!self.sameType(info.err_ty, out_info.err_ty)) Common.invariant("sequenced Try error type differed from output Try error type");
 
-        return try self.builder.program.addExpr(.{ .ty = out_try_ty, .data = .{ .try_sequence = .{
+        return try self.addExpr(.{ .ty = out_try_ty, .data = .{ .try_sequence = .{
             .try_expr = try_expr,
             .ok_local = ok_local,
             .err_is_cold = true,
@@ -13153,14 +13312,14 @@ const BodyContext = struct {
         const info = self.tryInfo(try_ty);
         const out_info = self.tryInfo(out_try_ty);
         if (!self.sameType(info.err_ty, out_info.err_ty)) Common.invariant("sequenced Try record error type differed from output Try error type");
-        if (!self.sameType(self.recordFieldType(info.ok_ty, value_field), self.builder.program.locals.items[@intFromEnum(value_local)].ty)) {
+        if (!self.sameType(self.recordFieldType(info.ok_ty, value_field), self.localType(value_local))) {
             Common.invariant("sequenced Try record value local type differed from Ok record field");
         }
-        if (!self.sameType(self.recordFieldType(info.ok_ty, rest_field), self.builder.program.locals.items[@intFromEnum(rest_local)].ty)) {
+        if (!self.sameType(self.recordFieldType(info.ok_ty, rest_field), self.localType(rest_local))) {
             Common.invariant("sequenced Try record rest local type differed from Ok record field");
         }
 
-        return try self.builder.program.addExpr(.{ .ty = out_try_ty, .data = .{ .try_record_sequence = .{
+        return try self.addExpr(.{ .ty = out_try_ty, .data = .{ .try_record_sequence = .{
             .try_expr = try_expr,
             .value_local = value_local,
             .value_field = value_field,
@@ -13294,19 +13453,19 @@ const BodyContext = struct {
         if (!self.sameType(payload_ty, field_ty)) {
             Common.invariant("generated optional record payload type differed from field type");
         }
-        if (!self.sameType(self.builder.program.locals.items[@intFromEnum(field_local)].ty, field_ty)) {
+        if (!self.sameType(self.localType(field_local), field_ty)) {
             Common.invariant("record finish field local type differed from optional field type");
         }
 
-        const renamed_field_ty = self.builder.program.locals.items[@intFromEnum(renamed_field_local)].ty;
+        const renamed_field_ty = self.localType(renamed_field_local);
         if (!self.typeHasBuiltinOwner(renamed_field_ty, .str)) Common.invariant("record parser renamed field local was not Str");
-        const renamed_field_expr = try self.builder.localExpr(renamed_field_local, renamed_field_ty);
+        const renamed_field_expr = try self.localExpr(renamed_field_local, renamed_field_ty);
         const missing_error = try self.missingOptionalFieldError(encoding_expr, renamed_field_expr, rest_local, encoding_ty, state_ty, optional_info.err_ty);
         const missing_field = try self.tryErr(field_ty, missing_error);
-        const present_field = try self.builder.localExpr(payload_local, payload_ty);
+        const present_field = try self.localExpr(payload_local, payload_ty);
         const presence_word = recordPresenceWordIndex(field_index);
-        const is_present_expr = try self.builder.localExpr(record_slots.presence_locals[presence_word], record_slots.presence_tys[presence_word]);
-        const field_value = try self.builder.program.addExpr(.{ .ty = field_ty, .data = .{ .if_initialized_payload = .{
+        const is_present_expr = try self.localExpr(record_slots.presence_locals[presence_word], record_slots.presence_tys[presence_word]);
+        const field_value = try self.addExpr(.{ .ty = field_ty, .data = .{ .if_initialized_payload = .{
             .cond = is_present_expr,
             .cond_mask = recordPresenceMask(field_index),
             .payload = payload_local,
@@ -13334,14 +13493,14 @@ const BodyContext = struct {
         const field_ty = field.ty;
         const field_try_info = self.tryInfo(field_try_ty);
         if (!self.sameType(field_try_info.ok_ty, field_ty)) Common.invariant("structural parser field Try Ok type differed from field type");
-        const renamed_field_ty = self.builder.program.locals.items[@intFromEnum(renamed_field_local)].ty;
+        const renamed_field_ty = self.localType(renamed_field_local);
         if (!self.typeHasBuiltinOwner(renamed_field_ty, .str)) Common.invariant("record parser renamed field local was not Str");
-        const renamed_field_expr = try self.builder.localExpr(renamed_field_local, renamed_field_ty);
+        const renamed_field_expr = try self.localExpr(renamed_field_local, renamed_field_ty);
 
         if (!self.sameType(payload_ty, field_ty)) {
             Common.invariant("generated record parse payload type differed from parsed field type");
         }
-        const present_body = try self.tryOk(field_try_ty, try self.builder.localExpr(payload_local, payload_ty));
+        const present_body = try self.tryOk(field_try_ty, try self.localExpr(payload_local, payload_ty));
 
         const absent_body = if (self.typeHasBuiltinOwner(field_ty, .str)) blk: {
             break :blk try self.tryErr(field_try_ty, try self.missingRecordFieldError(encoding_expr, renamed_field_expr, rest_local, encoding_ty, state_ty, field_try_info.err_ty));
@@ -13351,7 +13510,7 @@ const BodyContext = struct {
             break :blk try self.tryOk(field_try_ty, missing_field);
         } else try self.tryErr(field_try_ty, try self.missingRecordFieldError(encoding_expr, renamed_field_expr, rest_local, encoding_ty, state_ty, field_try_info.err_ty));
 
-        return try self.builder.program.addExpr(.{ .ty = field_try_ty, .data = .{ .if_initialized_payload = .{
+        return try self.addExpr(.{ .ty = field_try_ty, .data = .{ .if_initialized_payload = .{
             .cond = is_present_expr,
             .cond_mask = is_present_mask,
             .payload = payload_local,
@@ -13384,13 +13543,13 @@ const BodyContext = struct {
         const args = [_]Ast.ExprId{
             encoding_expr,
             field_name_expr,
-            try self.builder.localExpr(rest_local, state_ty),
+            try self.localExpr(rest_local, state_ty),
         };
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = err_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(&args),
+                .args = try self.addExprSpan(&args),
                 .is_cold = true,
             } },
         });
@@ -13419,13 +13578,13 @@ const BodyContext = struct {
         const args = [_]Ast.ExprId{
             encoding_expr,
             field_name_expr,
-            try self.builder.localExpr(rest_local, state_ty),
+            try self.localExpr(rest_local, state_ty),
         };
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = err_ty,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
-                .args = try self.builder.program.addExprSpan(&args),
+                .args = try self.addExprSpan(&args),
             } },
         });
     }
@@ -13449,7 +13608,7 @@ const BodyContext = struct {
         const rhs = try self.lowerExprAtType(eq.rhs, operand_ty);
         var result = try self.lowerEqualityExpr(operand_ty, lhs, rhs, "is_eq", ret_ty);
         if (eq.negated) {
-            result = try self.builder.lowLevelExpr(.bool_not, &.{result}, ret_ty);
+            result = try self.lowLevelExpr(.bool_not, &.{result}, ret_ty);
         }
         return result;
     }
@@ -13643,16 +13802,16 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const def_id = try self.derivationDefForType(D, ty, ctx);
         const fn_ty = try D.fnType(self, ty, ctx.result_ty);
-        const callee = try self.builder.program.addExpr(.{
+        const callee = try self.addExpr(.{
             .ty = fn_ty,
             .data = .{ .def_ref = def_id },
         });
         const args = D.callArgs(operand);
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ctx.result_ty,
             .data = .{ .call_value = .{
                 .callee = callee,
-                .args = try self.builder.program.addExprSpan(&args),
+                .args = try self.addExprSpan(&args),
             } },
         });
     }
@@ -13676,9 +13835,9 @@ const BodyContext = struct {
         const arg_tys = D.ownedArgTypes(ty, ctx.result_ty);
         const callable_mono_ty = try self.methodTargetMonoTypeFromArgs(lookup, &arg_tys, ctx.result_ty);
         const args = D.callArgs(operand);
-        return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .call_proc = .{
+        return try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .call_proc = .{
             .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, callable_mono_ty)),
-            .args = try self.builder.program.addExprSpan(&args),
+            .args = try self.addExprSpan(&args),
         } } });
     }
 
@@ -13692,18 +13851,17 @@ const BodyContext = struct {
         const address = D.defAddress(value_ty, ctx.result_ty);
         if (cache.get(address)) |entry| return entry.id();
 
-        const def_id: Ast.DefId = @enumFromInt(@as(u32, @intCast(self.builder.program.defs.items.len)));
-        try self.builder.program.defs.append(self.allocator, undefined);
+        const def_id = try self.reserveDef();
         try cache.put(address, .{ .reserved = def_id });
 
         // A helper takes two args: the value (`value_ty`) and a second operand
         // whose type is derivation-specific (the other equality operand at
         // `value_ty`, or the running hasher at `result_ty`).
         const second_ty = D.helperSecondArgType(value_ty, ctx.result_ty);
-        const self_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), value_ty);
-        const aux_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), second_ty);
-        const self_expr = try self.builder.localExpr(self_local, value_ty);
-        const aux_expr = try self.builder.localExpr(aux_local, second_ty);
+        const self_local = try self.addLocal(self.builder.symbols.fresh(), value_ty);
+        const aux_local = try self.addLocal(self.builder.symbols.fresh(), second_ty);
+        const self_expr = try self.localExpr(self_local, value_ty);
+        const aux_expr = try self.localExpr(aux_local, second_ty);
         const operand = D.helperOperand(self_expr, aux_expr);
 
         // The helper body is the structural expansion for this type. Temporarily
@@ -13717,17 +13875,17 @@ const BodyContext = struct {
         defer stack.putAssumeCapacity(value_ty, {});
 
         const body = try self.lowerDerivation(D, value_ty, operand, ctx);
-        const args = try self.builder.program.addTypedLocalSpan(&.{
+        const args = try self.addTypedLocalSpan(&.{
             .{ .local = self_local, .ty = value_ty },
             .{ .local = aux_local, .ty = second_ty },
         });
-        self.builder.program.defs.items[@intFromEnum(def_id)] = .{
+        self.setDef(def_id, .{
             .symbol = self.builder.symbols.fresh(),
             .fn_def = null,
             .args = args,
             .body = .{ .roc = body },
             .ret = ctx.result_ty,
-        };
+        });
         try cache.put(address, .{ .ready = def_id });
         return def_id;
     }
@@ -13777,9 +13935,9 @@ const BodyContext = struct {
 
     fn boolLiteral(self: *BodyContext, value: bool, bool_ty: Type.TypeId) Allocator.Error!Ast.ExprId {
         const u64_ty = try self.builder.primitiveType(.u64);
-        const lhs = try self.builder.intLiteralExpr(0, u64_ty);
-        const rhs = try self.builder.intLiteralExpr(if (value) 0 else 1, u64_ty);
-        return try self.builder.lowLevelExpr(.num_is_eq, &.{ lhs, rhs }, bool_ty);
+        const lhs = try self.intLiteralExpr(0, u64_ty);
+        const rhs = try self.intLiteralExpr(if (value) 0 else 1, u64_ty);
+        return try self.lowLevelExpr(.num_is_eq, &.{ lhs, rhs }, bool_ty);
     }
 
     fn lowerDirectStructuralHash(
@@ -13810,8 +13968,8 @@ const BodyContext = struct {
         hasher_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
         const u64_ty = try self.builder.primitiveType(.u64);
-        const value_expr = try self.builder.intLiteralExpr(value, u64_ty);
-        return try self.builder.lowLevelExpr(.hasher_write_u64, &.{ hasher, value_expr }, hasher_ty);
+        const value_expr = try self.intLiteralExpr(value, u64_ty);
+        return try self.lowLevelExpr(.hasher_write_u64, &.{ hasher, value_expr }, hasher_ty);
     }
 
     const MatchOutput = union(enum) {
@@ -13885,18 +14043,18 @@ const BodyContext = struct {
         const pattern_items = try self.allocator.alloc(Ast.PatId, merge_binders.len + 1);
         defer self.allocator.free(pattern_items);
         for (merge_binders, 0..) |merge, i| {
-            const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), merge.ty, merge.binder);
+            const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), merge.ty, merge.binder);
             try bindLocalName(self.builder.program, self.view, local, merge.binder);
             try self.binders.put(merge.binder, local);
-            pattern_items[i] = try self.builder.program.addPat(.{ .ty = merge.ty, .data = .{ .bind = local } });
+            pattern_items[i] = try self.addPat(.{ .ty = merge.ty, .data = .{ .bind = local } });
         }
 
-        const result_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), result_ty);
-        pattern_items[merge_binders.len] = try self.builder.program.addPat(.{ .ty = result_ty, .data = .{ .bind = result_local } });
-        const bind_pat = try self.builder.program.addPat(.{ .ty = state_ty, .data = .{ .tuple = try self.builder.program.addPatSpan(pattern_items) } });
-        const rest = try self.builder.localExpr(result_local, result_ty);
+        const result_local = try self.addLocal(self.builder.symbols.fresh(), result_ty);
+        pattern_items[merge_binders.len] = try self.addPat(.{ .ty = result_ty, .data = .{ .bind = result_local } });
+        const bind_pat = try self.addPat(.{ .ty = state_ty, .data = .{ .tuple = try self.addPatSpan(pattern_items) } });
+        const rest = try self.localExpr(result_local, result_ty);
 
-        return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
+        return try self.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
             .bind = bind_pat,
             .value = state_expr,
             .rest = rest,
@@ -13910,7 +14068,7 @@ const BodyContext = struct {
         comptime_site: ?Ast.ComptimeSiteId,
     ) Allocator.Error!Ast.ExprId {
         const output_ty = self.matchOutputType(output);
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = output_ty,
             .data = try self.lowerMatch(match, output, comptime_site),
         });
@@ -13996,10 +14154,10 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const u64_ty = try self.builder.primitiveType(.u64);
         const bool_ty = try self.builder.primitiveType(.bool);
-        const len = try self.builder.lowLevelExpr(.list_len, &.{scrutinee}, u64_ty);
-        const required = try self.builder.intLiteralExpr(list.patterns.len, u64_ty);
+        const len = try self.lowLevelExpr(.list_len, &.{scrutinee}, u64_ty);
+        const required = try self.intLiteralExpr(list.patterns.len, u64_ty);
         const op: can.CIR.Expr.LowLevel = if (list.rest == null) .num_is_eq else .num_is_gte;
-        return try self.builder.lowLevelExpr(op, &.{ len, required }, bool_ty);
+        return try self.lowLevelExpr(op, &.{ len, required }, bool_ty);
     }
 
     fn applyListCheck(
@@ -14014,7 +14172,7 @@ const BodyContext = struct {
         const elem_ty = self.constListElemType(scrutinee_ty);
         const u64_ty = try self.builder.primitiveType(.u64);
         const needs_len = if (list.rest) |rest| rest.index < list.patterns.len or rest.pattern != null else false;
-        const len = if (needs_len) try self.builder.lowLevelExpr(.list_len, &.{scrutinee}, u64_ty) else null;
+        const len = if (needs_len) try self.lowLevelExpr(.list_len, &.{scrutinee}, u64_ty) else null;
 
         const values = try self.allocator.alloc(Ast.ExprId, list.patterns.len);
         defer self.allocator.free(values);
@@ -14035,7 +14193,7 @@ const BodyContext = struct {
 
         for (list.patterns, 0..) |pattern_id, index| {
             const item_index = try self.listPatternItemIndex(index, list.patterns.len, list.rest, len, u64_ty);
-            values[index] = try self.builder.lowLevelExpr(.list_get_unsafe, &.{ scrutinee, item_index }, elem_ty);
+            values[index] = try self.lowLevelExpr(.list_get_unsafe, &.{ scrutinee, item_index }, elem_ty);
             const guards_start = self.pattern_literal_guards.items.len;
             patterns[index] = try self.lowerPatternAtTypeCollectingLists(pattern_id, elem_ty, &sub_checks_per_elem[index]);
             literal_guards_per_elem[index] = try self.drainPatternLiteralGuards(guards_start);
@@ -14049,12 +14207,12 @@ const BodyContext = struct {
         defer self.allocator.free(rest_literal_guards);
         if (list.rest) |rest| {
             if (rest.pattern) |rest_pattern| {
-                const list_len = len orelse try self.builder.lowLevelExpr(.list_len, &.{scrutinee}, u64_ty);
-                const fixed_count = try self.builder.intLiteralExpr(list.patterns.len, u64_ty);
-                const rest_len = try self.builder.lowLevelExpr(.num_minus, &.{ list_len, fixed_count }, u64_ty);
-                const rest_start = try self.builder.intLiteralExpr(rest.index, u64_ty);
+                const list_len = len orelse try self.lowLevelExpr(.list_len, &.{scrutinee}, u64_ty);
+                const fixed_count = try self.intLiteralExpr(list.patterns.len, u64_ty);
+                const rest_len = try self.lowLevelExpr(.num_minus, &.{ list_len, fixed_count }, u64_ty);
+                const rest_start = try self.intLiteralExpr(rest.index, u64_ty);
                 const range = try self.sublistRangeExpr(rest_start, rest_len, u64_ty);
-                rest_value = try self.builder.lowLevelExpr(.list_sublist, &.{ scrutinee, range }, scrutinee_ty);
+                rest_value = try self.lowLevelExpr(.list_sublist, &.{ scrutinee, range }, scrutinee_ty);
                 const guards_start = self.pattern_literal_guards.items.len;
                 rest_pat = try self.lowerPatternAtTypeCollectingLists(rest_pattern, scrutinee_ty, &rest_sub_checks);
                 rest_literal_guards = try self.drainPatternLiteralGuards(guards_start);
@@ -14071,7 +14229,7 @@ const BodyContext = struct {
             while (sub_index > 0) {
                 sub_index -= 1;
                 const sub = sub_checks_per_elem[index].items[sub_index];
-                const sub_scrut = try self.builder.localExpr(sub.local, sub.ty);
+                const sub_scrut = try self.localExpr(sub.local, sub.ty);
                 elem_success = try self.applyListCheck(sub_scrut, sub.ty, sub, elem_success, fallback, output_ty);
             }
             elem_success = try self.applyPatternLiteralGuards(literal_guards_per_elem[index], elem_success, fallback, output_ty);
@@ -14084,7 +14242,7 @@ const BodyContext = struct {
             while (sub_index > 0) {
                 sub_index -= 1;
                 const sub = rest_sub_checks.items[sub_index];
-                const sub_scrut = try self.builder.localExpr(sub.local, sub.ty);
+                const sub_scrut = try self.localExpr(sub.local, sub.ty);
                 rest_success = try self.applyListCheck(sub_scrut, sub.ty, sub, rest_success, fallback, output_ty);
             }
             rest_success = try self.applyPatternLiteralGuards(rest_literal_guards, rest_success, fallback, output_ty);
@@ -14099,7 +14257,7 @@ const BodyContext = struct {
         }
 
         const cond = try self.listPatternCondition(scrutinee, list);
-        return try self.builder.ifExpr(cond, success, fallback, output_ty);
+        return try self.ifExpr(cond, success, fallback, output_ty);
     }
 
     fn preRegisterPatternBinders(
@@ -14111,14 +14269,14 @@ const BodyContext = struct {
         switch (pattern.data) {
             .assign => |binder| {
                 if (self.binders.get(binder) == null) {
-                    const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), ty, binder);
+                    const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), ty, binder);
                     try bindLocalName(self.builder.program, self.view, local, binder);
                     try self.binders.put(binder, local);
                 }
             },
             .as => |as| {
                 if (self.binders.get(as.binder) == null) {
-                    const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), ty, as.binder);
+                    const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), ty, as.binder);
                     try bindLocalName(self.builder.program, self.view, local, as.binder);
                     try self.binders.put(as.binder, local);
                 }
@@ -14203,7 +14361,7 @@ const BodyContext = struct {
             => Common.invariant("non-runtime checked pattern reached Monotype lowering"),
             .assign => |binder| blk: {
                 const local = if (self.binders.get(binder)) |existing| existing else inner: {
-                    const new_local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), ty, binder);
+                    const new_local = try self.addLocalWithBinder(self.builder.symbols.fresh(), ty, binder);
                     try bindLocalName(self.builder.program, self.view, new_local, binder);
                     try self.binders.put(binder, new_local);
                     break :inner new_local;
@@ -14212,7 +14370,7 @@ const BodyContext = struct {
             },
             .as => |as| blk: {
                 const local = if (self.binders.get(as.binder)) |existing| existing else inner: {
-                    const new_local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), ty, as.binder);
+                    const new_local = try self.addLocalWithBinder(self.builder.symbols.fresh(), ty, as.binder);
                     try bindLocalName(self.builder.program, self.view, new_local, as.binder);
                     try self.binders.put(as.binder, new_local);
                     break :inner new_local;
@@ -14226,7 +14384,7 @@ const BodyContext = struct {
             .nominal => |nominal| .{ .nominal = try self.lowerPatternAtTypeCollectingLists(nominal.backing_pattern, self.builder.namedBackingType(ty) orelse ty, checks_out) },
             .record_destructure => |destructs| try self.lowerRecordPatternCollectingLists(destructs, ty, checks_out),
             .list => |list| blk: {
-                const local = try self.builder.program.addLocal(self.builder.symbols.fresh(), ty);
+                const local = try self.addLocal(self.builder.symbols.fresh(), ty);
                 try checks_out.append(self.allocator, .{
                     .local = local,
                     .ty = ty,
@@ -14257,7 +14415,7 @@ const BodyContext = struct {
             .str_interpolation => |str| try self.lowerStrPatternCollectingLists(str, ty, checks_out),
             .underscore => .wildcard,
         };
-        return try self.builder.program.addPat(.{ .ty = ty, .data = data });
+        return try self.addPat(.{ .ty = ty, .data = data });
     }
 
     fn lowerStrPatternCollectingLists(
@@ -14278,7 +14436,7 @@ const BodyContext = struct {
 
         return .{ .str_pattern = .{
             .prefix = try self.lowerStringLiteral(str.prefix),
-            .steps = try self.builder.program.addStrPatternStepSpan(steps),
+            .steps = try self.addStrPatternStepSpan(steps),
             .end = switch (str.end) {
                 .exact => .exact,
                 .tail => .tail,
@@ -14298,7 +14456,7 @@ const BodyContext = struct {
         for (checked_patterns, tys, 0..) |child, child_ty, i| {
             lowered[i] = try self.lowerPatternAtTypeCollectingLists(child, child_ty, checks_out);
         }
-        return try self.builder.program.addPatSpan(lowered);
+        return try self.addPatSpan(lowered);
     }
 
     fn lowerTagPatternCollectingLists(
@@ -14341,7 +14499,7 @@ const BodyContext = struct {
                 .pattern = try self.lowerPatternAtTypeCollectingLists(child, child_ty, checks_out),
             });
         }
-        return .{ .record = try self.builder.program.addRecordDestructSpan(lowered.items) };
+        return .{ .record = try self.addRecordDestructSpan(lowered.items) };
     }
 
     fn wrapPatternMatch(
@@ -14353,14 +14511,14 @@ const BodyContext = struct {
         miss: Ast.ExprId,
         result_ty: Type.TypeId,
     ) Allocator.Error!Ast.ExprId {
-        const wildcard = try self.builder.program.addPat(.{ .ty = value_ty, .data = .wildcard });
+        const wildcard = try self.addPat(.{ .ty = value_ty, .data = .wildcard });
         const branches = [_]Ast.Branch{
             .{ .pat = pattern, .body = success },
             .{ .pat = wildcard, .body = miss },
         };
-        return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .match_ = .{
+        return try self.addExpr(.{ .ty = result_ty, .data = .{ .match_ = .{
             .scrutinee = value,
-            .branches = try self.builder.program.addBranchSpan(&branches),
+            .branches = try self.addBranchSpan(&branches),
         } } });
     }
 
@@ -14410,18 +14568,18 @@ const BodyContext = struct {
         if (!self.patternNeedsExplicitBinding(pattern_id)) {
             const pat = try self.lowerPatternAtType(pattern_id, value_ty);
             const rest = try self.lowerBindingContinuation(continuation, result_ty);
-            return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
+            return try self.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
                 .bind = pat,
                 .value = value,
                 .rest = rest,
             } } });
         }
 
-        const local = try self.builder.program.addLocal(self.builder.symbols.fresh(), value_ty);
-        const local_expr = try self.builder.localExpr(local, value_ty);
+        const local = try self.addLocal(self.builder.symbols.fresh(), value_ty);
+        const local_expr = try self.localExpr(local, value_ty);
         const rest = try self.lowerMaterializedPatternThen(pattern_id, local_expr, value_ty, result_ty, continuation, miss);
-        return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
-            .bind = try self.builder.bindPat(local, value_ty),
+        return try self.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
+            .bind = try self.bindPat(local, value_ty),
             .value = value,
             .rest = rest,
         } } });
@@ -14473,7 +14631,7 @@ const BodyContext = struct {
     ) Allocator.Error!Ast.ExprId {
         const success = try self.lowerListPatternBindingSuccess(value, value_ty, list, result_ty, continuation, miss);
         const cond = try self.listPatternCondition(value, list);
-        return try self.builder.ifExpr(cond, success, miss, result_ty);
+        return try self.ifExpr(cond, success, miss, result_ty);
     }
 
     fn listPatternItemIndex(
@@ -14487,11 +14645,11 @@ const BodyContext = struct {
         if (rest) |rest_info| {
             if (index >= rest_info.index) {
                 const list_len = len orelse Common.invariant("list pattern trailing item index required list length");
-                const trailing_count = try self.builder.intLiteralExpr(pattern_count - index, u64_ty);
-                return try self.builder.lowLevelExpr(.num_minus, &.{ list_len, trailing_count }, u64_ty);
+                const trailing_count = try self.intLiteralExpr(pattern_count - index, u64_ty);
+                return try self.lowLevelExpr(.num_minus, &.{ list_len, trailing_count }, u64_ty);
             }
         }
-        return try self.builder.intLiteralExpr(index, u64_ty);
+        return try self.intLiteralExpr(index, u64_ty);
     }
 
     fn sublistRangeExpr(
@@ -14511,7 +14669,7 @@ const BodyContext = struct {
             .{ .name = len_name, .value = len },
             .{ .name = start_name, .value = start },
         };
-        return try self.builder.program.addExpr(.{ .ty = ty, .data = .{ .record = try self.builder.program.addFieldExprSpan(&exprs) } });
+        return try self.addExpr(.{ .ty = ty, .data = .{ .record = try self.addFieldExprSpan(&exprs) } });
     }
 
     fn lowerListPatternBindingSuccess(
@@ -14530,11 +14688,11 @@ const BodyContext = struct {
         defer self.allocator.free(patterns);
         const u64_ty = try self.builder.primitiveType(.u64);
         const needs_len = if (list.rest) |rest| rest.index < list.patterns.len or rest.pattern != null else false;
-        const len = if (needs_len) try self.builder.lowLevelExpr(.list_len, &.{value}, u64_ty) else null;
+        const len = if (needs_len) try self.lowLevelExpr(.list_len, &.{value}, u64_ty) else null;
 
         for (list.patterns, 0..) |pattern_id, index| {
             const item_index = try self.listPatternItemIndex(index, list.patterns.len, list.rest, len, u64_ty);
-            values[index] = try self.builder.lowLevelExpr(.list_get_unsafe, &.{ value, item_index }, elem_ty);
+            values[index] = try self.lowLevelExpr(.list_get_unsafe, &.{ value, item_index }, elem_ty);
             patterns[index] = try self.lowerPatternAtType(pattern_id, elem_ty);
         }
 
@@ -14542,12 +14700,12 @@ const BodyContext = struct {
         var rest_value: ?Ast.ExprId = null;
         if (list.rest) |rest| {
             if (rest.pattern) |rest_pattern| {
-                const list_len = len orelse try self.builder.lowLevelExpr(.list_len, &.{value}, u64_ty);
-                const fixed_count = try self.builder.intLiteralExpr(list.patterns.len, u64_ty);
-                const rest_len = try self.builder.lowLevelExpr(.num_minus, &.{ list_len, fixed_count }, u64_ty);
-                const rest_start = try self.builder.intLiteralExpr(rest.index, u64_ty);
+                const list_len = len orelse try self.lowLevelExpr(.list_len, &.{value}, u64_ty);
+                const fixed_count = try self.intLiteralExpr(list.patterns.len, u64_ty);
+                const rest_len = try self.lowLevelExpr(.num_minus, &.{ list_len, fixed_count }, u64_ty);
+                const rest_start = try self.intLiteralExpr(rest.index, u64_ty);
                 const range = try self.sublistRangeExpr(rest_start, rest_len, u64_ty);
-                rest_value = try self.builder.lowLevelExpr(.list_sublist, &.{ value, range }, value_ty);
+                rest_value = try self.lowLevelExpr(.list_sublist, &.{ value, range }, value_ty);
                 rest_pat = try self.lowerPatternAtType(rest_pattern, value_ty);
             }
         }
@@ -14588,7 +14746,7 @@ const BodyContext = struct {
                 .required, .sub_pattern => |child| {
                     const name = try self.builder.recordFieldName(self.view, destruct.label);
                     const field_ty = self.builder.recordFieldType(value_ty, name);
-                    const field_value = try self.builder.program.addExpr(.{
+                    const field_value = try self.addExpr(.{
                         .ty = field_ty,
                         .data = .{ .field_access = .{
                             .receiver = value,
@@ -14596,7 +14754,7 @@ const BodyContext = struct {
                         } },
                     });
                     const pat = try self.lowerPatternAtType(child, field_ty);
-                    success = try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
+                    success = try self.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
                         .bind = pat,
                         .value = field_value,
                         .rest = success,
@@ -14607,7 +14765,7 @@ const BodyContext = struct {
                     const rest_ty = try self.lowerType(self.view.bodies.pattern(child).ty);
                     const rest_value = try self.lowerRecordRestValue(value, rest_ty);
                     const pat = try self.lowerPatternAtType(child, rest_ty);
-                    success = try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
+                    success = try self.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
                         .bind = pat,
                         .value = rest_value,
                         .rest = success,
@@ -14629,7 +14787,7 @@ const BodyContext = struct {
         for (rest_fields, 0..) |field, i| {
             fields[i] = .{
                 .name = field.name,
-                .value = try self.builder.program.addExpr(.{
+                .value = try self.addExpr(.{
                     .ty = field.ty,
                     .data = .{ .field_access = .{
                         .receiver = value,
@@ -14638,20 +14796,20 @@ const BodyContext = struct {
                 }),
             };
         }
-        return try self.builder.program.addExpr(.{ .ty = rest_ty, .data = .{
-            .record = try self.builder.program.addFieldExprSpan(fields),
+        return try self.addExpr(.{ .ty = rest_ty, .data = .{
+            .record = try self.addFieldExprSpan(fields),
         } });
     }
 
     fn runtimeCrashExpr(self: *BodyContext, ty: Type.TypeId, message: []const u8) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
-            .data = .{ .crash = try self.builder.program.addStringLiteral(message) },
+            .data = .{ .crash = try self.addStringLiteral(message) },
         });
     }
 
     fn comptimeExhaustivenessFailedExpr(self: *BodyContext, ty: Type.TypeId, site: Ast.ComptimeSiteId) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
             .data = .{ .comptime_exhaustiveness_failed = site },
         });
@@ -14674,8 +14832,8 @@ const BodyContext = struct {
         body: Ast.ExprId,
     ) Allocator.Error!Ast.ExprId {
         const actual_site = site orelse return body;
-        const ty = self.builder.program.exprs.items[@intFromEnum(body)].ty;
-        return try self.builder.program.addExpr(.{ .ty = ty, .data = .{ .comptime_branch_taken = .{
+        const ty = self.exprType(body);
+        return try self.addExpr(.{ .ty = ty, .data = .{ .comptime_branch_taken = .{
             .site = actual_site,
             .branch_index = @intCast(branch_index),
             .body = body,
@@ -14768,7 +14926,7 @@ const BodyContext = struct {
         }
         return .{ .match_ = .{
             .scrutinee = scrutinee,
-            .branches = try self.builder.program.addBranchSpan(branches),
+            .branches = try self.addBranchSpan(branches),
             .comptime_site = comptime_site,
         } };
     }
@@ -14886,14 +15044,14 @@ const BodyContext = struct {
         defer self.allocator.free(merge_binders);
 
         if (merge_binders.len == 0) {
-            return try self.builder.program.addExpr(.{
+            return try self.addExpr(.{
                 .ty = result_ty,
                 .data = try self.lowerIf(if_, result_ty, result_ty, &.{}, comptime_site),
             });
         }
 
         const state_ty = try self.stateResultType(merge_binders, result_ty);
-        const state_expr = try self.builder.program.addExpr(.{
+        const state_expr = try self.addExpr(.{
             .ty = state_ty,
             .data = try self.lowerIf(if_, result_ty, state_ty, merge_binders, comptime_site),
         });
@@ -14901,18 +15059,18 @@ const BodyContext = struct {
         const pattern_items = try self.allocator.alloc(Ast.PatId, merge_binders.len + 1);
         defer self.allocator.free(pattern_items);
         for (merge_binders, 0..) |merge, i| {
-            const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), merge.ty, merge.binder);
+            const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), merge.ty, merge.binder);
             try bindLocalName(self.builder.program, self.view, local, merge.binder);
             try self.binders.put(merge.binder, local);
-            pattern_items[i] = try self.builder.program.addPat(.{ .ty = merge.ty, .data = .{ .bind = local } });
+            pattern_items[i] = try self.addPat(.{ .ty = merge.ty, .data = .{ .bind = local } });
         }
 
-        const result_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), result_ty);
-        pattern_items[merge_binders.len] = try self.builder.program.addPat(.{ .ty = result_ty, .data = .{ .bind = result_local } });
-        const bind_pat = try self.builder.program.addPat(.{ .ty = state_ty, .data = .{ .tuple = try self.builder.program.addPatSpan(pattern_items) } });
-        const rest = try self.builder.localExpr(result_local, result_ty);
+        const result_local = try self.addLocal(self.builder.symbols.fresh(), result_ty);
+        pattern_items[merge_binders.len] = try self.addPat(.{ .ty = result_ty, .data = .{ .bind = result_local } });
+        const bind_pat = try self.addPat(.{ .ty = state_ty, .data = .{ .tuple = try self.addPatSpan(pattern_items) } });
+        const rest = try self.localExpr(result_local, result_ty);
 
-        return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
+        return try self.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
             .bind = bind_pat,
             .value = state_expr,
             .rest = rest,
@@ -14928,7 +15086,7 @@ const BodyContext = struct {
         errdefer merge_binders.deinit(self.allocator);
         for (reassigned.items) |binder| {
             const before = self.binders.get(binder) orelse continue;
-            const ty = self.builder.program.locals.items[@intFromEnum(before)].ty;
+            const ty = self.localType(before);
             try merge_binders.append(self.allocator, .{
                 .binder = binder,
                 .before = before,
@@ -14989,7 +15147,7 @@ const BodyContext = struct {
         var else_ctx = try self.childContext(self.current_fn_key);
         defer else_ctx.deinit();
         return .{ .if_ = .{
-            .branches = try self.builder.program.addIfBranchSpan(branches),
+            .branches = try self.addIfBranchSpan(branches),
             .final_else = try else_ctx.wrapComptimeBranch(
                 comptime_site,
                 if_.branches.len,
@@ -15035,7 +15193,7 @@ const BodyContext = struct {
         var else_ctx = try self.childContext(self.current_fn_key);
         defer else_ctx.deinit();
         return .{ .if_ = .{
-            .branches = try self.builder.program.addIfBranchSpan(branches),
+            .branches = try self.addIfBranchSpan(branches),
             .final_else = try else_ctx.wrapComptimeBranch(
                 comptime_site,
                 if_.branches.len,
@@ -15064,8 +15222,8 @@ const BodyContext = struct {
                     try self.lowerDivergentExprAtType(block.final_expr, result_ty)
                 else
                     try self.lowerExprAtType(block.final_expr, result_ty);
-                return try self.builder.program.addExpr(.{ .ty = state_ty, .data = .{ .block = .{
-                    .statements = try self.builder.program.addStmtSpan(statements.items[0..statements.len]),
+                return try self.addExpr(.{ .ty = state_ty, .data = .{ .block = .{
+                    .statements = try self.addStmtSpan(statements.items[0..statements.len]),
                     .final_expr = try self.stateResultAfterValue(state_ty, merge_binders, result_ty, value),
                 } } });
             },
@@ -15090,22 +15248,22 @@ const BodyContext = struct {
                 var statements = try self.lowerBlockStatements(block.statements);
                 defer self.allocator.free(statements.items);
                 if (!statements.diverges) {
-                    const final_stmt = try self.builder.program.addStmt(.{ .expr = if (self.checkedExprDiverges(block.final_expr))
+                    const final_stmt = try self.addStmt(.{ .expr = if (self.checkedExprDiverges(block.final_expr))
                         try self.lowerDivergentExprAtType(block.final_expr, try self.lowerType(checked_body.ty))
                     else
                         try self.lowerExpr(block.final_expr) });
                     try statements.append(self.allocator, final_stmt);
                 }
-                return try self.builder.program.addExpr(.{ .ty = state_ty, .data = .{ .block = .{
-                    .statements = try self.builder.program.addStmtSpan(statements.items[0..statements.len]),
+                return try self.addExpr(.{ .ty = state_ty, .data = .{ .block = .{
+                    .statements = try self.addStmtSpan(statements.items[0..statements.len]),
                     .final_expr = try self.stateOnlyTupleExpr(state_ty, merge_binders),
                 } } });
             },
             else => {
                 const value = try self.lowerExpr(body);
-                const stmt = try self.builder.program.addStmt(.{ .expr = value });
-                return try self.builder.program.addExpr(.{ .ty = state_ty, .data = .{ .block = .{
-                    .statements = try self.builder.program.addStmtSpan(&[_]Ast.StmtId{stmt}),
+                const stmt = try self.addStmt(.{ .expr = value });
+                return try self.addExpr(.{ .ty = state_ty, .data = .{ .block = .{
+                    .statements = try self.addStmtSpan(&[_]Ast.StmtId{stmt}),
                     .final_expr = try self.stateOnlyTupleExpr(state_ty, merge_binders),
                 } } });
             },
@@ -15122,10 +15280,10 @@ const BodyContext = struct {
         defer self.allocator.free(items);
         for (merge_binders, 0..) |merge, i| {
             const current = self.binders.get(merge.binder) orelse merge.before;
-            items[i] = try self.builder.localExpr(current, merge.ty);
+            items[i] = try self.localExpr(current, merge.ty);
         }
         items[merge_binders.len] = result;
-        return try self.builder.program.addExpr(.{ .ty = state_ty, .data = .{ .tuple = try self.builder.program.addExprSpan(items) } });
+        return try self.addExpr(.{ .ty = state_ty, .data = .{ .tuple = try self.addExprSpan(items) } });
     }
 
     fn stateResultAfterValue(
@@ -15135,10 +15293,10 @@ const BodyContext = struct {
         result_ty: Type.TypeId,
         value: Ast.ExprId,
     ) Allocator.Error!Ast.ExprId {
-        const local = try self.builder.program.addLocal(self.builder.symbols.fresh(), result_ty);
-        const local_expr = try self.builder.localExpr(local, result_ty);
-        return try self.builder.program.addExpr(.{ .ty = state_ty, .data = .{ .let_ = .{
-            .bind = try self.builder.bindPat(local, result_ty),
+        const local = try self.addLocal(self.builder.symbols.fresh(), result_ty);
+        const local_expr = try self.localExpr(local, result_ty);
+        return try self.addExpr(.{ .ty = state_ty, .data = .{ .let_ = .{
+            .bind = try self.bindPat(local, result_ty),
             .value = value,
             .rest = try self.stateResultTupleExpr(state_ty, merge_binders, local_expr),
         } } });
@@ -15150,21 +15308,21 @@ const BodyContext = struct {
         merge_binders: []const MergeBinder,
     ) Allocator.Error!Ast.ExprId {
         if (merge_binders.len == 0) {
-            return try self.builder.program.addExpr(.{ .ty = state_ty, .data = .unit });
+            return try self.addExpr(.{ .ty = state_ty, .data = .unit });
         }
         if (merge_binders.len == 1) {
             const merge = merge_binders[0];
             const current = self.binders.get(merge.binder) orelse merge.before;
-            return try self.builder.localExpr(current, merge.ty);
+            return try self.localExpr(current, merge.ty);
         }
 
         const items = try self.allocator.alloc(Ast.ExprId, merge_binders.len);
         defer self.allocator.free(items);
         for (merge_binders, 0..) |merge, i| {
             const current = self.binders.get(merge.binder) orelse merge.before;
-            items[i] = try self.builder.localExpr(current, merge.ty);
+            items[i] = try self.localExpr(current, merge.ty);
         }
-        return try self.builder.program.addExpr(.{ .ty = state_ty, .data = .{ .tuple = try self.builder.program.addExprSpan(items) } });
+        return try self.addExpr(.{ .ty = state_ty, .data = .{ .tuple = try self.addExprSpan(items) } });
     }
 
     fn stateOnlyPattern(
@@ -15172,31 +15330,31 @@ const BodyContext = struct {
         state_ty: Type.TypeId,
         merge_binders: []const MergeBinder,
     ) Allocator.Error!Ast.PatId {
-        if (merge_binders.len == 0) return try self.builder.program.addPat(.{ .ty = state_ty, .data = .wildcard });
+        if (merge_binders.len == 0) return try self.addPat(.{ .ty = state_ty, .data = .wildcard });
         if (merge_binders.len == 1) {
             const merge = merge_binders[0];
-            const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), merge.ty, merge.binder);
+            const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), merge.ty, merge.binder);
             try bindLocalName(self.builder.program, self.view, local, merge.binder);
             try self.binders.put(merge.binder, local);
-            return try self.builder.program.addPat(.{ .ty = state_ty, .data = .{ .bind = local } });
+            return try self.addPat(.{ .ty = state_ty, .data = .{ .bind = local } });
         }
 
         const pattern_items = try self.allocator.alloc(Ast.PatId, merge_binders.len);
         defer self.allocator.free(pattern_items);
         for (merge_binders, 0..) |merge, i| {
-            const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), merge.ty, merge.binder);
+            const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), merge.ty, merge.binder);
             try bindLocalName(self.builder.program, self.view, local, merge.binder);
             try self.binders.put(merge.binder, local);
-            pattern_items[i] = try self.builder.program.addPat(.{ .ty = merge.ty, .data = .{ .bind = local } });
+            pattern_items[i] = try self.addPat(.{ .ty = merge.ty, .data = .{ .bind = local } });
         }
-        return try self.builder.program.addPat(.{ .ty = state_ty, .data = .{ .tuple = try self.builder.program.addPatSpan(pattern_items) } });
+        return try self.addPat(.{ .ty = state_ty, .data = .{ .tuple = try self.addPatSpan(pattern_items) } });
     }
 
     fn lowerBlock(self: *BodyContext, block: anytype, ty: Type.TypeId) Allocator.Error!Ast.ExprData {
         const stmts = try self.lowerBlockStatements(block.statements);
         defer self.allocator.free(stmts.items);
         return .{ .block = .{
-            .statements = try self.builder.program.addStmtSpan(stmts.items[0..stmts.len]),
+            .statements = try self.addStmtSpan(stmts.items[0..stmts.len]),
             .final_expr = if (stmts.diverges)
                 try self.unreachableAfterDivergentStatementExpr(ty)
             else if (self.checkedExprDiverges(block.final_expr))
@@ -15268,14 +15426,14 @@ const BodyContext = struct {
         if (!self.recordDestructsNeedExplicitRest(destructs)) return false;
 
         const value = try self.lowerExpr(expr);
-        const value_ty = self.builder.program.exprs.items[@intFromEnum(value)].ty;
-        const source_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), value_ty);
-        try lowered.append(self.allocator, try self.builder.program.addStmt(.{ .let_ = .{
-            .pat = try self.builder.bindPat(source_local, value_ty),
+        const value_ty = self.exprType(value);
+        const source_local = try self.addLocal(self.builder.symbols.fresh(), value_ty);
+        try lowered.append(self.allocator, try self.addStmt(.{ .let_ = .{
+            .pat = try self.bindPat(source_local, value_ty),
             .value = value,
         } }));
 
-        const source_expr = try self.builder.localExpr(source_local, value_ty);
+        const source_expr = try self.localExpr(source_local, value_ty);
         const comptime_site = if (self.inComptimeExhaustivenessContext() and self.patternCanMiss(pattern))
             try self.addComptimeSite(.destructure, statement.source_region, self.view.exhaustiveness_sites.lookupByDestructurePattern(pattern), &.{})
         else
@@ -15297,14 +15455,14 @@ const BodyContext = struct {
                 .required, .sub_pattern => |child| {
                     const name = try self.builder.recordFieldName(self.view, destruct.label);
                     const field_ty = self.builder.recordFieldType(value_ty, name);
-                    const field_value = try self.builder.program.addExpr(.{
+                    const field_value = try self.addExpr(.{
                         .ty = field_ty,
                         .data = .{ .field_access = .{
                             .receiver = value,
                             .field = name,
                         } },
                     });
-                    try lowered.append(self.allocator, try self.builder.program.addStmt(.{ .let_ = .{
+                    try lowered.append(self.allocator, try self.addStmt(.{ .let_ = .{
                         .pat = try self.lowerPatternAtType(child, field_ty),
                         .value = field_value,
                         .comptime_site = if (self.patternCanMiss(child)) comptime_site else null,
@@ -15314,7 +15472,7 @@ const BodyContext = struct {
                     if (self.patternIsIgnored(child)) continue;
                     const rest_ty = try self.lowerType(self.view.bodies.pattern(child).ty);
                     const rest_value = try self.lowerRecordRestValue(value, rest_ty);
-                    try lowered.append(self.allocator, try self.builder.program.addStmt(.{ .let_ = .{
+                    try lowered.append(self.allocator, try self.addStmt(.{ .let_ = .{
                         .pat = try self.lowerPatternAtType(child, rest_ty),
                         .value = rest_value,
                         .comptime_site = if (self.patternCanMiss(child)) comptime_site else null,
@@ -15369,7 +15527,7 @@ const BodyContext = struct {
             else => {},
         }
 
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
             .data = try self.lowerDivergentExprDataAtType(checked_expr_id, ty),
         });
@@ -15377,7 +15535,7 @@ const BodyContext = struct {
 
     fn exprIdAsDivergentData(self: *BodyContext, expr: Ast.ExprId) Allocator.Error!Ast.ExprData {
         return .{ .block = .{
-            .statements = try self.builder.program.addStmtSpan(&[_]Ast.StmtId{}),
+            .statements = try self.addStmtSpan(&[_]Ast.StmtId{}),
             .final_expr = expr,
         } };
     }
@@ -15392,7 +15550,7 @@ const BodyContext = struct {
             .block => |block| try self.lowerBlock(block, ty),
             .match_ => |match| try self.exprIdAsDivergentData(try self.lowerMatchExpr(checked_expr_id, match, ty)),
             .if_ => |if_| try self.exprIdAsDivergentData(try self.lowerIfExpr(checked_expr_id, if_, ty)),
-            .ellipsis => .{ .crash = try self.builder.program.addStringLiteral("not implemented") },
+            .ellipsis => .{ .crash = try self.addStringLiteral("not implemented") },
             .crash => |msg| .{ .crash = try self.lowerStringLiteral(msg) },
             .expect_err => |expect_err| .{ .expect_err = .{
                 .msg = try self.lowerExpectErrMessage(expect_err.expr, expect_err.snippet),
@@ -15405,9 +15563,9 @@ const BodyContext = struct {
     }
 
     fn unreachableAfterDivergentStatementExpr(self: *BodyContext, ty: Type.TypeId) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = ty,
-            .data = .{ .crash = try self.builder.program.addStringLiteral("reached code after checked control transfer") },
+            .data = .{ .crash = try self.addStringLiteral("reached code after checked control transfer") },
         });
     }
 
@@ -15450,14 +15608,14 @@ const BodyContext = struct {
 
         const step = try self.iteratorStepShape(plan.step_ty);
         const initial_iterator = try self.lowerIteratorDispatch(plan.iter, null, null);
-        const iterator_ty = self.builder.program.exprs.items[@intFromEnum(initial_iterator)].ty;
+        const iterator_ty = self.exprType(initial_iterator);
         try self.constrainTypeToMono(plan.iterator_ty, iterator_ty);
         try self.constrainTypeToMono(step.one_rest.ty, iterator_ty);
         try self.constrainTypeToMono(step.skip_rest.ty, iterator_ty);
         const item_ty = try self.lowerType(step.one_item.ty);
         try self.constrainTypeToMono(plan.item_ty, item_ty);
         const step_expected_ty = try self.lowerType(plan.step_ty);
-        const iterator_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), iterator_ty);
+        const iterator_local = try self.addLocal(self.builder.symbols.fresh(), iterator_ty);
         const iterator_param = Ast.TypedLocal{ .local = iterator_local, .ty = iterator_ty };
 
         var saved = std.ArrayList(BinderRestore).empty;
@@ -15472,11 +15630,11 @@ const BodyContext = struct {
         defer self.popLoopContext();
 
         const step_expr = try self.lowerIteratorDispatch(plan.next, iterator_param, step_expected_ty);
-        try self.constrainTypeToMono(plan.step_ty, self.builder.program.exprs.items[@intFromEnum(step_expr)].ty);
+        try self.constrainTypeToMono(plan.step_ty, self.exprType(step_expr));
         const done_body = if (carries.len == 0)
-            try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .break_ = null } })
+            try self.addExpr(.{ .ty = result_ty, .data = .{ .break_ = null } })
         else
-            try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .break_ = try self.loopStateExpr(result_ty, carries) } });
+            try self.addExpr(.{ .ty = result_ty, .data = .{ .break_ = try self.loopStateExpr(result_ty, carries) } });
 
         var branches: [3]Ast.Branch = undefined;
         branches[0] = .{
@@ -15486,11 +15644,11 @@ const BodyContext = struct {
         branches[1] = try self.iteratorOneBranch(for_, result_ty, step, iterator_ty, carries);
         branches[2] = try self.iteratorSkipBranch(result_ty, step, iterator_ty, carries);
 
-        const match_expr = try self.builder.program.addExpr(.{
+        const match_expr = try self.addExpr(.{
             .ty = result_ty,
             .data = .{ .match_ = .{
                 .scrutinee = step_expr,
-                .branches = try self.builder.program.addBranchSpan(&branches),
+                .branches = try self.addBranchSpan(&branches),
             } },
         });
 
@@ -15503,12 +15661,12 @@ const BodyContext = struct {
         defer self.allocator.free(initial_values);
         initial_values[0] = initial_iterator;
         for (carries, 0..) |carry, i| {
-            initial_values[i + 1] = try self.builder.localExpr(carry.initial_local, carry.ty);
+            initial_values[i + 1] = try self.localExpr(carry.initial_local, carry.ty);
         }
 
         return .{ .loop_ = .{
-            .params = try self.builder.program.addTypedLocalSpan(params),
-            .initial_values = try self.builder.program.addExprSpan(initial_values),
+            .params = try self.addTypedLocalSpan(params),
+            .initial_values = try self.addExprSpan(initial_values),
             .body = match_expr,
         } };
     }
@@ -15534,8 +15692,8 @@ const BodyContext = struct {
         const break_body = try self.breakCurrentLoopExpr();
         const continue_body = try self.lowerWhileBodyThenContinue(while_.body, result_ty, carries);
         const branches = [_]Ast.IfBranch{.{ .cond = cond, .body = continue_body }};
-        const body = try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .if_ = .{
-            .branches = try self.builder.program.addIfBranchSpan(&branches),
+        const body = try self.addExpr(.{ .ty = result_ty, .data = .{ .if_ = .{
+            .branches = try self.addIfBranchSpan(&branches),
             .final_else = break_body,
         } } });
 
@@ -15546,12 +15704,12 @@ const BodyContext = struct {
         const initial_values = try self.allocator.alloc(Ast.ExprId, carries.len);
         defer self.allocator.free(initial_values);
         for (carries, 0..) |carry, i| {
-            initial_values[i] = try self.builder.localExpr(carry.initial_local, carry.ty);
+            initial_values[i] = try self.localExpr(carry.initial_local, carry.ty);
         }
 
         return .{ .loop_ = .{
-            .params = try self.builder.program.addTypedLocalSpan(params),
-            .initial_values = try self.builder.program.addExprSpan(initial_values),
+            .params = try self.addTypedLocalSpan(params),
+            .initial_values = try self.addExprSpan(initial_values),
             .body = body,
         } };
     }
@@ -15611,11 +15769,11 @@ const BodyContext = struct {
             args[i] = try self.lowerIteratorOperandAtType(operand, loop_iterator, arg_tys[i]);
         }
 
-        return try self.builder.program.addExpr(.{
+        return try self.addExpr(.{
             .ty = fn_data.ret,
             .data = .{ .call_proc = .{
                 .callee = Ast.procCalleeForSlot(try self.methodTargetCalleeWithMono(lookup, target_mono_ty)),
-                .args = try self.builder.program.addExprSpan(args),
+                .args = try self.addExprSpan(args),
             } },
         });
     }
@@ -15679,13 +15837,13 @@ const BodyContext = struct {
             .loop_iterator_state => blk: {
                 const iterator = loop_iterator orelse Common.invariant("iterator .next dispatch reached Monotype without a loop iterator local");
                 if (!self.sameType(iterator.ty, ty)) Common.invariant("iterator .next operand type differed from instantiated callable argument type");
-                break :blk try self.builder.localExpr(iterator.local, iterator.ty);
+                break :blk try self.localExpr(iterator.local, iterator.ty);
             },
         };
     }
 
     fn iteratorDonePattern(self: *BodyContext, step: IterStepShape) Allocator.Error!Ast.PatId {
-        return try self.builder.program.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
+        return try self.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.done_tag),
             .payloads = .empty(),
         } } });
@@ -15706,20 +15864,20 @@ const BodyContext = struct {
         defer self.restoreBinders(saved.items);
 
         const item_ty = try self.lowerType(step.one_item.ty);
-        const rest_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), iterator_ty);
+        const rest_local = try self.addLocal(self.builder.symbols.fresh(), iterator_ty);
         const item_local: ?Ast.LocalId = if (self.patternNeedsExplicitBinding(for_.pattern))
-            try self.builder.program.addLocal(self.builder.symbols.fresh(), item_ty)
+            try self.addLocal(self.builder.symbols.fresh(), item_ty)
         else
             null;
         const record_pat = try self.iteratorOnePayloadPattern(for_.pattern, step, item_ty, iterator_ty, rest_local, item_local);
-        const tag_pat = try self.builder.program.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
+        const tag_pat = try self.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.one_tag),
-            .payloads = try self.builder.program.addPatSpan(&[_]Ast.PatId{record_pat}),
+            .payloads = try self.addPatSpan(&[_]Ast.PatId{record_pat}),
         } } });
 
-        const rest_expr = try self.builder.localExpr(rest_local, iterator_ty);
+        const rest_expr = try self.localExpr(rest_local, iterator_ty);
         const block = if (item_local) |local| blk: {
-            const item_expr = try self.builder.localExpr(local, item_ty);
+            const item_expr = try self.localExpr(local, item_ty);
             const miss = try self.runtimeCrashExpr(result_ty, "pattern match failed");
             break :blk try self.lowerMaterializedPatternThen(
                 for_.pattern,
@@ -15760,21 +15918,21 @@ const BodyContext = struct {
                     lowered_statements[i] = try self.lowerStatement(statement);
                 }
                 if (!statement_diverges) {
-                    lowered_statements[block.statements.len] = try self.builder.program.addStmt(.{ .expr = if (self.checkedExprDiverges(block.final_expr))
+                    lowered_statements[block.statements.len] = try self.addStmt(.{ .expr = if (self.checkedExprDiverges(block.final_expr))
                         try self.lowerDivergentExprAtType(block.final_expr, result_ty)
                     else
                         try self.lowerExpr(block.final_expr) });
                 }
-                return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .block = .{
-                    .statements = try self.builder.program.addStmtSpan(lowered_statements),
+                return try self.addExpr(.{ .ty = result_ty, .data = .{ .block = .{
+                    .statements = try self.addStmtSpan(lowered_statements),
                     .final_expr = try self.continueWithState(result_ty, rest_expr, carries),
                 } } });
             },
             else => {
                 const body_expr = try self.lowerExpr(body);
-                const body_stmt = try self.builder.program.addStmt(.{ .expr = body_expr });
-                return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .block = .{
-                    .statements = try self.builder.program.addStmtSpan(&[_]Ast.StmtId{body_stmt}),
+                const body_stmt = try self.addStmt(.{ .expr = body_expr });
+                return try self.addExpr(.{ .ty = result_ty, .data = .{ .block = .{
+                    .statements = try self.addStmtSpan(&[_]Ast.StmtId{body_stmt}),
                     .final_expr = try self.continueWithState(result_ty, rest_expr, carries),
                 } } });
             },
@@ -15801,21 +15959,21 @@ const BodyContext = struct {
                     lowered_statements[i] = try self.lowerStatement(statement);
                 }
                 if (!statement_diverges) {
-                    lowered_statements[block.statements.len] = try self.builder.program.addStmt(.{ .expr = if (self.checkedExprDiverges(block.final_expr))
+                    lowered_statements[block.statements.len] = try self.addStmt(.{ .expr = if (self.checkedExprDiverges(block.final_expr))
                         try self.lowerDivergentExprAtType(block.final_expr, result_ty)
                     else
                         try self.lowerExpr(block.final_expr) });
                 }
-                return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .block = .{
-                    .statements = try self.builder.program.addStmtSpan(lowered_statements),
+                return try self.addExpr(.{ .ty = result_ty, .data = .{ .block = .{
+                    .statements = try self.addStmtSpan(lowered_statements),
                     .final_expr = try self.continueWithCurrentState(result_ty, carries),
                 } } });
             },
             else => {
                 const body_expr = try self.lowerExpr(body);
-                const body_stmt = try self.builder.program.addStmt(.{ .expr = body_expr });
-                return try self.builder.program.addExpr(.{ .ty = result_ty, .data = .{ .block = .{
-                    .statements = try self.builder.program.addStmtSpan(&[_]Ast.StmtId{body_stmt}),
+                const body_stmt = try self.addStmt(.{ .expr = body_expr });
+                return try self.addExpr(.{ .ty = result_ty, .data = .{ .block = .{
+                    .statements = try self.addStmtSpan(&[_]Ast.StmtId{body_stmt}),
                     .final_expr = try self.continueWithCurrentState(result_ty, carries),
                 } } });
             },
@@ -15829,13 +15987,13 @@ const BodyContext = struct {
         iterator_ty: Type.TypeId,
         carries: []const LoopCarry,
     ) Allocator.Error!Ast.Branch {
-        const rest_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), iterator_ty);
+        const rest_local = try self.addLocal(self.builder.symbols.fresh(), iterator_ty);
         const record_pat = try self.iteratorSkipPayloadPattern(step, iterator_ty, rest_local);
-        const tag_pat = try self.builder.program.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
+        const tag_pat = try self.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.skip_tag),
-            .payloads = try self.builder.program.addPatSpan(&[_]Ast.PatId{record_pat}),
+            .payloads = try self.addPatSpan(&[_]Ast.PatId{record_pat}),
         } } });
-        const rest_expr = try self.builder.localExpr(rest_local, iterator_ty);
+        const rest_expr = try self.localExpr(rest_local, iterator_ty);
         return .{
             .pat = tag_pat,
             .body = try self.continueWithState(result_ty, rest_expr, carries),
@@ -15852,15 +16010,15 @@ const BodyContext = struct {
         item_local: ?Ast.LocalId,
     ) Allocator.Error!Ast.PatId {
         const item_pat = if (item_local) |local|
-            try self.builder.bindPat(local, item_ty)
+            try self.bindPat(local, item_ty)
         else
             try self.lowerPatternAtType(item_pattern, item_ty);
         const item_field = try self.iteratorRecordDestruct(step.one_item.name, item_pat);
-        const rest_field = try self.iteratorRecordDestruct(step.one_rest.name, try self.builder.bindPat(rest_local, iterator_ty));
+        const rest_field = try self.iteratorRecordDestruct(step.one_rest.name, try self.bindPat(rest_local, iterator_ty));
         const fields = [_]Ast.RecordDestruct{ item_field, rest_field };
-        return try self.builder.program.addPat(.{
+        return try self.addPat(.{
             .ty = try self.lowerType(step.one_payload_ty),
-            .data = .{ .record = try self.builder.program.addRecordDestructSpan(&fields) },
+            .data = .{ .record = try self.addRecordDestructSpan(&fields) },
         });
     }
 
@@ -15870,11 +16028,11 @@ const BodyContext = struct {
         iterator_ty: Type.TypeId,
         rest_local: Ast.LocalId,
     ) Allocator.Error!Ast.PatId {
-        const rest_field = try self.iteratorRecordDestruct(step.skip_rest.name, try self.builder.bindPat(rest_local, iterator_ty));
+        const rest_field = try self.iteratorRecordDestruct(step.skip_rest.name, try self.bindPat(rest_local, iterator_ty));
         const fields = [_]Ast.RecordDestruct{rest_field};
-        return try self.builder.program.addPat(.{
+        return try self.addPat(.{
             .ty = try self.lowerType(step.skip_payload_ty),
-            .data = .{ .record = try self.builder.program.addRecordDestructSpan(&fields) },
+            .data = .{ .record = try self.addRecordDestructSpan(&fields) },
         });
     }
 
@@ -15908,7 +16066,7 @@ const BodyContext = struct {
     fn breakCurrentLoopExpr(self: *BodyContext) Allocator.Error!Ast.ExprId {
         const loop = self.currentLoopContext();
         const data = try self.breakCurrentLoopExprData();
-        return try self.builder.program.addExpr(.{ .ty = loop.result_ty, .data = data });
+        return try self.addExpr(.{ .ty = loop.result_ty, .data = data });
     }
 
     fn breakCurrentLoopExprData(self: *BodyContext) Allocator.Error!Ast.ExprData {
@@ -15920,8 +16078,8 @@ const BodyContext = struct {
     }
 
     fn continueWith(self: *BodyContext, ty: Type.TypeId, values: []const Ast.ExprId) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{ .ty = ty, .data = .{ .continue_ = .{
-            .values = try self.builder.program.addExprSpan(values),
+        return try self.addExpr(.{ .ty = ty, .data = .{ .continue_ = .{
+            .values = try self.addExprSpan(values),
         } } });
     }
 
@@ -15936,7 +16094,7 @@ const BodyContext = struct {
         defer self.allocator.free(values);
         for (carries, 0..) |carry, i| {
             const current = self.binders.get(carry.binder) orelse Common.invariant("loop-carried mutable binder was absent");
-            values[i] = try self.builder.localExpr(current, carry.ty);
+            values[i] = try self.localExpr(current, carry.ty);
         }
         return try self.continueWith(ty, values);
     }
@@ -15952,7 +16110,7 @@ const BodyContext = struct {
         values[0] = rest_expr;
         for (carries, 0..) |carry, i| {
             const current = self.binders.get(carry.binder) orelse Common.invariant("loop-carried mutable binder was absent");
-            values[i + 1] = try self.builder.localExpr(current, carry.ty);
+            values[i + 1] = try self.localExpr(current, carry.ty);
         }
         return try self.continueWith(ty, values);
     }
@@ -15961,16 +16119,16 @@ const BodyContext = struct {
         if (carries.len == 0) Common.invariant("empty loop state requested");
         if (carries.len == 1) {
             const current = self.binders.get(carries[0].binder) orelse Common.invariant("loop-carried mutable binder was absent");
-            return try self.builder.localExpr(current, carries[0].ty);
+            return try self.localExpr(current, carries[0].ty);
         }
 
         const items = try self.allocator.alloc(Ast.ExprId, carries.len);
         defer self.allocator.free(items);
         for (carries, 0..) |carry, i| {
             const current = self.binders.get(carry.binder) orelse Common.invariant("loop-carried mutable binder was absent");
-            items[i] = try self.builder.localExpr(current, carry.ty);
+            items[i] = try self.localExpr(current, carry.ty);
         }
-        return try self.builder.program.addExpr(.{ .ty = ty, .data = .{ .tuple = try self.builder.program.addExprSpan(items) } });
+        return try self.addExpr(.{ .ty = ty, .data = .{ .tuple = try self.addExprSpan(items) } });
     }
 
     fn loopStateType(self: *BodyContext, unit_ty: Type.TypeId, carries: []const LoopCarry) Allocator.Error!Type.TypeId {
@@ -15992,11 +16150,11 @@ const BodyContext = struct {
         errdefer carries.deinit(self.allocator);
         for (binders) |binder| {
             const initial = self.binders.get(binder) orelse continue;
-            const ty = self.builder.program.locals.items[@intFromEnum(initial)].ty;
+            const ty = self.localType(initial);
             try carries.append(self.allocator, .{
                 .binder = binder,
                 .initial_local = initial,
-                .param_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), ty),
+                .param_local = try self.addLocal(self.builder.symbols.fresh(), ty),
                 .ty = ty,
             });
         }
@@ -16006,21 +16164,21 @@ const BodyContext = struct {
     fn finalCarryPattern(self: *BodyContext, carries: []const LoopCarry, ty: Type.TypeId) Allocator.Error!Ast.PatId {
         if (carries.len == 0) Common.invariant("empty loop carry pattern requested");
         if (carries.len == 1) {
-            const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), carries[0].ty, carries[0].binder);
+            const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), carries[0].ty, carries[0].binder);
             try bindLocalName(self.builder.program, self.view, local, carries[0].binder);
             try self.binders.put(carries[0].binder, local);
-            return try self.builder.program.addPat(.{ .ty = ty, .data = .{ .bind = local } });
+            return try self.addPat(.{ .ty = ty, .data = .{ .bind = local } });
         }
 
         const items = try self.allocator.alloc(Ast.PatId, carries.len);
         defer self.allocator.free(items);
         for (carries, 0..) |carry, i| {
-            const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), carry.ty, carry.binder);
+            const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), carry.ty, carry.binder);
             try bindLocalName(self.builder.program, self.view, local, carry.binder);
             try self.binders.put(carry.binder, local);
-            items[i] = try self.builder.program.addPat(.{ .ty = carry.ty, .data = .{ .bind = local } });
+            items[i] = try self.addPat(.{ .ty = carry.ty, .data = .{ .bind = local } });
         }
-        return try self.builder.program.addPat(.{ .ty = ty, .data = .{ .tuple = try self.builder.program.addPatSpan(items) } });
+        return try self.addPat(.{ .ty = ty, .data = .{ .tuple = try self.addPatSpan(items) } });
     }
 
     fn collectReassignedBindersInExpr(
@@ -16291,7 +16449,7 @@ const BodyContext = struct {
                 if (self.statementValueIsLocalProc(decl.expr)) {
                     try self.registerLocalProc(decl.pattern);
                     const unit_ty = try self.unitType();
-                    break :blk .{ .expr = try self.builder.program.addExpr(.{ .ty = unit_ty, .data = .unit }) };
+                    break :blk .{ .expr = try self.addExpr(.{ .ty = unit_ty, .data = .unit }) };
                 }
                 break :blk try self.lowerPatternStatement(decl.pattern, decl.expr, statement.source_region);
             },
@@ -16312,7 +16470,7 @@ const BodyContext = struct {
 
                 const unit_ty = try self.unitType();
                 const loop_ty = try self.loopStateType(unit_ty, carries);
-                const expr = try self.builder.program.addExpr(.{ .ty = loop_ty, .data = try self.lowerIteratorFor(for_, loop_ty, carries) });
+                const expr = try self.addExpr(.{ .ty = loop_ty, .data = try self.lowerIteratorFor(for_, loop_ty, carries) });
                 if (carries.len == 0) break :blk .{ .expr = expr };
 
                 break :blk .{ .let_ = .{
@@ -16331,7 +16489,7 @@ const BodyContext = struct {
 
                 const unit_ty = try self.unitType();
                 const loop_ty = try self.loopStateType(unit_ty, carries);
-                const expr = try self.builder.program.addExpr(.{ .ty = loop_ty, .data = try self.lowerWhile(while_, loop_ty, carries) });
+                const expr = try self.addExpr(.{ .ty = loop_ty, .data = try self.lowerWhile(while_, loop_ty, carries) });
                 if (carries.len == 0) break :blk .{ .expr = expr };
 
                 break :blk .{ .let_ = .{
@@ -16350,7 +16508,7 @@ const BodyContext = struct {
 
                 const unit_ty = try self.unitType();
                 const loop_ty = try self.loopStateType(unit_ty, carries);
-                const expr = try self.builder.program.addExpr(.{ .ty = loop_ty, .data = try self.lowerWhile(loop, loop_ty, carries) });
+                const expr = try self.addExpr(.{ .ty = loop_ty, .data = try self.lowerWhile(loop, loop_ty, carries) });
                 if (carries.len == 0) break :blk .{ .expr = expr };
 
                 break :blk .{ .let_ = .{
@@ -16369,7 +16527,7 @@ const BodyContext = struct {
 
                 const unit_ty = try self.unitType();
                 const loop_ty = try self.loopStateType(unit_ty, carries);
-                const expr = try self.builder.program.addExpr(.{ .ty = loop_ty, .data = try self.lowerWhile(loop, loop_ty, carries) });
+                const expr = try self.addExpr(.{ .ty = loop_ty, .data = try self.lowerWhile(loop, loop_ty, carries) });
                 if (carries.len == 0) break :blk .{ .expr = expr };
 
                 break :blk .{ .let_ = .{
@@ -16380,7 +16538,7 @@ const BodyContext = struct {
             .break_ => .{ .expr = try self.breakCurrentLoopExpr() },
             .return_ => |ret| .{ .return_ = try self.lowerExpr(ret.expr) },
         };
-        return try self.builder.program.addStmt(stmt);
+        return try self.addStmt(stmt);
     }
 
     fn lowerUninitializedPatternStatement(
@@ -16398,7 +16556,7 @@ const BodyContext = struct {
         source_region: base.Region,
     ) Allocator.Error!Ast.Stmt {
         const value = try self.lowerExpr(expr);
-        const value_ty = self.builder.program.exprs.items[@intFromEnum(value)].ty;
+        const value_ty = self.exprType(value);
         const comptime_site = if (self.inComptimeExhaustivenessContext() and self.patternCanMiss(pattern))
             try self.addComptimeSite(.destructure, source_region, self.view.exhaustiveness_sites.lookupByDestructurePattern(pattern), &.{})
         else
@@ -16412,7 +16570,7 @@ const BodyContext = struct {
         }
 
         const unit_ty = try self.unitType();
-        var unit = try self.builder.program.addExpr(.{ .ty = unit_ty, .data = .unit });
+        var unit = try self.addExpr(.{ .ty = unit_ty, .data = .unit });
         unit = try self.wrapComptimeBranch(comptime_site, 0, unit);
         const miss = if (comptime_site) |site|
             try self.comptimeExhaustivenessFailedExpr(unit_ty, site)
@@ -16455,7 +16613,7 @@ const BodyContext = struct {
         const state_ty = try self.stateOnlyType(merge_binders);
         const checked_expr = self.view.bodies.expr(expr_id);
         const state_expr = switch (checked_expr.data) {
-            .if_ => |if_| try self.builder.program.addExpr(.{
+            .if_ => |if_| try self.addExpr(.{
                 .ty = state_ty,
                 .data = try self.lowerIfStateOnly(if_, state_ty, merge_binders, try self.ifComptimeSite(expr_id, if_)),
             }),
@@ -16491,13 +16649,13 @@ const BodyContext = struct {
             .runtime_error,
             => Common.invariant("non-runtime checked pattern reached Monotype lowering"),
             .assign => |binder| blk: {
-                const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), ty, binder);
+                const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), ty, binder);
                 try bindLocalName(self.builder.program, self.view, local, binder);
                 try self.binders.put(binder, local);
                 break :blk .{ .bind = local };
             },
             .as => |as| blk: {
-                const local = try self.builder.program.addLocalWithBinder(self.builder.symbols.fresh(), ty, as.binder);
+                const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), ty, as.binder);
                 try bindLocalName(self.builder.program, self.view, local, as.binder);
                 try self.binders.put(as.binder, local);
                 break :blk .{ .as = .{
@@ -16531,7 +16689,7 @@ const BodyContext = struct {
             .str_interpolation => |str| try self.lowerStrPattern(str, ty),
             .underscore => .wildcard,
         };
-        return try self.builder.program.addPat(.{ .ty = ty, .data = data });
+        return try self.addPat(.{ .ty = ty, .data = data });
     }
 
     fn lowerStrPattern(
@@ -16551,7 +16709,7 @@ const BodyContext = struct {
 
         return .{ .str_pattern = .{
             .prefix = try self.lowerStringLiteral(str.prefix),
-            .steps = try self.builder.program.addStrPatternStepSpan(steps),
+            .steps = try self.addStrPatternStepSpan(steps),
             .end = switch (str.end) {
                 .exact => .exact,
                 .tail => .tail,
@@ -16570,7 +16728,7 @@ const BodyContext = struct {
         for (checked_patterns, tys, 0..) |child, child_ty, i| {
             lowered[i] = try self.lowerPatternAtType(child, child_ty);
         }
-        return try self.builder.program.addPatSpan(lowered);
+        return try self.addPatSpan(lowered);
     }
 
     fn lowerTuplePattern(self: *BodyContext, items: []const checked.CheckedPatternId, ty: Type.TypeId) Allocator.Error!Ast.Span(Ast.PatId) {
@@ -16591,7 +16749,7 @@ const BodyContext = struct {
             .pattern = if (r.pattern) |rest_pattern| try self.lowerPatternAtType(rest_pattern, ty) else null,
         } else null;
         return .{ .list = .{
-            .patterns = try self.builder.program.addPatSpan(lowered),
+            .patterns = try self.addPatSpan(lowered),
             .rest = rest,
         } };
     }
@@ -16626,7 +16784,7 @@ const BodyContext = struct {
                 .pattern = try self.lowerPatternAtType(child, child_ty),
             });
         }
-        return .{ .record = try self.builder.program.addRecordDestructSpan(lowered.items) };
+        return .{ .record = try self.addRecordDestructSpan(lowered.items) };
     }
 
     fn patternIsIgnored(self: *BodyContext, pattern_id: checked.CheckedPatternId) bool {
@@ -16643,7 +16801,7 @@ const BodyContext = struct {
         conversion: checked.CheckedExprId,
         ty: Type.TypeId,
     ) Allocator.Error!Ast.PatData {
-        const local = try self.builder.program.addLocal(self.builder.symbols.fresh(), ty);
+        const local = try self.addLocal(self.builder.symbols.fresh(), ty);
         try self.pattern_literal_guards.append(self.allocator, .{
             .local = local,
             .conversion = conversion,
@@ -16656,7 +16814,7 @@ const BodyContext = struct {
     /// dispatching to the type's `is_eq` method when it has one and falling
     /// back to structural equality otherwise, mirroring `==`.
     fn lowerPatternLiteralEq(self: *BodyContext, entry: PatternLiteralGuard) Allocator.Error!Ast.ExprId {
-        const scrutinee = try self.builder.localExpr(entry.local, entry.ty);
+        const scrutinee = try self.localExpr(entry.local, entry.ty);
         const expected = try self.lowerExpr(entry.conversion);
         if (methodOwnerFromType(&self.builder.program.types, entry.ty)) |owner| {
             if (self.builder.lookupMethodTargetByName(owner, "is_eq")) |lookup| {
@@ -16667,9 +16825,9 @@ const BodyContext = struct {
                 const arg_tys = [_]Type.TypeId{ entry.ty, entry.ty };
                 const callable_mono_ty = try self.methodTargetMonoTypeFromArgs(lookup, &arg_tys, bool_ty);
                 const callee = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty);
-                return try self.builder.program.addExpr(.{ .ty = bool_ty, .data = .{ .call_proc = .{
+                return try self.addExpr(.{ .ty = bool_ty, .data = .{ .call_proc = .{
                     .callee = Ast.procCalleeForSlot(callee),
-                    .args = try self.builder.program.addExprSpan(&.{ scrutinee, expected }),
+                    .args = try self.addExprSpan(&.{ scrutinee, expected }),
                 } } });
             }
         }
@@ -16698,7 +16856,7 @@ const BodyContext = struct {
         while (i > 0) {
             i -= 1;
             const eq = try self.lowerPatternLiteralEq(guards[i]);
-            result = try self.builder.ifExpr(eq, result, fallback, output_ty);
+            result = try self.ifExpr(eq, result, fallback, output_ty);
         }
         return result;
     }
@@ -16714,7 +16872,7 @@ const BodyContext = struct {
             i -= 1;
             const eq = try self.lowerPatternLiteralEq(self.pattern_literal_guards.items[i]);
             cond = if (cond) |inner|
-                try self.builder.ifExpr(eq, inner, try self.boolLiteral(false, bool_ty), bool_ty)
+                try self.ifExpr(eq, inner, try self.boolLiteral(false, bool_ty), bool_ty)
             else
                 eq;
         }
@@ -16805,7 +16963,7 @@ const EqDeriver = struct {
     }
 
     fn leaf(self: *BodyContext, operand: Operand, ctx: BodyContext.DerivationCtx) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .structural_eq = .{
+        return try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .structural_eq = .{
             .lhs = operand.lhs,
             .rhs = operand.rhs,
             .negated = false,
@@ -16817,15 +16975,15 @@ const EqDeriver = struct {
     }
 
     fn combine(self: *BodyContext, state: Ast.ExprId, component: Ast.ExprId, ctx: BodyContext.DerivationCtx) Allocator.Error!Ast.ExprId {
-        return try self.builder.ifExpr(component, state, try self.boolLiteral(false, ctx.result_ty), ctx.result_ty);
+        return try self.ifExpr(component, state, try self.boolLiteral(false, ctx.result_ty), ctx.result_ty);
     }
 
     fn componentForField(self: *BodyContext, operand: Operand, _: Ast.ExprId, field: Type.Field) Allocator.Error!Operand {
-        const lhs_field = try self.builder.program.addExpr(.{ .ty = field.ty, .data = .{ .field_access = .{
+        const lhs_field = try self.addExpr(.{ .ty = field.ty, .data = .{ .field_access = .{
             .receiver = operand.lhs,
             .field = field.name,
         } } });
-        const rhs_field = try self.builder.program.addExpr(.{ .ty = field.ty, .data = .{ .field_access = .{
+        const rhs_field = try self.addExpr(.{ .ty = field.ty, .data = .{ .field_access = .{
             .receiver = operand.rhs,
             .field = field.name,
         } } });
@@ -16833,11 +16991,11 @@ const EqDeriver = struct {
     }
 
     fn componentForTuple(self: *BodyContext, operand: Operand, _: Ast.ExprId, item_ty: Type.TypeId, index: usize) Allocator.Error!Operand {
-        const lhs_item = try self.builder.program.addExpr(.{ .ty = item_ty, .data = .{ .tuple_access = .{
+        const lhs_item = try self.addExpr(.{ .ty = item_ty, .data = .{ .tuple_access = .{
             .tuple = operand.lhs,
             .elem_index = @intCast(index),
         } } });
-        const rhs_item = try self.builder.program.addExpr(.{ .ty = item_ty, .data = .{ .tuple_access = .{
+        const rhs_item = try self.addExpr(.{ .ty = item_ty, .data = .{ .tuple_access = .{
             .tuple = operand.rhs,
             .elem_index = @intCast(index),
         } } });
@@ -16861,23 +17019,23 @@ const EqDeriver = struct {
     /// types nested within it (e.g. a list inside the backing tag union) instead of
     /// leaving them for the LIR structural-equality lowering.
     fn named(self: *BodyContext, named_ty: Type.TypeId, backing_ty: Type.TypeId, operand: Operand, ctx: BodyContext.DerivationCtx) Allocator.Error!Ast.ExprId {
-        const lhs_inner = try self.builder.program.addLocal(self.builder.symbols.fresh(), backing_ty);
-        const rhs_inner = try self.builder.program.addLocal(self.builder.symbols.fresh(), backing_ty);
+        const lhs_inner = try self.addLocal(self.builder.symbols.fresh(), backing_ty);
+        const rhs_inner = try self.addLocal(self.builder.symbols.fresh(), backing_ty);
 
         const compare = try self.lowerDerivation(EqDeriver, backing_ty, .{
-            .lhs = try self.builder.localExpr(lhs_inner, backing_ty),
-            .rhs = try self.builder.localExpr(rhs_inner, backing_ty),
+            .lhs = try self.localExpr(lhs_inner, backing_ty),
+            .rhs = try self.localExpr(rhs_inner, backing_ty),
         }, ctx);
 
-        const lhs_pat = try self.builder.program.addPat(.{ .ty = named_ty, .data = .{ .nominal = try self.builder.bindPat(lhs_inner, backing_ty) } });
-        const rhs_pat = try self.builder.program.addPat(.{ .ty = named_ty, .data = .{ .nominal = try self.builder.bindPat(rhs_inner, backing_ty) } });
+        const lhs_pat = try self.addPat(.{ .ty = named_ty, .data = .{ .nominal = try self.bindPat(lhs_inner, backing_ty) } });
+        const rhs_pat = try self.addPat(.{ .ty = named_ty, .data = .{ .nominal = try self.bindPat(rhs_inner, backing_ty) } });
 
-        const bind_rhs = try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
+        const bind_rhs = try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
             .bind = rhs_pat,
             .value = operand.rhs,
             .rest = compare,
         } } });
-        return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
+        return try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
             .bind = lhs_pat,
             .value = operand.lhs,
             .rest = bind_rhs,
@@ -16893,8 +17051,8 @@ const EqDeriver = struct {
     fn tagUnion(self: *BodyContext, ty: Type.TypeId, tags_span: Type.Span, operand: Operand, ctx: BodyContext.DerivationCtx) Allocator.Error!Ast.ExprId {
         // Bind both operands to locals so each is evaluated exactly once and the
         // right-hand side can be re-scrutinised inside every left-hand-side branch.
-        const lhs_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), ty);
-        const rhs_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), ty);
+        const lhs_local = try self.addLocal(self.builder.symbols.fresh(), ty);
+        const rhs_local = try self.addLocal(self.builder.symbols.fresh(), ty);
 
         // Copy the tag list because recursive lowerDerivation may reallocate type spans.
         const tags = try self.allocator.dupe(Type.Tag, self.builder.program.types.tagSpan(tags_span));
@@ -16906,18 +17064,18 @@ const EqDeriver = struct {
             branches[branch_index] = try tagBranch(self, ty, rhs_local, tag, tags.len == 1, ctx);
         }
 
-        const match_expr = try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(lhs_local, ty),
-            .branches = try self.builder.program.addBranchSpan(branches),
+        const match_expr = try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(lhs_local, ty),
+            .branches = try self.addBranchSpan(branches),
         } } });
 
-        const bind_rhs = try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
-            .bind = try self.builder.bindPat(rhs_local, ty),
+        const bind_rhs = try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
+            .bind = try self.bindPat(rhs_local, ty),
             .value = operand.rhs,
             .rest = match_expr,
         } } });
-        return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
-            .bind = try self.builder.bindPat(lhs_local, ty),
+        return try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
+            .bind = try self.bindPat(lhs_local, ty),
             .value = operand.lhs,
             .rest = bind_rhs,
         } } });
@@ -16941,12 +17099,12 @@ const EqDeriver = struct {
         const rhs_exprs = try self.allocator.alloc(Ast.ExprId, payloads.len);
         defer self.allocator.free(rhs_exprs);
         for (payloads, 0..) |payload_ty, i| {
-            const lhs_payload_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), payload_ty);
-            const rhs_payload_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), payload_ty);
-            lhs_pats[i] = try self.builder.bindPat(lhs_payload_local, payload_ty);
-            rhs_pats[i] = try self.builder.bindPat(rhs_payload_local, payload_ty);
-            lhs_exprs[i] = try self.builder.localExpr(lhs_payload_local, payload_ty);
-            rhs_exprs[i] = try self.builder.localExpr(rhs_payload_local, payload_ty);
+            const lhs_payload_local = try self.addLocal(self.builder.symbols.fresh(), payload_ty);
+            const rhs_payload_local = try self.addLocal(self.builder.symbols.fresh(), payload_ty);
+            lhs_pats[i] = try self.bindPat(lhs_payload_local, payload_ty);
+            rhs_pats[i] = try self.bindPat(rhs_payload_local, payload_ty);
+            lhs_exprs[i] = try self.localExpr(lhs_payload_local, payload_ty);
+            rhs_exprs[i] = try self.localExpr(rhs_payload_local, payload_ty);
         }
 
         // Conjunction of the pairwise payload comparisons, defaulting to true (a variant
@@ -16956,35 +17114,35 @@ const EqDeriver = struct {
         while (i > 0) {
             i -= 1;
             const payload_eq = try self.lowerDerivation(EqDeriver, payloads[i], .{ .lhs = lhs_exprs[i], .rhs = rhs_exprs[i] }, ctx);
-            body = try self.builder.ifExpr(payload_eq, body, try self.boolLiteral(false, ctx.result_ty), ctx.result_ty);
+            body = try self.ifExpr(payload_eq, body, try self.boolLiteral(false, ctx.result_ty), ctx.result_ty);
         }
 
-        const rhs_tag_pat = try self.builder.program.addPat(.{ .ty = ty, .data = .{ .tag = .{
+        const rhs_tag_pat = try self.addPat(.{ .ty = ty, .data = .{ .tag = .{
             .name = tag.name,
-            .payloads = try self.builder.program.addPatSpan(rhs_pats),
+            .payloads = try self.addPatSpan(rhs_pats),
         } } });
-        const rhs_scrutinee = try self.builder.localExpr(rhs_local, ty);
+        const rhs_scrutinee = try self.localExpr(rhs_local, ty);
         const inner_match = if (single_variant) blk: {
             const inner_branches = [_]Ast.Branch{.{ .pat = rhs_tag_pat, .body = body }};
-            break :blk try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .match_ = .{
+            break :blk try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .match_ = .{
                 .scrutinee = rhs_scrutinee,
-                .branches = try self.builder.program.addBranchSpan(&inner_branches),
+                .branches = try self.addBranchSpan(&inner_branches),
             } } });
         } else blk: {
-            const wildcard = try self.builder.program.addPat(.{ .ty = ty, .data = .wildcard });
+            const wildcard = try self.addPat(.{ .ty = ty, .data = .wildcard });
             const inner_branches = [_]Ast.Branch{
                 .{ .pat = rhs_tag_pat, .body = body },
                 .{ .pat = wildcard, .body = try self.boolLiteral(false, ctx.result_ty) },
             };
-            break :blk try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .match_ = .{
+            break :blk try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .match_ = .{
                 .scrutinee = rhs_scrutinee,
-                .branches = try self.builder.program.addBranchSpan(&inner_branches),
+                .branches = try self.addBranchSpan(&inner_branches),
             } } });
         };
 
-        const lhs_tag_pat = try self.builder.program.addPat(.{ .ty = ty, .data = .{ .tag = .{
+        const lhs_tag_pat = try self.addPat(.{ .ty = ty, .data = .{ .tag = .{
             .name = tag.name,
-            .payloads = try self.builder.program.addPatSpan(lhs_pats),
+            .payloads = try self.addPatSpan(lhs_pats),
         } } });
         return .{ .pat = lhs_tag_pat, .body = inner_match };
     }
@@ -17032,7 +17190,7 @@ const HashDeriver = struct {
     }
 
     fn leaf(self: *BodyContext, operand: Operand, ctx: BodyContext.DerivationCtx) Allocator.Error!Ast.ExprId {
-        return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .structural_hash = .{
+        return try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .structural_hash = .{
             .value = operand.value,
             .hasher = operand.hasher,
         } } });
@@ -17047,7 +17205,7 @@ const HashDeriver = struct {
     }
 
     fn componentForField(self: *BodyContext, operand: Operand, state: Ast.ExprId, field: Type.Field) Allocator.Error!Operand {
-        const field_value = try self.builder.program.addExpr(.{ .ty = field.ty, .data = .{ .field_access = .{
+        const field_value = try self.addExpr(.{ .ty = field.ty, .data = .{ .field_access = .{
             .receiver = operand.value,
             .field = field.name,
         } } });
@@ -17055,7 +17213,7 @@ const HashDeriver = struct {
     }
 
     fn componentForTuple(self: *BodyContext, operand: Operand, state: Ast.ExprId, item_ty: Type.TypeId, index: usize) Allocator.Error!Operand {
-        const item_value = try self.builder.program.addExpr(.{ .ty = item_ty, .data = .{ .tuple_access = .{
+        const item_value = try self.addExpr(.{ .ty = item_ty, .data = .{ .tuple_access = .{
             .tuple = operand.value,
             .elem_index = @intCast(index),
         } } });
@@ -17074,13 +17232,13 @@ const HashDeriver = struct {
     }
 
     fn named(self: *BodyContext, named_ty: Type.TypeId, backing_ty: Type.TypeId, operand: Operand, ctx: BodyContext.DerivationCtx) Allocator.Error!Ast.ExprId {
-        const inner = try self.builder.program.addLocal(self.builder.symbols.fresh(), backing_ty);
+        const inner = try self.addLocal(self.builder.symbols.fresh(), backing_ty);
         const hashed = try self.lowerDerivation(HashDeriver, backing_ty, .{
-            .value = try self.builder.localExpr(inner, backing_ty),
+            .value = try self.localExpr(inner, backing_ty),
             .hasher = operand.hasher,
         }, ctx);
-        const pat = try self.builder.program.addPat(.{ .ty = named_ty, .data = .{ .nominal = try self.builder.bindPat(inner, backing_ty) } });
-        return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
+        const pat = try self.addPat(.{ .ty = named_ty, .data = .{ .nominal = try self.bindPat(inner, backing_ty) } });
+        return try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
             .bind = pat,
             .value = operand.value,
             .rest = hashed,
@@ -17091,7 +17249,7 @@ const HashDeriver = struct {
     /// then match on the value and thread the active variant's payloads through.
     fn tagUnion(self: *BodyContext, value_ty: Type.TypeId, tags_span: Type.Span, operand: Operand, ctx: BodyContext.DerivationCtx) Allocator.Error!Ast.ExprId {
         // Bind the value to a local so it is matched exactly once.
-        const value_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), value_ty);
+        const value_local = try self.addLocal(self.builder.symbols.fresh(), value_ty);
 
         // Copy the tag list because recursive lowerDerivation may reallocate type spans.
         const tags = try self.allocator.dupe(Type.Tag, self.builder.program.types.tagSpan(tags_span));
@@ -17103,13 +17261,13 @@ const HashDeriver = struct {
             branches[index] = try tagBranch(self, value_ty, tag, @intCast(index), operand.hasher, ctx);
         }
 
-        const match_expr = try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .match_ = .{
-            .scrutinee = try self.builder.localExpr(value_local, value_ty),
-            .branches = try self.builder.program.addBranchSpan(branches),
+        const match_expr = try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .match_ = .{
+            .scrutinee = try self.localExpr(value_local, value_ty),
+            .branches = try self.addBranchSpan(branches),
         } } });
 
-        return try self.builder.program.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
-            .bind = try self.builder.bindPat(value_local, value_ty),
+        return try self.addExpr(.{ .ty = ctx.result_ty, .data = .{ .let_ = .{
+            .bind = try self.bindPat(value_local, value_ty),
             .value = operand.value,
             .rest = match_expr,
         } } });
@@ -17125,9 +17283,9 @@ const HashDeriver = struct {
         const payload_exprs = try self.allocator.alloc(Ast.ExprId, payloads.len);
         defer self.allocator.free(payload_exprs);
         for (payloads, 0..) |payload_ty, i| {
-            const payload_local = try self.builder.program.addLocal(self.builder.symbols.fresh(), payload_ty);
-            pats[i] = try self.builder.bindPat(payload_local, payload_ty);
-            payload_exprs[i] = try self.builder.localExpr(payload_local, payload_ty);
+            const payload_local = try self.addLocal(self.builder.symbols.fresh(), payload_ty);
+            pats[i] = try self.bindPat(payload_local, payload_ty);
+            payload_exprs[i] = try self.localExpr(payload_local, payload_ty);
         }
 
         // First write the discriminant index, then thread each payload's hash.
@@ -17136,9 +17294,9 @@ const HashDeriver = struct {
             acc = try self.lowerDerivation(HashDeriver, payload_ty, .{ .value = payload_exprs[i], .hasher = acc }, ctx);
         }
 
-        const tag_pat = try self.builder.program.addPat(.{ .ty = value_ty, .data = .{ .tag = .{
+        const tag_pat = try self.addPat(.{ .ty = value_ty, .data = .{ .tag = .{
             .name = tag.name,
-            .payloads = try self.builder.program.addPatSpan(pats),
+            .payloads = try self.addPatSpan(pats),
         } } });
         return .{ .pat = tag_pat, .body = acc };
     }
