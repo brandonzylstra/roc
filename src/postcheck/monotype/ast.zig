@@ -14,6 +14,14 @@ const Type = @import("type.zig");
 const checked = check.CheckedModule;
 const names = check.CheckedNames;
 
+/// Monotype ids are local to the `ProgramView` or mapped shard that owns the
+/// corresponding side array. In particular, expression, pattern, statement,
+/// local, definition, function, string-literal, compile-time-site, and type ids
+/// must not be interpreted against another shard's arrays. Cross-shard function
+/// references are represented only by `FnSlot.imported`, whose `ImportedFnId`
+/// indexes an import table entry containing the target `ShardId` and local
+/// `FnId` inside that shard. Specialization records store local `FnId`s because
+/// a record belongs to exactly one shard.
 /// Identifier for an expression in Monotype IR.
 pub const ExprId = enum(u32) { _ };
 /// Identifier for a pattern in Monotype IR.
