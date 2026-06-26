@@ -1813,6 +1813,64 @@ test "sealed monotype copy is not refilled by later graph evidence" {
     try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed).record).len);
 }
 
+test "sealed graph function copy recursively seals graph-owned argument views" {
+    const gpa = std.testing.allocator;
+
+    var type_store = Type.Store.init(gpa);
+    defer type_store.deinit();
+
+    var name_store = names.NameStore.init(gpa);
+    defer name_store.deinit();
+
+    var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
+    defer unsolved_monos.deinit();
+
+    const graph = try InstGraph.create(gpa, &type_store, &name_store, &unsolved_monos);
+    defer graph.destroy();
+
+    const a_name = try name_store.internRecordFieldLabel("a");
+    const b_name = try name_store.internRecordFieldLabel("b");
+    const a_ty = try graph.newNode(.{ .primitive = .u64 });
+    const b_ty = try graph.newNode(.{ .primitive = .u64 });
+
+    const fields = try graph.arena().alloc(InstField, 1);
+    fields[0] = .{ .name = a_name, .ty = a_ty };
+    const ext = try graph.newNode(.{ .unresolved = .{ .row_default = .empty_record } });
+    const row = try graph.newNode(.{ .record = .{
+        .fields = fields,
+        .ext = ext,
+    } });
+
+    const args = try graph.arena().alloc(NodeId, 1);
+    args[0] = row;
+    const fn_node = try graph.newNode(.{ .func = .{
+        .args = args,
+        .ret = row,
+    } });
+    const draft_fn = try graph.monoFor(fn_node);
+    try graph.drainDirty();
+
+    var finals = GraphTypeFinals.init(graph);
+    defer finals.deinit();
+    const sealed_fn = try finals.sealType(draft_fn);
+    try std.testing.expect(sealed_fn != draft_fn);
+    const sealed_arg = type_store.span(type_store.get(sealed_fn).func.args)[0];
+    try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed_arg).record).len);
+
+    const extra_fields = try graph.arena().alloc(InstField, 1);
+    extra_fields[0] = .{ .name = b_name, .ty = b_ty };
+    const extra = try graph.newNode(.{ .record = .{
+        .fields = extra_fields,
+        .ext = try graph.newNode(.empty_record),
+    } });
+    try graph.unify(ext, extra);
+    try graph.drainDirty();
+
+    const draft_arg = type_store.span(type_store.get(draft_fn).func.args)[0];
+    try std.testing.expectEqual(@as(usize, 2), type_store.fieldSpan(type_store.get(draft_arg).record).len);
+    try std.testing.expectEqual(@as(usize, 1), type_store.fieldSpan(type_store.get(sealed_arg).record).len);
+}
+
 test "sealed graph node does not allocate a mutable monotype view" {
     const gpa = std.testing.allocator;
 

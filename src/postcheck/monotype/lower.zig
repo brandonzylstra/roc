@@ -4051,6 +4051,31 @@ const BodyContext = struct {
         return try self.graph.monoFor(try self.instNode(checked_ty));
     }
 
+    fn graphFunctionType(
+        self: *BodyContext,
+        args: []const NodeId,
+        ret: NodeId,
+    ) Allocator.Error!Type.TypeId {
+        const stored_args = try self.graph.arena().alloc(NodeId, args.len);
+        @memcpy(stored_args, args);
+        return try self.graph.monoFor(try self.graph.newNode(.{ .func = .{
+            .args = stored_args,
+            .ret = ret,
+        } }));
+    }
+
+    fn graphFunctionTypeFromMono(
+        self: *BodyContext,
+        arg_tys: []const Type.TypeId,
+        ret_ty: Type.TypeId,
+    ) Allocator.Error!Type.TypeId {
+        const args = try self.graph.arena().alloc(NodeId, arg_tys.len);
+        for (arg_tys, 0..) |arg_ty, index| {
+            args[index] = try self.graph.importMono(arg_ty);
+        }
+        return try self.graphFunctionType(args, try self.graph.importMono(ret_ty));
+    }
+
     /// Instantiate a checked type into this specialization's graph, caching by
     /// checked identity so every occurrence of the same checked root resolves
     /// to the same node within this instantiation context.
@@ -8852,15 +8877,14 @@ const BodyContext = struct {
         }
         try self.graph.drainDirty();
         if (saw_generated_opaque_evidence) {
-            const arg_tys = try self.allocator.alloc(Type.TypeId, function.args.len);
-            defer self.allocator.free(arg_tys);
+            const args = try self.graph.arena().alloc(NodeId, function.args.len);
             for (function.args, generated_arg_overrides, 0..) |formal_ty, override, index| {
-                arg_tys[index] = override orelse try self.graph.monoFor(try self.instNode(formal_ty));
+                args[index] = if (override) |ty|
+                    try self.graph.importMono(ty)
+                else
+                    try self.instNode(formal_ty);
             }
-            return try self.builder.program.types.add(.{ .func = .{
-                .args = try self.builder.program.types.addSpan(arg_tys),
-                .ret = try self.graph.monoFor(try self.instNode(function.ret)),
-            } });
+            return try self.graphFunctionType(args, try self.instNode(function.ret));
         }
         return try self.graph.monoFor(fn_node);
     }
@@ -9017,10 +9041,7 @@ const BodyContext = struct {
         }
         try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(ret_ty));
         try self.graph.drainDirty();
-        return try self.builder.program.types.add(.{ .func = .{
-            .args = try self.builder.program.types.addSpan(arg_tys),
-            .ret = ret_ty,
-        } });
+        return try self.graphFunctionTypeFromMono(arg_tys, ret_ty);
     }
 
     fn instantiateTargetCallTypeFromMonoArgAtIndexAndRet(
@@ -10316,22 +10337,21 @@ const BodyContext = struct {
     }
 
     fn lambdaFunctionType(self: *BodyContext, lambda: anytype) Allocator.Error!Type.TypeId {
+        const arg_nodes = try self.graph.arena().alloc(NodeId, lambda.args.len);
         const args = try self.allocator.alloc(Type.TypeId, lambda.args.len);
         defer self.allocator.free(args);
         var saved = std.ArrayList(BinderRestore).empty;
         defer saved.deinit(self.allocator);
 
         for (lambda.args, 0..) |pattern_id, i| {
-            args[i] = try self.lowerType(self.view.bodies.pattern(pattern_id).ty);
+            arg_nodes[i] = try self.instNode(self.view.bodies.pattern(pattern_id).ty);
+            args[i] = try self.graph.monoFor(arg_nodes[i]);
             try self.savePatternBinders(pattern_id, &saved);
             try self.preRegisterPatternBinders(pattern_id, args[i]);
         }
         defer self.restoreBinders(saved.items);
 
-        return try self.builder.program.types.add(.{ .func = .{
-            .args = try self.builder.program.types.addSpan(args),
-            .ret = try self.lowerExprType(lambda.body),
-        } });
+        return try self.graphFunctionType(arg_nodes, try self.graph.importMono(try self.lowerExprType(lambda.body)));
     }
 
     fn lowerLambdaExpr(
