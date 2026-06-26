@@ -107,13 +107,15 @@ pub fn run(
         try builder.lowerStaticDataRequest(request);
     }
 
+    program.next_symbol = builder.symbols.next;
+    program.freeze();
+
     if (@import("builtin").mode == .Debug) {
         verifyMonotypeTypeStore(&program);
+        verifyMonotypeCompletedTypeIds(&program);
         verifyMonotypeCallTargets(&program);
     }
 
-    program.next_symbol = builder.symbols.next;
-    program.freeze();
     return program;
 }
 
@@ -4992,6 +4994,8 @@ const BodyDraft = struct {
     pats_start: usize,
     locals_start: usize,
     typed_locals_start: usize,
+    layout_requests_start: usize,
+    runtime_schema_requests_start: usize,
     lowered_nested_start: usize,
 
     const End = struct {
@@ -5003,6 +5007,8 @@ const BodyDraft = struct {
         pats: usize,
         locals: usize,
         typed_locals: usize,
+        layout_requests: usize,
+        runtime_schema_requests: usize,
         lowered_nested: usize,
     };
 
@@ -5016,6 +5022,8 @@ const BodyDraft = struct {
             .pats_start = builder.program.pats.items.len,
             .locals_start = builder.program.locals.items.len,
             .typed_locals_start = builder.program.typed_locals.items.len,
+            .layout_requests_start = builder.program.layout_requests.items.len,
+            .runtime_schema_requests_start = builder.program.runtime_schema_requests.items.len,
             .lowered_nested_start = builder.lowered_nested_fns.items.len,
         };
     }
@@ -5030,6 +5038,8 @@ const BodyDraft = struct {
             .pats = builder.program.pats.items.len,
             .locals = builder.program.locals.items.len,
             .typed_locals = builder.program.typed_locals.items.len,
+            .layout_requests = builder.program.layout_requests.items.len,
+            .runtime_schema_requests = builder.program.runtime_schema_requests.items.len,
             .lowered_nested = builder.lowered_nested_fns.items.len,
         };
     }
@@ -5062,6 +5072,12 @@ const BodyDraft = struct {
         }
         for (builder.program.typed_locals.items[self.typed_locals_start..end_.typed_locals]) |*typed_local| {
             typed_local.ty = try sealType(graph, &sealer, typed_local.ty);
+        }
+        for (builder.program.layout_requests.items[self.layout_requests_start..end_.layout_requests]) |*request| {
+            request.ty = try sealType(graph, &sealer, request.ty);
+        }
+        for (builder.program.runtime_schema_requests.items[self.runtime_schema_requests_start..end_.runtime_schema_requests]) |*request| {
+            request.ty = try sealType(graph, &sealer, request.ty);
         }
         var spec_index = self.specs_start;
         while (spec_index < end_.specs) : (spec_index += 1) {
@@ -18112,6 +18128,22 @@ fn verifyMonotypeTypeStore(program: *const Ast.Program) void {
         .type_ref_out_of_bounds => Common.invariant("Monotype type reference was out of bounds"),
         .record_fields_not_sorted => Common.invariant("Monotype record fields were not normalized"),
         .tag_union_tags_not_sorted => Common.invariant("Monotype tag union variants were not normalized"),
+    };
+}
+
+fn verifyMonotypeCompletedTypeIds(program: *const Ast.Program) void {
+    if (program.view().verifyCompletedTypeIds()) |err| switch (err) {
+        .type_store_not_frozen => Common.invariant("completed Monotype program view used a mutable type store"),
+        .spec_type_out_of_bounds => Common.invariant("completed Monotype specialization record referenced a missing type"),
+        .fn_type_out_of_bounds => Common.invariant("completed Monotype function referenced a missing type"),
+        .def_type_out_of_bounds => Common.invariant("completed Monotype definition referenced a missing type"),
+        .nested_def_type_out_of_bounds => Common.invariant("completed Monotype nested definition referenced a missing type"),
+        .expr_type_out_of_bounds => Common.invariant("completed Monotype expression referenced a missing type"),
+        .pat_type_out_of_bounds => Common.invariant("completed Monotype pattern referenced a missing type"),
+        .local_type_out_of_bounds => Common.invariant("completed Monotype local referenced a missing type"),
+        .typed_local_type_out_of_bounds => Common.invariant("completed Monotype typed local referenced a missing type"),
+        .layout_request_type_out_of_bounds => Common.invariant("completed Monotype layout request referenced a missing type"),
+        .runtime_schema_request_type_out_of_bounds => Common.invariant("completed Monotype runtime schema request referenced a missing type"),
     };
 }
 

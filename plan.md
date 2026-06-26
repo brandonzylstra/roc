@@ -248,7 +248,7 @@ immutable `TypeId`s after the graph is closed.
 - [x] Add an architecture check that rejects new active-body calls to
       `ProgramBuilder.addExpr`, `addPat`, `addLocal`, `addTypedLocalSpan`, and
       direct final-array appends from `BodyContext` lowering code.
-- [ ] Add debug verification that completed `MonoProgramView` type ids are all
+- [x] Add debug verification that completed `MonoProgramView` type ids are all
       immutable interner ids and that no final type recursively contains a graph
       view.
 - [ ] Add tests for recursive body-local types, nested function signatures,

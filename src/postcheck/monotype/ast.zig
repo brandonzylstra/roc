@@ -722,6 +722,21 @@ pub const CallTargetVerifyError = enum {
     lifted_fn_before_lifting,
 };
 
+/// Errors reported by completed Monotype program-view type-id verification.
+pub const CompletedTypeIdVerifyError = enum {
+    type_store_not_frozen,
+    spec_type_out_of_bounds,
+    fn_type_out_of_bounds,
+    def_type_out_of_bounds,
+    nested_def_type_out_of_bounds,
+    expr_type_out_of_bounds,
+    pat_type_out_of_bounds,
+    local_type_out_of_bounds,
+    typed_local_type_out_of_bounds,
+    layout_request_type_out_of_bounds,
+    runtime_schema_request_type_out_of_bounds,
+};
+
 /// Read-only Monotype program view.
 ///
 /// Today this view borrows the builder-owned arrays in `Program`. The durable
@@ -771,6 +786,51 @@ pub const ProgramView = struct {
         return procDebugNameInSlice(self.proc_debug_names, symbol);
     }
 
+    /// Verify that a completed program view refers only to durable type-store
+    /// ids. Active graph views are rejected by graph-scoped sealing while the
+    /// graph maps still exist; completed views must additionally be frozen and
+    /// contain only in-bounds final type ids.
+    pub fn verifyCompletedTypeIds(self: ProgramView) ?CompletedTypeIdVerifyError {
+        if (!self.types.frozen) return .type_store_not_frozen;
+
+        for (self.specs) |spec| {
+            if (!self.typeRefInBounds(spec.identity.mono_fn_ty)) return .spec_type_out_of_bounds;
+        }
+        for (self.fns) |fn_| {
+            if (!self.typeRefInBounds(fn_.source.mono_fn_ty)) return .fn_type_out_of_bounds;
+        }
+        for (self.defs) |def| {
+            if (def.fn_def) |fn_def| {
+                if (!self.typeRefInBounds(fn_def.mono_fn_ty)) return .def_type_out_of_bounds;
+            }
+            if (!self.typeRefInBounds(def.ret)) return .def_type_out_of_bounds;
+        }
+        for (self.nested_defs) |def| {
+            if (!self.typeRefInBounds(def.fn_def.mono_fn_ty)) return .nested_def_type_out_of_bounds;
+            if (!self.typeRefInBounds(def.ret)) return .nested_def_type_out_of_bounds;
+        }
+        for (self.exprs) |expr| {
+            if (!self.typeRefInBounds(expr.ty)) return .expr_type_out_of_bounds;
+        }
+        for (self.pats) |pat| {
+            if (!self.typeRefInBounds(pat.ty)) return .pat_type_out_of_bounds;
+        }
+        for (self.locals) |local| {
+            if (!self.typeRefInBounds(local.ty)) return .local_type_out_of_bounds;
+        }
+        for (self.typed_locals) |typed_local| {
+            if (!self.typeRefInBounds(typed_local.ty)) return .typed_local_type_out_of_bounds;
+        }
+        for (self.layout_requests) |request| {
+            if (!self.typeRefInBounds(request.ty)) return .layout_request_type_out_of_bounds;
+        }
+        for (self.runtime_schema_requests) |request| {
+            if (!self.typeRefInBounds(request.ty)) return .runtime_schema_request_type_out_of_bounds;
+        }
+
+        return null;
+    }
+
     pub fn verifyCallTargets(self: ProgramView) ?CallTargetVerifyError {
         for (self.imported_fns) |imported| {
             if (imported.shard == .local and @intFromEnum(imported.fn_id) >= self.fns.len) {
@@ -813,6 +873,10 @@ pub const ProgramView = struct {
             }
         }
         return null;
+    }
+
+    fn typeRefInBounds(self: ProgramView, ty: Type.TypeId) bool {
+        return @intFromEnum(ty) < self.types.types.len;
     }
 
     fn verifyFnDefinition(self: ProgramView, fn_id: FnId, args: Span(TypedLocal)) ?CallTargetVerifyError {
@@ -1331,6 +1395,28 @@ test "monotype program view exposes read-only side arrays" {
     program.freeze();
     try std.testing.expect(program.types.isFrozen());
     try std.testing.expect(program.view().types.frozen);
+}
+
+test "completed monotype type id verifier requires frozen in-bounds type ids" {
+    var program = Program.init(std.testing.allocator);
+    defer program.deinit();
+
+    const unit_ty = try program.types.add(.zst);
+    _ = try program.addExpr(.{ .ty = unit_ty, .data = .unit });
+
+    try std.testing.expectEqual(
+        CompletedTypeIdVerifyError.type_store_not_frozen,
+        program.view().verifyCompletedTypeIds().?,
+    );
+
+    program.freeze();
+    try std.testing.expectEqual(@as(?CompletedTypeIdVerifyError, null), program.view().verifyCompletedTypeIds());
+
+    program.exprs.items[0].ty = @enumFromInt(99);
+    try std.testing.expectEqual(
+        CompletedTypeIdVerifyError.expr_type_out_of_bounds,
+        program.view().verifyCompletedTypeIds().?,
+    );
 }
 
 test "monotype call target verifier checks local and imported slots" {
