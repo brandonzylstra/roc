@@ -245,7 +245,6 @@ pub fn runEcho(opts: RunOptions) RunEchoError!u8 {
         opts.runtime_fba.buffer.ptr,
         opts.runtime_fba.end_index,
         &lowered.lir_result,
-        lowered.target_usize,
         entrypoints,
     ) catch |err| {
         diag.step("LirImage.fillHeaderInBuffer", err);
@@ -256,6 +255,7 @@ pub fn runEcho(opts: RunOptions) RunEchoError!u8 {
         image_header,
         opts.runtime_fba.buffer.ptr,
         opts.runtime_fba.end_index,
+        lowered.target_usize,
     ) catch |err| {
         diag.step("LirImage.viewMappedImage", err);
         return err;
@@ -279,7 +279,7 @@ fn runEchoView(
     // stripped). The echo platform has only `Echo.line`, so order is
     // trivially correct — but additions must respect alphabetical order or
     // the wrong function will be called silently. See README "Host functions".
-    var hosted_fn_array = [_]HostedFn{echo_platform.host_abi.hostedFn(&echo_platform.echoHostedFn)};
+    var hosted_fn_array = [_]HostedFn{echo_platform.echoLineHostedFn()};
     var echo_env: echo_platform.EchoEnv = .{ .std_io = std_io };
     var roc_ops = echo_platform.makeDefaultRocOps(&echo_env, &hosted_fn_array);
     echo_platform.g_roc_ops = &roc_ops;
@@ -458,6 +458,9 @@ fn echoReadStdin(ctx_ptr: ?*anyopaque, _: std.Io, buf: []u8) Io.StdioError!usize
 fn echoIsTty(ctx_ptr: ?*anyopaque, _: std.Io) bool {
     return echoGetCtx(ctx_ptr).fallback.isTty();
 }
+fn echoTerminalWidth(ctx_ptr: ?*anyopaque, _: std.Io) ?u16 {
+    return echoGetCtx(ctx_ptr).fallback.terminalWidth();
+}
 fn echoDeleteFile(ctx_ptr: ?*anyopaque, _: std.Io, path: []const u8) Io.DeleteError!void {
     return echoGetCtx(ctx_ptr).fallback.deleteFile(path);
 }
@@ -502,4 +505,5 @@ const echo_vtable = Io.VTable{
     .writeStderr = &echoWriteStderr,
     .readStdin = &echoReadStdin,
     .isTty = &echoIsTty,
+    .terminalWidth = &echoTerminalWidth,
 };

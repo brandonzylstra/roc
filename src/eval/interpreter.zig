@@ -1875,6 +1875,7 @@ pub const Interpreter = struct {
                         .ret_layout = self.store.getLocal(assign.target).layout_idx,
                         .callable_proc = null,
                         .unique_args = assign.unique_args,
+                        .interchangeable = assign.interchangeable,
                     }));
                     current = assign.next;
                 },
@@ -3305,23 +3306,35 @@ pub const Interpreter = struct {
 
         const hosted_fn = self.roc_ops.hosted_fns.fns[hosted.dispatch_index];
 
-        // Call the hosted function with the platform C ABI via the fixed register-image
-        // trampoline (no runtime code generation).
-        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena_state.deinit();
-        host_trampoline.call(
-            self.layout_store,
-            arena_state.allocator(),
-            @ptrCast(hosted_fn),
-            arg_layouts,
-            ret_layout,
-            args_buf.ptr,
-            arg_offsets,
-            ret_buf.ptr,
-        ) catch |err| return self.invariantFailedError(
-            "hosted call C-ABI lowering failed for proc {d}: {s}",
-            .{ @intFromEnum(proc_id), @errorName(err) },
-        );
+        if (comptime host_trampoline.available) {
+            // Call the hosted function with the platform C ABI via the fixed register-image
+            // trampoline (no runtime code generation).
+            var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena_state.deinit();
+            host_trampoline.call(
+                self.layout_store,
+                arena_state.allocator(),
+                @ptrCast(hosted_fn),
+                arg_layouts,
+                ret_layout,
+                args_buf.ptr,
+                arg_offsets,
+                ret_buf.ptr,
+            ) catch |err| return self.invariantFailedError(
+                "hosted call C-ABI lowering failed for proc {d}: {s}",
+                .{ @intFromEnum(proc_id), @errorName(err) },
+            );
+        } else {
+            // Architectures without a register-image trampoline (e.g. wasm32, where
+            // a dynamic-signature call cannot be synthesized) call hosted functions
+            // through a uniform `(args_buf, ret_buf)` ABI instead. The arguments are
+            // already packed contiguously above in Roc layout order, so the host reads
+            // each one from `args_buf` at its layout offset and writes the return value
+            // into `ret_buf`. Platforms register their hosted functions in this shape
+            // when `host_trampoline.available` is false (see the echo platform).
+            const uniform: *const fn ([*]u8, [*]u8) callconv(.c) void = @ptrCast(hosted_fn);
+            uniform(args_buf.ptr, ret_buf.ptr);
+        }
 
         if (self.roc_env.crashed) return error.Crash;
         if (ret_sa.size == 0) return Value.zst;
@@ -3996,10 +4009,11 @@ pub const Interpreter = struct {
 
                 const disc: u32 = blk: {
                     const tu_data = self.layout_store.getTagUnionData(tag_plan.tag_union_idx);
+                    const disc_offset = tu_data.discriminant_offset.get(self.layout_store.targetUsize());
                     break :blk switch (tu_data.discriminant_size) {
                         0 => 0,
-                        1 => val.offset(tu_data.discriminant_offset).read(u8),
-                        2 => val.offset(tu_data.discriminant_offset).read(u16),
+                        1 => val.offset(disc_offset).read(u8),
+                        2 => val.offset(disc_offset).read(u16),
                         else => return,
                     };
                 };
@@ -4315,6 +4329,11 @@ pub const Interpreter = struct {
         /// means argument i's runtime uniqueness check is redundant and the
         /// in-place path may be taken unconditionally.
         unique_args: u64 = 0,
+        /// For `list_map_can_reuse`: per-width interchangeability of the input
+        /// and output element layouts. On a width whose bit is false the
+        /// in-place branch is statically dead, so the op yields 0 without the
+        /// runtime uniqueness check. Ignored by every other op.
+        interchangeable: layout_mod.WidthValues(bool) = layout_mod.WidthValues(bool).both(true, true),
     };
 
     fn lowLevelArgLayout(self: *const LirInterpreter, ll: LowLevelEvalInput, index: usize) Error!layout_mod.Idx {
@@ -4607,7 +4626,7 @@ pub const Interpreter = struct {
                 }
 
                 const val = try self.alloc(ll.ret_layout);
-                @memset(val.ptr[0..tu_data.size], 0);
+                @memset(val.ptr[0..tu_data.size.get(self.layout_store.targetUsize())], 0);
 
                 const resolved_ok = ok_disc orelse return self.runtimeError("str_from_utf8: no Ok variant in layout");
                 const resolved_err = err_disc orelse return self.runtimeError("str_from_utf8: no Err variant in layout");
@@ -4624,7 +4643,7 @@ pub const Interpreter = struct {
                     if (inner_tu_data_opt) |inner_tu| {
                         // The inner tag union sits at offset 0 of the Err payload, which is at
                         // offset 0 of the outer tag union. Write its discriminant in place.
-                        inner_tu.writeDiscriminant(val.ptr, inner_bad_utf8_disc);
+                        inner_tu.writeDiscriminant(val.ptr, inner_bad_utf8_disc, self.layout_store.targetUsize());
                     }
                     self.helper.writeTagDiscriminant(val, ll.ret_layout, resolved_err);
                 }
@@ -4895,8 +4914,13 @@ pub const Interpreter = struct {
                 break :blk self.rocListToValue(result, ll.ret_layout);
             },
             .list_map_can_reuse => blk: {
-                const rl = self.valueToRocListForLayout(args[0], arg_layout);
                 const val = try self.alloc(ll.ret_layout);
+                if (!ll.interchangeable.get(self.layout_store.targetUsize())) {
+                    // The in-place branch is statically dead on this width.
+                    val.write(u8, 0);
+                    break :blk val;
+                }
+                const rl = self.valueToRocListForLayout(args[0], arg_layout);
                 val.write(u8, if (builtins.list.listMapCanReuse(rl, &self.roc_ops)) 1 else 0);
                 break :blk val;
             },
@@ -5367,7 +5391,7 @@ pub const Interpreter = struct {
                         roc_str.bytes,
                         roc_str.length,
                         roc_str.capacity_or_alloc_ptr,
-                        tu_data.discriminant_offset,
+                        tu_data.discriminant_offset.get(self.layout_store.targetUsize()),
                     ),
                     .float => |float| dev_wrappers.roc_builtins_float_from_str(
                         result.ptr,
@@ -5375,7 +5399,7 @@ pub const Interpreter = struct {
                         roc_str.length,
                         roc_str.capacity_or_alloc_ptr,
                         float.width_bytes,
-                        tu_data.discriminant_offset,
+                        tu_data.discriminant_offset.get(self.layout_store.targetUsize()),
                     ),
                     .int => |int| dev_wrappers.roc_builtins_int_from_str(
                         result.ptr,
@@ -5384,7 +5408,7 @@ pub const Interpreter = struct {
                         roc_str.capacity_or_alloc_ptr,
                         int.width_bytes,
                         int.signed,
-                        tu_data.discriminant_offset,
+                        tu_data.discriminant_offset.get(self.layout_store.targetUsize()),
                     ),
                 }
                 break :blk result;
