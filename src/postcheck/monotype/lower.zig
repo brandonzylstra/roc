@@ -13540,7 +13540,7 @@ const BodyContext = struct {
                 if (index >= arg_tys.len) Common.invariant("dispatch plan dispatcher argument index was outside the argument span");
                 break :blk arg_tys[index];
             },
-            .type_only => try self.lowerTypeView(plan.dispatcher_ty),
+            .type_only => try self.sealCheckedType(plan.dispatcher_ty),
         };
     }
 
