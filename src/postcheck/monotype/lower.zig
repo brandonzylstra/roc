@@ -2735,7 +2735,7 @@ const Builder = struct {
             .fn_id = draftFinalFn(fn_id),
             .args = lowered.args,
             .body = lowered.body,
-            .ret = try DraftTypeCell.fromActiveType(request.ctx.graph, lowered.ret),
+            .ret = lowered.ret,
         });
         return fn_id;
     }
@@ -3873,7 +3873,7 @@ const Builder = struct {
 const LoweredTemplateBody = struct {
     args: DraftSpan(DraftTypedLocal),
     body: DraftExprId,
-    ret: Type.TypeId,
+    ret: DraftTypeCell,
 };
 
 const DraftTypeCell = union(enum) {
@@ -6613,7 +6613,7 @@ const BodyContext = struct {
                     else => .{
                         .args = .empty(),
                         .body = try self.lowerExprAtType(body.root_expr, ret_ty),
-                        .ret = ret_ty,
+                        .ret = try self.draftTypeCell(ret_ty),
                     },
                 };
             },
@@ -6635,7 +6635,7 @@ const BodyContext = struct {
                     .numeral_conversion, .quote_conversion => return .{
                         .args = .empty(),
                         .body = try self.lowerNumeralRootBody(wrapper.body_expr, ret_ty),
-                        .ret = ret_ty,
+                        .ret = try self.draftTypeCell(ret_ty),
                     },
                     .constant,
                     .hoisted_constant,
@@ -6646,7 +6646,7 @@ const BodyContext = struct {
                 return .{
                     .args = .empty(),
                     .body = try self.lowerComptimeRootExprAtType(wrapper.body_expr, ret_ty),
-                    .ret = ret_ty,
+                    .ret = try self.draftTypeCell(ret_ty),
                 };
             },
             .intrinsic_wrapper => |wrapper_id| {
@@ -6672,7 +6672,7 @@ const BodyContext = struct {
         return .{
             .args = try self.addTypedLocalSpan(&.{typed_arg}),
             .body = body,
-            .ret = ret_ty,
+            .ret = try self.draftTypeCell(ret_ty),
         };
     }
 
@@ -6686,7 +6686,7 @@ const BodyContext = struct {
         return .{
             .args = lowered.args,
             .body = lowered.body,
-            .ret = fn_data.ret,
+            .ret = try self.draftTypeCell(fn_data.ret),
         };
     }
 
