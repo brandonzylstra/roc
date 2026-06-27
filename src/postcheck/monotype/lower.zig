@@ -3006,7 +3006,7 @@ const Builder = struct {
         for (fn_value.captures, 0..) |capture, index| {
             const binder = constCaptureBinder(capture.id);
             const capture_ty = checkedBinderType(fn_view, binder);
-            const lowered_ty = try fn_ctx.lowerType(capture_ty);
+            const lowered_ty = try fn_ctx.lowerTypeView(capture_ty);
             const value_expr = try fn_ctx.restoreConstNodeAtType(store_view, fn_view, capture.value, lowered_ty);
             const local = try fn_ctx.addLocalWithBinder(self.symbols.fresh(), lowered_ty, binder);
             try fn_ctx.bindLocalName(local, binder);
@@ -3105,7 +3105,7 @@ const Builder = struct {
         if (runtime_arg_tys.len != 1) Common.invariant("stored parser runtime function had an unexpected arity");
 
         const draft = BodyDraft.begin(self);
-        const shape_ty = try fn_ctx.lowerType(plan.dispatcher_ty);
+        const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
 
@@ -3214,7 +3214,7 @@ const Builder = struct {
         if (runtime_arg_tys.len != 1) Common.invariant("stored encode_to runtime function had an unexpected arity");
 
         const draft = BodyDraft.begin(self);
-        const shape_ty = try fn_ctx.lowerType(plan.dispatcher_ty);
+        const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
 
@@ -6228,7 +6228,7 @@ const BodyContext = struct {
         return DraftTypeCell.fromGraphNode(try self.lowerTypeNode(checked_ty));
     }
 
-    fn lowerType(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!Type.TypeId {
+    fn lowerTypeView(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!Type.TypeId {
         return try self.activeTypeFromCell(try self.lowerTypeCell(checked_ty));
     }
 
@@ -6780,18 +6780,18 @@ const BodyContext = struct {
     fn lowerExprType(self: *BodyContext, expr_id: checked.CheckedExprId) Allocator.Error!Type.TypeId {
         const expr = self.view.bodies.expr(expr_id);
         return switch (expr.data) {
-            .call => |call| (try self.callResultMonoType(expr.ty, call, null)) orelse try self.lowerType(expr.ty),
-            .dispatch_call => |plan| (try self.dispatchResultMonoType(expr.ty, plan, null)) orelse try self.lowerType(expr.ty),
-            .interpolation => |interpolation| (try self.dispatchResultMonoType(expr.ty, interpolation.plan, null)) orelse try self.lowerType(expr.ty),
-            .type_dispatch_call => |plan| (try self.dispatchResultMonoType(expr.ty, plan, null)) orelse try self.lowerType(expr.ty),
-            .method_eq => |plan| (try self.dispatchResultMonoType(expr.ty, plan, null)) orelse try self.lowerType(expr.ty),
+            .call => |call| (try self.callResultMonoType(expr.ty, call, null)) orelse try self.lowerTypeView(expr.ty),
+            .dispatch_call => |plan| (try self.dispatchResultMonoType(expr.ty, plan, null)) orelse try self.lowerTypeView(expr.ty),
+            .interpolation => |interpolation| (try self.dispatchResultMonoType(expr.ty, interpolation.plan, null)) orelse try self.lowerTypeView(expr.ty),
+            .type_dispatch_call => |plan| (try self.dispatchResultMonoType(expr.ty, plan, null)) orelse try self.lowerTypeView(expr.ty),
+            .method_eq => |plan| (try self.dispatchResultMonoType(expr.ty, plan, null)) orelse try self.lowerTypeView(expr.ty),
             .lookup_local => |lookup| try self.lookupExprMonoType(expr.ty, lookup.resolved),
             .lookup_external => |resolved| try self.lookupExprMonoType(expr.ty, resolved),
             .lookup_required => |resolved| try self.lookupExprMonoType(expr.ty, resolved),
             .lambda => |lambda| try self.lambdaFunctionType(lambda),
             .closure => |closure| try self.closureFunctionType(closure),
             .field_access => |field| try self.fieldAccessMonoType(field.receiver, field.field_name),
-            else => try self.lowerType(expr.ty),
+            else => try self.lowerTypeView(expr.ty),
         };
     }
 
@@ -6928,7 +6928,7 @@ const BodyContext = struct {
     ) Allocator.Error!?Type.TypeId {
         const entry = self.selectedHoistedConstEntry(selected);
         if (self.loweringOwnHoistedConstRoot(entry)) return null;
-        const hoisted_ty = try self.lowerType(entry.checked_type);
+        const hoisted_ty = try self.lowerTypeView(entry.checked_type);
         try self.constrainTypeToMono(checked_ty, hoisted_ty);
         return hoisted_ty;
     }
@@ -7173,23 +7173,23 @@ const BodyContext = struct {
             .tag_union_parse => blk: {
                 if (args.len != 2 or arg_tys.len != 2) Common.invariant("ParseTagUnionSpec.parse reached Monotype with an unexpected arity");
                 if (expected_ret_ty) |expected| break :blk expected;
-                break :blk try self.lowerType(checked_ret_ty);
+                break :blk try self.lowerTypeView(checked_ret_ty);
             },
             .fields_rename_fields => blk: {
                 if (args.len != 2 or arg_tys.len != 2) Common.invariant("FieldNames.rename_fields reached Monotype with an unexpected arity");
                 if (self.generatedFieldNamesBackingValueFieldNames(arg_tys[0]) != null) break :blk arg_tys[0];
                 if (expected_ret_ty) |expected| break :blk expected;
-                break :blk try self.lowerType(checked_ret_ty);
+                break :blk try self.lowerTypeView(checked_ret_ty);
             },
             .fields_shortest_name, .fields_longest_name, .fields_iter, .field_name => blk: {
                 if (args.len != 1 or arg_tys.len != 1) Common.invariant("field metadata intrinsic reached Monotype with an unexpected arity");
                 if (expected_ret_ty) |expected| break :blk expected;
-                break :blk try self.lowerType(checked_ret_ty);
+                break :blk try self.lowerTypeView(checked_ret_ty);
             },
             .fields_for_size => blk: {
                 if (args.len != 2 or arg_tys.len != 2) Common.invariant("FieldNames.for_size reached Monotype with an unexpected arity");
                 if (expected_ret_ty) |expected| break :blk expected;
-                break :blk try self.lowerType(checked_ret_ty);
+                break :blk try self.lowerTypeView(checked_ret_ty);
             },
         };
 
@@ -11163,7 +11163,7 @@ const BodyContext = struct {
         checked_ret_ty: checked.CheckedTypeId,
         operand: checked.CheckedExprId,
     ) Allocator.Error!LoweredCall {
-        const ret_ty = try self.lowerType(checked_ret_ty);
+        const ret_ty = try self.lowerTypeView(checked_ret_ty);
         return .{
             .ret_ty = ret_ty,
             .data = try self.lowerDivergentExprDataAtType(operand, ret_ty),
@@ -11465,7 +11465,7 @@ const BodyContext = struct {
             try self.constrainTypeToMono(expr.ty, ty);
             return ty;
         }
-        return try self.lowerType(expr.ty);
+        return try self.lowerTypeView(expr.ty);
     }
 
     fn lookupExprMonoType(
@@ -11521,7 +11521,7 @@ const BodyContext = struct {
             .platform_required_declaration,
             .platform_required_proc,
             .promoted_top_level_proc,
-            => try self.lowerType(checked_ty),
+            => try self.lowerTypeView(checked_ty),
         };
     }
 
@@ -11749,7 +11749,7 @@ const BodyContext = struct {
             try self.constrainTypeToMono(binder_ty, try self.publicOpaqueUnificationType(local_ty));
             try self.constrainTypeToMono(binder_ty, try self.publicOpaqueUnificationType(ty));
             try self.constrainTypeToMono(checked_ty, try self.publicOpaqueUnificationType(ty));
-            const live_ty = try self.lowerType(binder_ty);
+            const live_ty = try self.lowerTypeView(binder_ty);
             const use_ty = if (self.sameType(ty, local_ty))
                 local_ty
             else if (self.sameType(ty, live_ty))
@@ -11855,7 +11855,7 @@ const BodyContext = struct {
     fn constUseMonoType(self: *BodyContext, const_use: checked.ConstUseTemplate) Allocator.Error!Type.TypeId {
         const requested_ty = const_use.requested_source_ty_payload orelse
             Common.invariant("checked const use reached Monotype without a requested checked type");
-        return try self.lowerType(requested_ty);
+        return try self.lowerTypeView(requested_ty);
     }
 
     fn restoreConstUseAtType(
@@ -12147,7 +12147,7 @@ const BodyContext = struct {
         for (fn_value.captures, 0..) |capture, index| {
             const binder = constCaptureBinder(capture.id);
             const capture_ty = checkedBinderType(fn_view, binder);
-            const lowered_ty = try fn_ctx.lowerType(capture_ty);
+            const lowered_ty = try fn_ctx.lowerTypeView(capture_ty);
             const value_expr = try fn_ctx.restoreConstNodeAtType(store_view, fn_view, capture.value, lowered_ty);
             const local = try fn_ctx.addLocalWithBinder(self.builder.symbols.fresh(), lowered_ty, binder);
             try fn_ctx.bindLocalName(local, binder);
@@ -12230,7 +12230,7 @@ const BodyContext = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored parser runtime function had an unexpected arity");
 
-        const shape_ty = try fn_ctx.lowerType(plan.dispatcher_ty);
+        const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.builder.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
 
@@ -12322,7 +12322,7 @@ const BodyContext = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored encode_to runtime function had an unexpected arity");
 
-        const shape_ty = try fn_ctx.lowerType(plan.dispatcher_ty);
+        const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.builder.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
 
@@ -13496,7 +13496,7 @@ const BodyContext = struct {
                 if (index >= arg_tys.len) Common.invariant("dispatch plan dispatcher argument index was outside the argument span");
                 break :blk arg_tys[index];
             },
-            .type_only => try self.lowerType(plan.dispatcher_ty),
+            .type_only => try self.lowerTypeView(plan.dispatcher_ty),
         };
     }
 
@@ -13799,7 +13799,7 @@ const BodyContext = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("structural parser runtime function must have one state argument");
 
-        const shape_ty = try self.lowerType(plan.dispatcher_ty);
+        const shape_ty = try self.lowerTypeView(plan.dispatcher_ty);
         if (!self.typeHasBuiltinOwner(shape_ty, .str)) {
             switch (self.builder.shapeContent(shape_ty)) {
                 .record => |fields_span| blk: {
@@ -13902,7 +13902,7 @@ const BodyContext = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("structural encode_to runtime function must have one state argument");
 
-        const shape_ty = try self.lowerType(plan.dispatcher_ty);
+        const shape_ty = try self.lowerTypeView(plan.dispatcher_ty);
         if (!self.encodeFieldTypeIsSupported(shape_ty)) Common.invariant("structural encode_to dispatcher was not a supported structural type");
 
         const value_expr = if (pre_lowered != null and pre_lowered.?.index == 0)
@@ -14713,7 +14713,7 @@ const BodyContext = struct {
         checked_ret_ty: checked.CheckedTypeId,
         eq: anytype,
     ) Allocator.Error!DraftExprId {
-        const ret_ty = try self.lowerType(checked_ret_ty);
+        const ret_ty = try self.lowerTypeView(checked_ret_ty);
         return try self.lowerDirectStructuralEqAtType(eq, ret_ty);
     }
 
@@ -14746,7 +14746,7 @@ const BodyContext = struct {
             return try self.constrainStructuralEqualityOperandType(rhs_ty, eq.lhs, lhs_checked_ty, conflict_message);
         }
 
-        return try self.lowerType(lhs_checked_ty);
+        return try self.lowerTypeView(lhs_checked_ty);
     }
 
     /// Resolves the Monotype an equality operand evaluates to, when that operand is a
@@ -15063,7 +15063,7 @@ const BodyContext = struct {
         checked_ret_ty: checked.CheckedTypeId,
         h: anytype,
     ) Allocator.Error!DraftExprId {
-        const ret_ty = try self.lowerType(checked_ret_ty);
+        const ret_ty = try self.lowerTypeView(checked_ret_ty);
         return try self.lowerDirectStructuralHashAtType(h, ret_ty);
     }
 
@@ -15880,7 +15880,7 @@ const BodyContext = struct {
                 },
                 .rest => |child| {
                     if (self.patternIsIgnored(child)) continue;
-                    const rest_ty = try self.lowerType(self.view.bodies.pattern(child).ty);
+                    const rest_ty = try self.lowerTypeView(self.view.bodies.pattern(child).ty);
                     const rest_value = try self.lowerRecordRestValue(value, rest_ty);
                     const pat = try self.lowerPatternAtType(child, rest_ty);
                     success = try self.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
@@ -16366,7 +16366,7 @@ const BodyContext = struct {
                 defer self.allocator.free(statements.items);
                 if (!statements.diverges) {
                     const final_stmt = try self.addStmt(.{ .expr = if (self.checkedExprDiverges(block.final_expr))
-                        try self.lowerDivergentExprAtType(block.final_expr, try self.lowerType(checked_body.ty))
+                        try self.lowerDivergentExprAtType(block.final_expr, try self.lowerTypeView(checked_body.ty))
                     else
                         try self.lowerExpr(block.final_expr) });
                     try statements.append(self.allocator, final_stmt);
@@ -16587,7 +16587,7 @@ const BodyContext = struct {
                 },
                 .rest => |child| {
                     if (self.patternIsIgnored(child)) continue;
-                    const rest_ty = try self.lowerType(self.view.bodies.pattern(child).ty);
+                    const rest_ty = try self.lowerTypeView(self.view.bodies.pattern(child).ty);
                     const rest_value = try self.lowerRecordRestValue(value, rest_ty);
                     try lowered.append(self.allocator, try self.addStmt(.{ .let_ = .{
                         .pat = try self.lowerPatternAtType(child, rest_ty),
@@ -16729,9 +16729,9 @@ const BodyContext = struct {
         try self.constrainTypeToMono(plan.iterator_ty, iterator_ty);
         try self.constrainTypeToMono(step.one_rest.ty, iterator_ty);
         try self.constrainTypeToMono(step.skip_rest.ty, iterator_ty);
-        const item_ty = try self.lowerType(step.one_item.ty);
+        const item_ty = try self.lowerTypeView(step.one_item.ty);
         try self.constrainTypeToMono(plan.item_ty, item_ty);
-        const step_expected_ty = try self.lowerType(plan.step_ty);
+        const step_expected_ty = try self.lowerTypeView(plan.step_ty);
         const iterator_local = try self.addLocal(self.builder.symbols.fresh(), iterator_ty);
         const iterator_param = BodyTypedLocal{ .local = iterator_local, .ty = iterator_ty };
 
@@ -16960,7 +16960,7 @@ const BodyContext = struct {
     }
 
     fn iteratorDonePattern(self: *BodyContext, step: IterStepShape) Allocator.Error!DraftPatId {
-        return try self.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
+        return try self.addPat(.{ .ty = try self.lowerTypeView(step.step_ty), .data = .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.done_tag),
             .payloads = .empty(),
         } } });
@@ -16980,14 +16980,14 @@ const BodyContext = struct {
         for (carries) |carry| try self.saveBinder(carry.binder, &saved);
         defer self.restoreBinders(saved.items);
 
-        const item_ty = try self.lowerType(step.one_item.ty);
+        const item_ty = try self.lowerTypeView(step.one_item.ty);
         const rest_local = try self.addLocal(self.builder.symbols.fresh(), iterator_ty);
         const item_local: ?DraftLocalId = if (self.patternNeedsExplicitBinding(for_.pattern))
             try self.addLocal(self.builder.symbols.fresh(), item_ty)
         else
             null;
         const record_pat = try self.iteratorOnePayloadPattern(for_.pattern, step, item_ty, iterator_ty, rest_local, item_local);
-        const tag_pat = try self.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
+        const tag_pat = try self.addPat(.{ .ty = try self.lowerTypeView(step.step_ty), .data = .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.one_tag),
             .payloads = try self.addPatSpan(&[_]DraftPatId{record_pat}),
         } } });
@@ -17106,7 +17106,7 @@ const BodyContext = struct {
     ) Allocator.Error!DraftBranch {
         const rest_local = try self.addLocal(self.builder.symbols.fresh(), iterator_ty);
         const record_pat = try self.iteratorSkipPayloadPattern(step, iterator_ty, rest_local);
-        const tag_pat = try self.addPat(.{ .ty = try self.lowerType(step.step_ty), .data = .{ .tag = .{
+        const tag_pat = try self.addPat(.{ .ty = try self.lowerTypeView(step.step_ty), .data = .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.skip_tag),
             .payloads = try self.addPatSpan(&[_]DraftPatId{record_pat}),
         } } });
@@ -17134,7 +17134,7 @@ const BodyContext = struct {
         const rest_field = try self.iteratorRecordDestruct(step.one_rest.name, try self.bindPat(rest_local, iterator_ty));
         const fields = [_]DraftRecordDestruct{ item_field, rest_field };
         return try self.addPat(.{
-            .ty = try self.lowerType(step.one_payload_ty),
+            .ty = try self.lowerTypeView(step.one_payload_ty),
             .data = .{ .record = try self.addRecordDestructSpan(&fields) },
         });
     }
@@ -17148,7 +17148,7 @@ const BodyContext = struct {
         const rest_field = try self.iteratorRecordDestruct(step.skip_rest.name, try self.bindPat(rest_local, iterator_ty));
         const fields = [_]DraftRecordDestruct{rest_field};
         return try self.addPat(.{
-            .ty = try self.lowerType(step.skip_payload_ty),
+            .ty = try self.lowerTypeView(step.skip_payload_ty),
             .data = .{ .record = try self.addRecordDestructSpan(&fields) },
         });
     }
@@ -17663,7 +17663,7 @@ const BodyContext = struct {
         pattern: checked.CheckedPatternId,
     ) Allocator.Error!DraftPatId {
         const checked_pattern = self.view.bodies.pattern(pattern);
-        return try self.lowerPatternAtType(pattern, try self.lowerType(checked_pattern.ty));
+        return try self.lowerPatternAtType(pattern, try self.lowerTypeView(checked_pattern.ty));
     }
 
     fn lowerPatternStatement(
