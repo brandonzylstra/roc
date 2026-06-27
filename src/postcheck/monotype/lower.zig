@@ -3159,7 +3159,7 @@ const Builder = struct {
         if (runtime_arg_tys.len != 1) Common.invariant("stored parser runtime function had an unexpected arity");
 
         const draft = FinalBodyOutputGuard.begin(self);
-        const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
+        const shape_ty = try fn_ctx.sealCheckedType(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
 
@@ -3263,7 +3263,7 @@ const Builder = struct {
         if (runtime_arg_tys.len != 1) Common.invariant("stored encode_to runtime function had an unexpected arity");
 
         const draft = FinalBodyOutputGuard.begin(self);
-        const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
+        const shape_ty = try fn_ctx.sealCheckedType(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
 
@@ -6227,6 +6227,16 @@ const BodyContext = struct {
 
     fn lowerTypeCell(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!DraftTypeCell {
         return DraftTypeCell.fromGraphNode(try self.lowerTypeNode(checked_ty));
+    }
+
+    fn sealTypeNode(self: *BodyContext, node: NodeId) Allocator.Error!Type.TypeId {
+        const sealed = try self.graph.sealNode(node);
+        try self.graph.assertTypeHasNoGraphViews(sealed);
+        return sealed;
+    }
+
+    fn sealCheckedType(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!Type.TypeId {
+        return try self.sealTypeNode(try self.lowerTypeNode(checked_ty));
     }
 
     fn lowerTypeView(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!Type.TypeId {
@@ -12238,7 +12248,7 @@ const BodyContext = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored parser runtime function had an unexpected arity");
 
-        const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
+        const shape_ty = try fn_ctx.sealCheckedType(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.builder.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
 
@@ -12330,7 +12340,7 @@ const BodyContext = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored encode_to runtime function had an unexpected arity");
 
-        const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
+        const shape_ty = try fn_ctx.sealCheckedType(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.builder.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
 
@@ -13812,7 +13822,7 @@ const BodyContext = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("structural parser runtime function must have one state argument");
 
-        const shape_ty = try self.lowerTypeView(plan.dispatcher_ty);
+        const shape_ty = try self.sealCheckedType(plan.dispatcher_ty);
         if (!self.typeHasBuiltinOwner(shape_ty, .str)) {
             switch (self.builder.shapeContent(shape_ty)) {
                 .record => |fields_span| blk: {
@@ -13915,7 +13925,7 @@ const BodyContext = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("structural encode_to runtime function must have one state argument");
 
-        const shape_ty = try self.lowerTypeView(plan.dispatcher_ty);
+        const shape_ty = try self.sealCheckedType(plan.dispatcher_ty);
         if (!self.encodeFieldTypeIsSupported(shape_ty)) Common.invariant("structural encode_to dispatcher was not a supported structural type");
 
         const value_expr = if (pre_lowered != null and pre_lowered.?.index == 0)
