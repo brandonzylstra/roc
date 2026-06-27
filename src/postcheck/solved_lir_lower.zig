@@ -1948,13 +1948,19 @@ const Lowerer = struct {
         if (target_info.fields.len != source_info.fields.len) return null;
 
         const field_count = target_info.fields.len;
+        const filled = try self.allocator.alloc(bool, field_count);
+        defer self.allocator.free(filled);
+        @memset(filled, false);
+
         for (0..field_count) |i| {
             const target_field = target_info.fields.get(i);
-            const source_field = source_info.fields.get(i);
-            if (target_field.index != source_field.index) return null;
-            if (target_field.is_padding != source_field.is_padding) return null;
             if (target_field.is_padding) return null;
-            if (target_field.index != @as(u16, @intCast(i))) return null;
+            if (target_field.index >= field_count) return null;
+            if (filled[target_field.index]) return null;
+            filled[target_field.index] = true;
+        }
+        for (filled) |was_filled| {
+            if (!was_filled) return null;
         }
 
         const fields = try self.allocator.alloc(LIR.LocalId, field_count);
@@ -1962,7 +1968,7 @@ const Lowerer = struct {
 
         for (0..field_count) |i| {
             const target_field = target_info.fields.get(i);
-            fields[i] = try self.addLocalForLayout(target_field.layout);
+            fields[target_field.index] = try self.addLocalForLayout(target_field.layout);
         }
 
         var current = try self.result.store.addCFStmt(.{ .assign_struct = .{
@@ -1975,9 +1981,10 @@ const Lowerer = struct {
         while (i > 0) {
             i -= 1;
             const target_field = target_info.fields.get(i);
-            const source_field = source_info.fields.get(i);
+            const source_field = structFieldByOriginalIndex(source_info.fields, target_field.index) orelse return null;
+            if (source_field.is_padding) return null;
             current = try self.assignRefRead(
-                fields[i],
+                fields[target_field.index],
                 source_field.layout,
                 .{ .field = .{ .source = source, .field_idx = target_field.index } },
                 current,
@@ -1985,6 +1992,14 @@ const Lowerer = struct {
         }
 
         return current;
+    }
+
+    fn structFieldByOriginalIndex(fields: layout.StructField.SafeMultiList.Slice, index: u16) ?layout.StructField {
+        for (0..fields.len) |i| {
+            const field = fields.get(i);
+            if (field.index == index) return field;
+        }
+        return null;
     }
 
     fn layoutsEquivalent(self: *Lowerer, lhs: layout.Idx, rhs: layout.Idx) Common.LowerError!bool {
@@ -2042,7 +2057,7 @@ const Lowerer = struct {
                 const rhs_info = self.result.layouts.getTagUnionInfo(rhs);
                 if (lhs_info.alignment != rhs_info.alignment) break :blk false;
                 if (lhs_info.size() != rhs_info.size()) break :blk false;
-                if (lhs_info.data.discriminant_offset != rhs_info.data.discriminant_offset) break :blk false;
+                if (!std.meta.eql(lhs_info.data.discriminant_offset, rhs_info.data.discriminant_offset)) break :blk false;
                 if (lhs_info.data.discriminant_size != rhs_info.data.discriminant_size) break :blk false;
                 if (lhs_info.variants.len != rhs_info.variants.len) break :blk false;
                 for (0..lhs_info.variants.len) |index| {

@@ -541,10 +541,10 @@ pub const MappedProgramView = struct {
                 self.exprRefInBounds(loop.body),
             .break_ => |maybe_expr| if (maybe_expr) |expr| self.exprRefInBounds(expr) else true,
             .continue_ => |continue_| self.exprIdSpanInBounds(continue_.values),
-            .return_,
             .dbg,
             .expect,
             => |expr| self.exprRefInBounds(expr),
+            .return_ => |ret| self.returnInBounds(ret),
             .comptime_branch_taken => |branch| self.exprRefInBounds(branch.body),
             .expect_err => |expect| self.exprRefInBounds(expect.msg),
         };
@@ -579,10 +579,14 @@ pub const MappedProgramView = struct {
             .expr,
             .expect,
             .dbg,
-            .return_,
             => |expr| self.exprRefInBounds(expr),
+            .return_ => |ret| self.returnInBounds(ret),
             .crash => true,
         };
+    }
+
+    fn returnInBounds(self: MappedProgramView, ret: Ast.Return) bool {
+        return self.exprRefInBounds(ret.value) and self.typeRefInBounds(ret.target);
     }
 
     fn optionalListRestPatternInBounds(self: MappedProgramView, rest: Ast.ListRestPattern) bool {

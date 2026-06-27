@@ -594,7 +594,7 @@ const Solver = struct {
                     _ = try self.expectExpr(value, param_ty);
                 }
             },
-            .return_ => |ret| _ = try self.expectExpr(ret.value, self.returnTargetTy(ret.target)),
+            .return_ => |ret| _ = try self.expectExpr(ret.value, try self.returnTargetTy(ret.target)),
             .dbg,
             .expect,
             => |child| _ = try self.inferExpr(child),
@@ -618,7 +618,7 @@ const Solver = struct {
             .expect,
             .dbg,
             => |expr| _ = try self.inferExpr(expr),
-            .return_ => |ret| _ = try self.expectExpr(ret.value, self.returnTargetTy(ret.target)),
+            .return_ => |ret| _ = try self.expectExpr(ret.value, try self.returnTargetTy(ret.target)),
             .crash => {},
         }
     }
@@ -759,20 +759,18 @@ const Solver = struct {
         return self.local_tys[@intFromEnum(local)] orelse Common.invariant("Lambda Solved local reached solver without a type slot");
     }
 
-    fn returnTargetTy(self: *Solver, target: MonoType.TypeId) Type.TypeVarId {
+    fn returnTargetTy(self: *Solver, target: MonoType.TypeId) Allocator.Error!Type.TypeVarId {
         if (self.return_contexts.items.len == 0) Common.invariant("return expression reached Lambda Solved outside a function");
         const context = self.return_contexts.items[self.return_contexts.items.len - 1];
-        if (!self.sameMonoType(target, context.mono_ret)) {
+        if (!try self.sameMonoType(target, context.mono_ret)) {
             Common.invariant("return target type differed from enclosing function return type");
         }
         return context.solved_ret;
     }
 
-    fn sameMonoType(self: *Solver, a: MonoType.TypeId, b: MonoType.TypeId) bool {
+    fn sameMonoType(self: *Solver, a: MonoType.TypeId, b: MonoType.TypeId) Allocator.Error!bool {
         if (a == b) return true;
-        const a_digest = self.program.lifted.types.typeDigest(&self.program.lifted.names, a);
-        const b_digest = self.program.lifted.types.typeDigest(&self.program.lifted.names, b);
-        return std.mem.eql(u8, a_digest.bytes[0..], b_digest.bytes[0..]);
+        return try self.lifted.types.typeEql(self.allocator, self.lifted.names, a, b);
     }
 
     fn currentLoopResult(self: *Solver) Type.TypeVarId {

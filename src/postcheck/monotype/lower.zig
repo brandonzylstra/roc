@@ -4145,6 +4145,11 @@ const DraftExpectErrExpr = struct {
     region: base.Region,
 };
 
+const DraftReturn = struct {
+    value: DraftExprId,
+    target: DraftTypeCell,
+};
+
 const DraftExpr = struct {
     ty: DraftTypeCell,
     data: DraftExprData,
@@ -4214,7 +4219,7 @@ const DraftExprData = union(enum(u8)) {
     loop_: DraftLoopExpr,
     break_: ?DraftExprId,
     continue_: DraftContinueExpr,
-    return_: DraftExprId,
+    return_: DraftReturn,
     crash: DraftStringLiteralId,
     comptime_branch_taken: DraftComptimeBranchTaken,
     comptime_exhaustiveness_failed: DraftComptimeSiteId,
@@ -4306,7 +4311,7 @@ const DraftStmt = union(enum(u8)) {
     expr: DraftExprId,
     expect: DraftExprId,
     dbg: DraftExprId,
-    return_: DraftExprId,
+    return_: DraftReturn,
     crash: DraftStringLiteralId,
 };
 
@@ -4848,7 +4853,7 @@ const BodyDraftStore = struct {
         for (self.exprs.items, 0..) |expr, index| {
             program.exprs.appendAssumeCapacity(.{
                 .ty = try expr.ty.seal(graph, sealer),
-                .data = self.sealCoreExprData(ids, expr.data),
+                .data = try self.sealCoreExprData(ids, graph, sealer, expr.data),
             });
             program.expr_locs.appendAssumeCapacity(ids.sourceLoc(self.expr_locs.items[index]));
             program.expr_regions.appendAssumeCapacity(self.expr_regions.items[index]);
@@ -4858,7 +4863,7 @@ const BodyDraftStore = struct {
         try program.stmt_locs.ensureUnusedCapacity(program.allocator, self.stmts.items.len);
         try program.stmt_regions.ensureUnusedCapacity(program.allocator, self.stmts.items.len);
         for (self.stmts.items, 0..) |stmt, index| {
-            program.stmts.appendAssumeCapacity(BodyDraftStore.sealCoreStmt(ids, stmt));
+            program.stmts.appendAssumeCapacity(try BodyDraftStore.sealCoreStmt(ids, graph, sealer, stmt));
             program.stmt_locs.appendAssumeCapacity(ids.sourceLoc(self.stmt_locs.items[index]));
             program.stmt_regions.appendAssumeCapacity(self.stmt_regions.items[index]);
         }
@@ -5003,7 +5008,20 @@ const BodyDraftStore = struct {
         };
     }
 
-    fn sealCoreExprData(self: *const BodyDraftStore, ids: FinalIdOffsets, data: DraftExprData) Ast.ExprData {
+    fn sealCoreReturn(ids: FinalIdOffsets, graph: *InstGraph, sealer: *GraphTypeFinals, ret: DraftReturn) Allocator.Error!Ast.Return {
+        return .{
+            .value = ids.expr(ret.value),
+            .target = try ret.target.seal(graph, sealer),
+        };
+    }
+
+    fn sealCoreExprData(
+        self: *const BodyDraftStore,
+        ids: FinalIdOffsets,
+        graph: *InstGraph,
+        sealer: *GraphTypeFinals,
+        data: DraftExprData,
+    ) Allocator.Error!Ast.ExprData {
         return switch (data) {
             .local => |local| .{ .local = ids.local(local) },
             .unit => .unit,
@@ -5114,7 +5132,7 @@ const BodyDraftStore = struct {
             .continue_ => |continue_| .{ .continue_ = .{
                 .values = ids.exprSpan(continue_.values),
             } },
-            .return_ => |expr| .{ .return_ = ids.expr(expr) },
+            .return_ => |ret| .{ .return_ = try BodyDraftStore.sealCoreReturn(ids, graph, sealer, ret) },
             .crash => |literal| .{ .crash = ids.stringLiteral(literal) },
             .comptime_branch_taken => |taken| .{ .comptime_branch_taken = .{
                 .site = ids.comptimeSite(taken.site),
@@ -5131,7 +5149,7 @@ const BodyDraftStore = struct {
         };
     }
 
-    fn sealCoreStmt(ids: FinalIdOffsets, stmt: DraftStmt) Ast.Stmt {
+    fn sealCoreStmt(ids: FinalIdOffsets, graph: *InstGraph, sealer: *GraphTypeFinals, stmt: DraftStmt) Allocator.Error!Ast.Stmt {
         return switch (stmt) {
             .uninitialized => |pat| .{ .uninitialized = ids.pat(pat) },
             .let_ => |let_| .{ .let_ = .{
@@ -5143,7 +5161,7 @@ const BodyDraftStore = struct {
             .expr => |expr| .{ .expr = ids.expr(expr) },
             .expect => |expr| .{ .expect = ids.expr(expr) },
             .dbg => |expr| .{ .dbg = ids.expr(expr) },
-            .return_ => |expr| .{ .return_ = ids.expr(expr) },
+            .return_ => |ret| .{ .return_ = try BodyDraftStore.sealCoreReturn(ids, graph, sealer, ret) },
             .crash => |literal| .{ .crash = ids.stringLiteral(literal) },
         };
     }
@@ -6874,21 +6892,22 @@ const BodyContext = struct {
         return try self.lowerExprWithType(expr_id, expr_ty);
     }
 
-    fn lowerReturn(self: *BodyContext, ret: anytype) Allocator.Error!Ast.Return {
-        const target = try self.returnTargetType(ret.lambda);
+    fn lowerReturn(self: *BodyContext, ret: anytype) Allocator.Error!DraftReturn {
+        const target_cell = try self.returnTargetTypeCell(ret.lambda);
+        const target = try self.activeTypeFromCell(target_cell);
         return .{
             .value = try self.lowerExprAtType(ret.expr, target),
-            .target = target,
+            .target = target_cell,
         };
     }
 
-    fn returnTargetType(self: *BodyContext, lambda_id: checked.CheckedExprId) Allocator.Error!Type.TypeId {
+    fn returnTargetTypeCell(self: *BodyContext, lambda_id: checked.CheckedExprId) Allocator.Error!DraftTypeCell {
         const lambda_expr = self.view.bodies.expr(lambda_id);
         const body_id = switch (lambda_expr.data) {
             .lambda => |lambda| lambda.body,
             else => Common.invariant("checked return target did not reference a lambda"),
         };
-        return try self.lowerType(self.view.bodies.expr(body_id).ty);
+        return try self.lowerTypeCell(self.view.bodies.expr(body_id).ty);
     }
 
     fn lowerComptimeRootExprAtType(
@@ -16826,7 +16845,7 @@ const BodyContext = struct {
             .if_ => |if_| try self.exprIdAsDivergentData(try self.lowerIfExpr(checked_expr_id, if_, ty)),
             .ellipsis => .{ .crash = try self.addStringLiteral("not implemented") },
             .crash => |msg| .{ .crash = try self.lowerStringLiteral(msg) },
-            .runtime_error => .{ .crash = try self.builder.program.addStringLiteral("runtime error") },
+            .runtime_error => .{ .crash = try self.addStringLiteral("runtime error") },
             .expect_err => |expect_err| .{ .expect_err = .{
                 .msg = try self.lowerExpectErrMessage(expect_err.expr, expect_err.snippet),
                 .region = checked_expr.source_region,
@@ -17719,7 +17738,7 @@ const BodyContext = struct {
             .type_anno,
             .type_var_alias,
             => Common.invariant("non-runtime checked statement reached Monotype lowering"),
-            .runtime_error => .{ .crash = try self.builder.program.addStringLiteral("runtime error") },
+            .runtime_error => .{ .crash = try self.addStringLiteral("runtime error") },
             .decl => |decl| blk: {
                 if (self.statementValueIsLocalProc(decl.expr)) {
                     try self.registerLocalProc(decl.pattern);

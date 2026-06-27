@@ -401,6 +401,16 @@ pub const Store = struct {
             return self.declared_fields[span_.start..][0..span_.len];
         }
 
+        pub fn typeEql(
+            self: View,
+            allocator: std.mem.Allocator,
+            name_store: *const names.NameStore,
+            lhs: TypeId,
+            rhs: TypeId,
+        ) std.mem.Allocator.Error!bool {
+            return try typeViewEql(self, allocator, name_store, lhs, rhs);
+        }
+
         pub fn verify(self: View, name_store: *const names.NameStore) ?VerifyError {
             if (self.type_digests.len != self.types.len) return .type_digest_count_mismatch;
 
@@ -546,174 +556,7 @@ pub const Store = struct {
         lhs: TypeId,
         rhs: TypeId,
     ) std.mem.Allocator.Error!bool {
-        var visited = std.AutoHashMap(u64, void).init(self.allocator);
-        defer visited.deinit();
-        return try self.typeEqlInner(name_store, lhs, rhs, &visited);
-    }
-
-    fn typeEqlInner(
-        self: *const Store,
-        name_store: *const names.NameStore,
-        raw_lhs: TypeId,
-        raw_rhs: TypeId,
-        visited: *std.AutoHashMap(u64, void),
-    ) std.mem.Allocator.Error!bool {
-        if (raw_lhs == raw_rhs) return true;
-
-        const lhs_content = self.get(raw_lhs);
-        if (lhs_content == .named and lhs_content.named.kind == .alias) {
-            if (lhs_content.named.backing) |backing| {
-                return try self.typeEqlInner(name_store, backing.ty, raw_rhs, visited);
-            }
-        }
-
-        const rhs_content = self.get(raw_rhs);
-        if (rhs_content == .named and rhs_content.named.kind == .alias) {
-            if (rhs_content.named.backing) |backing| {
-                return try self.typeEqlInner(name_store, raw_lhs, backing.ty, visited);
-            }
-        }
-
-        const pair = typePair(raw_lhs, raw_rhs);
-        const gop = try visited.getOrPut(pair);
-        if (gop.found_existing) return true;
-
-        return switch (lhs_content) {
-            .primitive => |lhs| switch (rhs_content) {
-                .primitive => |rhs| lhs == rhs,
-                else => false,
-            },
-            .named => |lhs| switch (rhs_content) {
-                .named => |rhs| try self.namedTypeEql(name_store, lhs, rhs, visited),
-                else => false,
-            },
-            .record => |lhs| switch (rhs_content) {
-                .record => |rhs| try self.fieldSpanEql(name_store, lhs, rhs, visited),
-                else => false,
-            },
-            .tuple => |lhs| switch (rhs_content) {
-                .tuple => |rhs| try self.typeSpanEql(name_store, lhs, rhs, visited),
-                else => false,
-            },
-            .tag_union => |lhs| switch (rhs_content) {
-                .tag_union => |rhs| try self.tagSpanEql(name_store, lhs, rhs, visited),
-                else => false,
-            },
-            .list => |lhs| switch (rhs_content) {
-                .list => |rhs| try self.typeEqlInner(name_store, lhs, rhs, visited),
-                else => false,
-            },
-            .box => |lhs| switch (rhs_content) {
-                .box => |rhs| try self.typeEqlInner(name_store, lhs, rhs, visited),
-                else => false,
-            },
-            .func => |lhs| switch (rhs_content) {
-                .func => |rhs| blk: {
-                    if (!try self.typeSpanEql(name_store, lhs.args, rhs.args, visited)) break :blk false;
-                    break :blk try self.typeEqlInner(name_store, lhs.ret, rhs.ret, visited);
-                },
-                else => false,
-            },
-            .erased => |lhs| switch (rhs_content) {
-                .erased => |rhs| std.mem.eql(u8, lhs.bytes[0..], rhs.bytes[0..]),
-                else => false,
-            },
-            .zst => rhs_content == .zst,
-        };
-    }
-
-    fn namedTypeEql(
-        self: *const Store,
-        name_store: *const names.NameStore,
-        lhs: anytype,
-        rhs: anytype,
-        visited: *std.AutoHashMap(u64, void),
-    ) std.mem.Allocator.Error!bool {
-        if (lhs.kind != rhs.kind) return false;
-        if (!std.mem.eql(u8, lhs.named_type.module.bytes[0..], rhs.named_type.module.bytes[0..])) return false;
-        if (!std.mem.eql(u8, name_store.moduleNameText(lhs.def.module_name), name_store.moduleNameText(rhs.def.module_name))) return false;
-        if (lhs.def.source_decl != rhs.def.source_decl) return false;
-        if (lhs.def.source_decl == null and
-            !std.mem.eql(u8, name_store.typeNameText(lhs.def.type_name), name_store.typeNameText(rhs.def.type_name)))
-        {
-            return false;
-        }
-        if (lhs.builtin_owner != rhs.builtin_owner) return false;
-        if (!try self.typeSpanEql(name_store, lhs.args, rhs.args, visited)) return false;
-
-        if (lhs.kind == .alias) {
-            const lhs_backing = lhs.backing orelse return rhs.backing == null;
-            const rhs_backing = rhs.backing orelse return false;
-            return try self.typeEqlInner(name_store, lhs_backing.ty, rhs_backing.ty, visited);
-        }
-
-        if (lhs.builtin_owner) |owner| {
-            if (generatedEvidenceOwnerUsesBacking(owner)) {
-                const lhs_backing = lhs.backing orelse return rhs.backing == null;
-                const rhs_backing = rhs.backing orelse return false;
-                return try self.typeEqlInner(name_store, lhs_backing.ty, rhs_backing.ty, visited);
-            }
-        }
-
-        return true;
-    }
-
-    fn typeSpanEql(
-        self: *const Store,
-        name_store: *const names.NameStore,
-        lhs_span: Span,
-        rhs_span: Span,
-        visited: *std.AutoHashMap(u64, void),
-    ) std.mem.Allocator.Error!bool {
-        const lhs = self.span(lhs_span);
-        const rhs = self.span(rhs_span);
-        if (lhs.len != rhs.len) return false;
-        for (lhs, rhs) |lhs_ty, rhs_ty| {
-            if (!try self.typeEqlInner(name_store, lhs_ty, rhs_ty, visited)) return false;
-        }
-        return true;
-    }
-
-    fn fieldSpanEql(
-        self: *const Store,
-        name_store: *const names.NameStore,
-        lhs_span: Span,
-        rhs_span: Span,
-        visited: *std.AutoHashMap(u64, void),
-    ) std.mem.Allocator.Error!bool {
-        const lhs = self.fieldSpan(lhs_span);
-        const rhs = self.fieldSpan(rhs_span);
-        if (lhs.len != rhs.len) return false;
-        for (lhs, rhs) |lhs_field, rhs_field| {
-            if (!std.mem.eql(u8, name_store.recordFieldLabelText(lhs_field.name), name_store.recordFieldLabelText(rhs_field.name))) return false;
-            if (!try self.typeEqlInner(name_store, lhs_field.ty, rhs_field.ty, visited)) return false;
-        }
-        return true;
-    }
-
-    fn tagSpanEql(
-        self: *const Store,
-        name_store: *const names.NameStore,
-        lhs_span: Span,
-        rhs_span: Span,
-        visited: *std.AutoHashMap(u64, void),
-    ) std.mem.Allocator.Error!bool {
-        const lhs = self.tagSpan(lhs_span);
-        const rhs = self.tagSpan(rhs_span);
-        if (lhs.len != rhs.len) return false;
-        for (lhs, rhs) |lhs_tag, rhs_tag| {
-            if (!std.mem.eql(u8, name_store.tagLabelText(lhs_tag.name), name_store.tagLabelText(rhs_tag.name))) return false;
-            if (!try self.typeSpanEql(name_store, lhs_tag.payloads, rhs_tag.payloads, visited)) return false;
-        }
-        return true;
-    }
-
-    fn typePair(lhs: TypeId, rhs: TypeId) u64 {
-        const lhs_int = @intFromEnum(lhs);
-        const rhs_int = @intFromEnum(rhs);
-        const low = @min(lhs_int, rhs_int);
-        const high = @max(lhs_int, rhs_int);
-        return (@as(u64, low) << 32) | @as(u64, high);
+        return try self.view().typeEql(self.allocator, name_store, lhs, rhs);
     }
 
     /// Stack of types currently being digested. Recursive types reference a
@@ -1082,6 +925,183 @@ pub const Store = struct {
         }
     }
 };
+
+fn typeViewEql(
+    type_view: anytype,
+    allocator: std.mem.Allocator,
+    name_store: *const names.NameStore,
+    lhs: TypeId,
+    rhs: TypeId,
+) std.mem.Allocator.Error!bool {
+    var visited = std.AutoHashMap(u64, void).init(allocator);
+    defer visited.deinit();
+    return try typeViewEqlInner(type_view, name_store, lhs, rhs, &visited);
+}
+
+fn typeViewEqlInner(
+    type_view: anytype,
+    name_store: *const names.NameStore,
+    raw_lhs: TypeId,
+    raw_rhs: TypeId,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    if (raw_lhs == raw_rhs) return true;
+
+    const lhs_content = type_view.get(raw_lhs);
+    if (lhs_content == .named and lhs_content.named.kind == .alias) {
+        if (lhs_content.named.backing) |backing| {
+            return try typeViewEqlInner(type_view, name_store, backing.ty, raw_rhs, visited);
+        }
+    }
+
+    const rhs_content = type_view.get(raw_rhs);
+    if (rhs_content == .named and rhs_content.named.kind == .alias) {
+        if (rhs_content.named.backing) |backing| {
+            return try typeViewEqlInner(type_view, name_store, raw_lhs, backing.ty, visited);
+        }
+    }
+
+    const pair = typePairKey(raw_lhs, raw_rhs);
+    const gop = try visited.getOrPut(pair);
+    if (gop.found_existing) return true;
+
+    return switch (lhs_content) {
+        .primitive => |lhs| switch (rhs_content) {
+            .primitive => |rhs| lhs == rhs,
+            else => false,
+        },
+        .named => |lhs| switch (rhs_content) {
+            .named => |rhs| try namedTypeViewEql(type_view, name_store, lhs, rhs, visited),
+            else => false,
+        },
+        .record => |lhs| switch (rhs_content) {
+            .record => |rhs| try fieldSpanViewEql(type_view, name_store, lhs, rhs, visited),
+            else => false,
+        },
+        .tuple => |lhs| switch (rhs_content) {
+            .tuple => |rhs| try typeSpanViewEql(type_view, name_store, lhs, rhs, visited),
+            else => false,
+        },
+        .tag_union => |lhs| switch (rhs_content) {
+            .tag_union => |rhs| try tagSpanViewEql(type_view, name_store, lhs, rhs, visited),
+            else => false,
+        },
+        .list => |lhs| switch (rhs_content) {
+            .list => |rhs| try typeViewEqlInner(type_view, name_store, lhs, rhs, visited),
+            else => false,
+        },
+        .box => |lhs| switch (rhs_content) {
+            .box => |rhs| try typeViewEqlInner(type_view, name_store, lhs, rhs, visited),
+            else => false,
+        },
+        .func => |lhs| switch (rhs_content) {
+            .func => |rhs| blk: {
+                if (!try typeSpanViewEql(type_view, name_store, lhs.args, rhs.args, visited)) break :blk false;
+                break :blk try typeViewEqlInner(type_view, name_store, lhs.ret, rhs.ret, visited);
+            },
+            else => false,
+        },
+        .erased => |lhs| switch (rhs_content) {
+            .erased => |rhs| std.mem.eql(u8, lhs.bytes[0..], rhs.bytes[0..]),
+            else => false,
+        },
+        .zst => rhs_content == .zst,
+    };
+}
+
+fn namedTypeViewEql(
+    type_view: anytype,
+    name_store: *const names.NameStore,
+    lhs: anytype,
+    rhs: anytype,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    if (lhs.kind != rhs.kind) return false;
+    if (!std.mem.eql(u8, lhs.named_type.module.bytes[0..], rhs.named_type.module.bytes[0..])) return false;
+    if (!std.mem.eql(u8, name_store.moduleNameText(lhs.def.module_name), name_store.moduleNameText(rhs.def.module_name))) return false;
+    if (lhs.def.source_decl != rhs.def.source_decl) return false;
+    if (lhs.def.source_decl == null and
+        !std.mem.eql(u8, name_store.typeNameText(lhs.def.type_name), name_store.typeNameText(rhs.def.type_name)))
+    {
+        return false;
+    }
+    if (lhs.builtin_owner != rhs.builtin_owner) return false;
+    if (!try typeSpanViewEql(type_view, name_store, lhs.args, rhs.args, visited)) return false;
+
+    if (lhs.kind == .alias) {
+        const lhs_backing = lhs.backing orelse return rhs.backing == null;
+        const rhs_backing = rhs.backing orelse return false;
+        return try typeViewEqlInner(type_view, name_store, lhs_backing.ty, rhs_backing.ty, visited);
+    }
+
+    if (lhs.builtin_owner) |owner| {
+        if (generatedEvidenceOwnerUsesBacking(owner)) {
+            const lhs_backing = lhs.backing orelse return rhs.backing == null;
+            const rhs_backing = rhs.backing orelse return false;
+            return try typeViewEqlInner(type_view, name_store, lhs_backing.ty, rhs_backing.ty, visited);
+        }
+    }
+
+    return true;
+}
+
+fn typeSpanViewEql(
+    type_view: anytype,
+    name_store: *const names.NameStore,
+    lhs_span: Span,
+    rhs_span: Span,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    const lhs = type_view.span(lhs_span);
+    const rhs = type_view.span(rhs_span);
+    if (lhs.len != rhs.len) return false;
+    for (lhs, rhs) |lhs_ty, rhs_ty| {
+        if (!try typeViewEqlInner(type_view, name_store, lhs_ty, rhs_ty, visited)) return false;
+    }
+    return true;
+}
+
+fn fieldSpanViewEql(
+    type_view: anytype,
+    name_store: *const names.NameStore,
+    lhs_span: Span,
+    rhs_span: Span,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    const lhs = type_view.fieldSpan(lhs_span);
+    const rhs = type_view.fieldSpan(rhs_span);
+    if (lhs.len != rhs.len) return false;
+    for (lhs, rhs) |lhs_field, rhs_field| {
+        if (!std.mem.eql(u8, name_store.recordFieldLabelText(lhs_field.name), name_store.recordFieldLabelText(rhs_field.name))) return false;
+        if (!try typeViewEqlInner(type_view, name_store, lhs_field.ty, rhs_field.ty, visited)) return false;
+    }
+    return true;
+}
+
+fn tagSpanViewEql(
+    type_view: anytype,
+    name_store: *const names.NameStore,
+    lhs_span: Span,
+    rhs_span: Span,
+    visited: *std.AutoHashMap(u64, void),
+) std.mem.Allocator.Error!bool {
+    const lhs = type_view.tagSpan(lhs_span);
+    const rhs = type_view.tagSpan(rhs_span);
+    if (lhs.len != rhs.len) return false;
+    for (lhs, rhs) |lhs_tag, rhs_tag| {
+        if (!std.mem.eql(u8, name_store.tagLabelText(lhs_tag.name), name_store.tagLabelText(rhs_tag.name))) return false;
+        if (!try typeSpanViewEql(type_view, name_store, lhs_tag.payloads, rhs_tag.payloads, visited)) return false;
+    }
+    return true;
+}
+
+fn typePairKey(lhs: TypeId, rhs: TypeId) u64 {
+    const lhs_int = @intFromEnum(lhs);
+    const rhs_int = @intFromEnum(rhs);
+    const low = @min(lhs_int, rhs_int);
+    const high = @max(lhs_int, rhs_int);
+    return (@as(u64, low) << 32) | @as(u64, high);
+}
 
 /// Read-only type-store view backed by durable cache sections.
 pub const DurableView = struct {
