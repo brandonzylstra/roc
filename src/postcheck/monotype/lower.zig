@@ -12,6 +12,7 @@ const Ast = @import("ast.zig");
 const Type = @import("type.zig");
 const specialize = @import("specialize.zig");
 const solve = @import("solve.zig");
+const serialize = @import("serialize.zig");
 
 const InstGraph = solve.InstGraph;
 const NodeId = solve.NodeId;
@@ -19273,6 +19274,91 @@ test "body draft store appends draft-local ids spans and type cells" {
         },
         else => return error.TestExpectedEqual,
     }
+}
+
+test "body draft sealed output maps back from specialization cache without body fixups" {
+    const gpa = std.testing.allocator;
+
+    var program = Ast.Program.init(gpa);
+    defer program.deinit();
+
+    var unsolved_monos = std.AutoHashMap(Type.TypeId, void).init(gpa);
+    defer unsolved_monos.deinit();
+
+    const graph = try InstGraph.create(gpa, &program.types, &program.names, &unsolved_monos);
+    defer graph.destroy();
+
+    var draft = BodyDraftStore.init(gpa);
+    defer draft.deinit();
+
+    const unit_node = try graph.newNode(.zst);
+    const list_node = try graph.newNode(.{ .list = unit_node });
+    const unit_cell = DraftTypeCell.fromGraphNode(unit_node);
+    const list_cell = DraftTypeCell.fromGraphNode(list_node);
+
+    var symbol_gen = Common.SymbolGen{};
+    const local = try draft.addLocal(symbol_gen.fresh(), list_cell, null);
+    const pat = try draft.addPat(.{ .ty = list_cell, .data = .{ .bind = local } });
+    const expr = try draft.addExpr(.{ .ty = list_cell, .data = .{ .local = local } });
+    const stmt = try draft.addStmt(.{ .let_ = .{
+        .pat = pat,
+        .value = expr,
+        .comptime_site = null,
+    } });
+    _ = try draft.addTypedLocalSpan(&.{.{ .local = local, .ty = list_cell }});
+    _ = try draft.addStmtSpan(&.{stmt});
+    _ = try draft.addExpr(.{ .ty = unit_cell, .data = .unit });
+
+    var sealer = GraphTypeFinals.init(graph);
+    defer sealer.deinit();
+    try draft.sealCoreIntoProgram(&program, graph, &sealer);
+    program.freeze();
+
+    const fresh = program.view();
+    try std.testing.expectEqual(@as(?Ast.CompletedTypeIdVerifyError, null), fresh.verifyCompletedTypeIds());
+    try std.testing.expectEqual(@as(?Type.Store.VerifyError, null), fresh.types.verify(fresh.names));
+
+    const type_digests = try gpa.alloc(names.TypeDigest, fresh.types.types.len);
+    defer gpa.free(type_digests);
+    for (type_digests, 0..) |*digest, index| {
+        digest.* = program.types.typeDigest(&program.names, @enumFromInt(@as(u32, @intCast(index))));
+    }
+
+    const zero_hash = [_]u8{0} ** 32;
+    const image = try serialize.buildImage(gpa, zero_hash, zero_hash, &.{
+        .{ .id = .type_nodes, .bytes = std.mem.sliceAsBytes(fresh.types.types) },
+        .{ .id = .type_args, .bytes = std.mem.sliceAsBytes(fresh.types.spans) },
+        .{ .id = .fields, .bytes = std.mem.sliceAsBytes(fresh.types.fields) },
+        .{ .id = .tags, .bytes = std.mem.sliceAsBytes(fresh.types.tags) },
+        .{ .id = .declared_fields, .bytes = std.mem.sliceAsBytes(fresh.types.declared_fields) },
+        .{ .id = .type_digests, .bytes = std.mem.sliceAsBytes(type_digests) },
+        .{ .id = .exprs, .bytes = std.mem.sliceAsBytes(fresh.exprs) },
+        .{ .id = .pats, .bytes = std.mem.sliceAsBytes(fresh.pats) },
+        .{ .id = .stmts, .bytes = std.mem.sliceAsBytes(fresh.stmts) },
+        .{ .id = .locals, .bytes = std.mem.sliceAsBytes(fresh.locals) },
+        .{ .id = .typed_locals, .bytes = std.mem.sliceAsBytes(fresh.typed_locals) },
+        .{ .id = .stmt_ids, .bytes = std.mem.sliceAsBytes(fresh.stmt_ids) },
+        .{ .id = .expr_locs, .bytes = std.mem.sliceAsBytes(fresh.expr_locs) },
+        .{ .id = .expr_regions, .bytes = std.mem.sliceAsBytes(fresh.expr_regions) },
+        .{ .id = .stmt_locs, .bytes = std.mem.sliceAsBytes(fresh.stmt_locs) },
+        .{ .id = .stmt_regions, .bytes = std.mem.sliceAsBytes(fresh.stmt_regions) },
+    });
+    defer gpa.free(image);
+
+    var header: serialize.SpecializationCacheHeader = undefined;
+    @memcpy(std.mem.asBytes(&header), image[0..@sizeOf(serialize.SpecializationCacheHeader)]);
+    const mapped = try serialize.viewMappedFile(&header, image.ptr, image.len, zero_hash, zero_hash, 0);
+    const mapped_program = try serialize.mappedProgramView(mapped);
+
+    try std.testing.expectEqual(@as(?Type.Store.VerifyError, null), mapped_program.types.verify(&program.names));
+    try std.testing.expectEqualSlices(Type.Content, fresh.types.types, mapped_program.types.types);
+    try std.testing.expectEqualSlices(Type.TypeId, fresh.types.spans, mapped_program.types.spans);
+    try std.testing.expectEqualSlices(Ast.Expr, fresh.exprs, mapped_program.exprs);
+    try std.testing.expectEqualSlices(Ast.Pat, fresh.pats, mapped_program.pats);
+    try std.testing.expectEqualSlices(Ast.Stmt, fresh.stmts, mapped_program.stmts);
+    try std.testing.expectEqualSlices(Ast.Local, fresh.locals, mapped_program.locals);
+    try std.testing.expectEqualSlices(Ast.TypedLocal, fresh.typed_locals, mapped_program.typed_locals);
+    try std.testing.expectEqualSlices(Ast.StmtId, fresh.stmt_ids, mapped_program.stmt_ids);
 }
 
 test "record parser presence words cover fields wider than one u64" {
