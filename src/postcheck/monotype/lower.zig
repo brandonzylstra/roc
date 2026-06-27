@@ -1175,13 +1175,8 @@ const Builder = struct {
         const lowered = try body_ctx.lowerComptimeRootExprAtType(wrapper.body_expr, mono_fn_ty);
         const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
-        const body_ids = BodyDraftStore.finalIdOffsets(self.program);
-        var sealer = GraphTypeFinals.init(graph);
-        defer sealer.deinit();
-        _ = try draft.seal(self, graph, &sealer, null, draft_end);
-        try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
-        try draft.markNestedReady(self, draft_end);
-        return body_ids.expr(lowered);
+        const sealed = try self.sealActiveBodyDraft(graph, &body_draft, draft, draft_end, null, null);
+        return sealed.ids.expr(lowered);
     }
 
     fn lowerTemplate(
@@ -1396,16 +1391,16 @@ const Builder = struct {
             try requester_graph.drainDirty();
         }
         try self.drainSpecRequests(graph);
-        const body_ids = BodyDraftStore.finalIdOffsets(self.program);
-        var sealer = GraphTypeFinals.init(graph);
-        defer sealer.deinit();
-        const sealed_fn_ty = (try draft.seal(self, graph, &sealer, root_node, draft_end)).?;
-        try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
-        try draft.markNestedReady(self, draft_end);
-        const final_fn_ty = if (body_uses_generated_evidence)
-            try BodyDraft.sealType(graph, &sealer, body_fn_ty)
-        else
-            sealed_fn_ty;
+        const sealed = try self.sealActiveBodyDraft(
+            graph,
+            &body_draft,
+            draft,
+            draft_end,
+            root_node,
+            if (body_uses_generated_evidence) body_fn_ty else null,
+        );
+        const body_ids = sealed.ids;
+        const final_fn_ty = sealed.extra_ty orelse sealed.root_ty.?;
         // The definition records the body's solved view of the root type.
         // Deferred call sites embed the requested type, which digests
         // identically because digests are alias-transparent and a solved
@@ -2543,11 +2538,7 @@ const Builder = struct {
                 const fn_id = try self.lowerNestedFnFromContext(&fn_ctx, checkedLambdaExprIdForConstFn(fn_view, fn_template.fn_def), fn_template);
                 const draft_end = draft.end(self);
                 try self.drainSpecRequests(graph);
-                var sealer = GraphTypeFinals.init(graph);
-                defer sealer.deinit();
-                _ = try draft.seal(self, graph, &sealer, null, draft_end);
-                try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
-                try draft.markNestedReady(self, draft_end);
+                _ = try self.sealActiveBodyDraft(graph, &body_draft, draft, draft_end, null, null);
                 return fn_id;
             },
             else => return try self.lowerFnTemplateDef(type_view, fn_template),
@@ -2897,6 +2888,35 @@ const Builder = struct {
         }
     }
 
+    const ActiveBodyDraftSeal = struct {
+        ids: FinalIdOffsets,
+        root_ty: ?Type.TypeId,
+        extra_ty: ?Type.TypeId,
+    };
+
+    fn sealActiveBodyDraft(
+        self: *Builder,
+        graph: *InstGraph,
+        body_draft: *const BodyDraftStore,
+        final_range: BodyDraft,
+        final_end: BodyDraft.End,
+        root_node: ?NodeId,
+        extra_ty: ?Type.TypeId,
+    ) Allocator.Error!ActiveBodyDraftSeal {
+        const body_ids = BodyDraftStore.finalIdOffsets(self.program);
+        var sealer = GraphTypeFinals.init(graph);
+        defer sealer.deinit();
+        const sealed_root = try final_range.seal(self, graph, &sealer, root_node, final_end);
+        try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
+        const sealed_extra = if (extra_ty) |ty| try BodyDraft.sealType(graph, &sealer, ty) else null;
+        try final_range.markNestedReady(self, final_end);
+        return .{
+            .ids = body_ids,
+            .root_ty = sealed_root,
+            .extra_ty = sealed_extra,
+        };
+    }
+
     fn moduleForConstFnDef(self: *Builder, fn_def: anytype) ModuleView {
         return switch (fn_def) {
             .nested => |nested| self.moduleForDigest(names.procTemplateModuleDigest(nested.owner)),
@@ -3056,13 +3076,8 @@ const Builder = struct {
         }
         const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
-        const body_ids = BodyDraftStore.finalIdOffsets(self.program);
-        var sealer = GraphTypeFinals.init(graph);
-        defer sealer.deinit();
-        _ = try draft.seal(self, graph, &sealer, null, draft_end);
-        try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
-        try draft.markNestedReady(self, draft_end);
-        return body_ids.expr(expr);
+        const sealed = try self.sealActiveBodyDraft(graph, &body_draft, draft, draft_end, null, null);
+        return sealed.ids.expr(expr);
     }
 
     fn restoreConstParserRuntimeFnExpr(
@@ -3165,13 +3180,8 @@ const Builder = struct {
 
         const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
-        const body_ids = BodyDraftStore.finalIdOffsets(self.program);
-        var sealer = GraphTypeFinals.init(graph);
-        defer sealer.deinit();
-        _ = try draft.seal(self, graph, &sealer, null, draft_end);
-        try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
-        try draft.markNestedReady(self, draft_end);
-        return body_ids.expr(parser_expr);
+        const sealed = try self.sealActiveBodyDraft(graph, &body_draft, draft, draft_end, null, null);
+        return sealed.ids.expr(parser_expr);
     }
 
     fn restoreConstEncodeToRuntimeFnExpr(
@@ -3293,13 +3303,8 @@ const Builder = struct {
 
         const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
-        const body_ids = BodyDraftStore.finalIdOffsets(self.program);
-        var sealer = GraphTypeFinals.init(graph);
-        defer sealer.deinit();
-        _ = try draft.seal(self, graph, &sealer, null, draft_end);
-        try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
-        try draft.markNestedReady(self, draft_end);
-        return body_ids.expr(encoder_expr);
+        const sealed = try self.sealActiveBodyDraft(graph, &body_draft, draft, draft_end, null, null);
+        return sealed.ids.expr(encoder_expr);
     }
 
     fn restoreConstNode(
