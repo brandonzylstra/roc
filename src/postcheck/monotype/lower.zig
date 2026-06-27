@@ -3797,15 +3797,8 @@ const Builder = struct {
     }
 
     fn functionTypeFromMonoArgs(self: *Builder, arg_tys: []const Type.TypeId, ret_ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        if (self.active_graph) |graph| {
-            const args = try graph.arena().alloc(NodeId, arg_tys.len);
-            for (arg_tys, 0..) |arg_ty, index| {
-                args[index] = try graph.importMono(arg_ty);
-            }
-            return try graph.monoFor(try graph.newNode(.{ .func = .{
-                .args = args,
-                .ret = try graph.importMono(ret_ty),
-            } }));
+        if (self.active_graph != null) {
+            Common.invariant("active Monotype body lowering must build function types through BodyContext graph-node helpers");
         }
         return try self.program.types.add(.{ .func = .{
             .args = try self.program.types.addSpan(arg_tys),
