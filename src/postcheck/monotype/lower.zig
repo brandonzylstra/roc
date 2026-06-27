@@ -3924,6 +3924,13 @@ const DraftTypeCell = union(enum) {
         };
     }
 
+    fn toGraphNode(self: DraftTypeCell, graph: *InstGraph) Allocator.Error!NodeId {
+        return switch (self) {
+            .graph_node => |graph_node| graph_node,
+            .sealed => |ty| try graph.importMono(ty),
+        };
+    }
+
     fn sealedHasGraphViews(self: DraftTypeCell, graph: *InstGraph) Allocator.Error!bool {
         return switch (self) {
             .graph_node => false,
@@ -5644,16 +5651,6 @@ const BodyContext = struct {
         });
     }
 
-    fn reserveDef(self: *BodyContext) Allocator.Error!Ast.DefId {
-        const id: Ast.DefId = @enumFromInt(@as(u32, @intCast(self.builder.program.defs.items.len)));
-        try self.builder.program.defs.append(self.allocator, undefined);
-        return id;
-    }
-
-    fn setDef(self: *BodyContext, id: Ast.DefId, def: Ast.Def) void {
-        self.builder.program.defs.items[@intFromEnum(id)] = def;
-    }
-
     fn addExprSpan(self: *BodyContext, ids: []const DraftExprId) Allocator.Error!DraftSpan(DraftExprId) {
         return try self.draft.addExprSpan(ids);
     }
@@ -5727,12 +5724,20 @@ const BodyContext = struct {
         return try self.activeTypeFromCell(self.draft.exprs.items[@intFromEnum(id)].ty);
     }
 
+    fn exprTypeCell(self: *BodyContext, id: DraftExprId) DraftTypeCell {
+        return self.draft.exprs.items[@intFromEnum(id)].ty;
+    }
+
     fn patData(self: *BodyContext, id: DraftPatId) DraftPatData {
         return self.draft.pats.items[@intFromEnum(id)].data;
     }
 
     fn localType(self: *BodyContext, id: DraftLocalId) Allocator.Error!Type.TypeId {
         return try self.activeTypeFromCell(self.draft.locals.items[@intFromEnum(id)].ty);
+    }
+
+    fn localTypeCell(self: *BodyContext, id: DraftLocalId) DraftTypeCell {
+        return self.draft.locals.items[@intFromEnum(id)].ty;
     }
 
     fn setLocalCaptureId(self: *BodyContext, id: DraftLocalId, capture_id: u32) void {
@@ -6159,8 +6164,8 @@ const BodyContext = struct {
         var binder_iter = self.binders.iterator();
         while (binder_iter.next()) |entry| {
             const local = entry.value_ptr.*;
-            const local_ty = try self.localType(local);
-            try self.constrainTypeToMono(checkedBinderType(self.view, entry.key_ptr.*), local_ty);
+            const local_ty = self.localTypeCell(local);
+            try self.constrainTypeToCell(checkedBinderType(self.view, entry.key_ptr.*), local_ty);
         }
     }
 
@@ -6175,6 +6180,17 @@ const BodyContext = struct {
         self.builder.constrain_depth += 1;
         defer self.builder.constrain_depth -= 1;
         try self.graph.unify(try self.instNode(checked_ty), try self.graph.importMono(mono_ty));
+        if (self.builder.constrain_depth == 1) try self.graph.drainDirty();
+    }
+
+    fn constrainTypeToCell(
+        self: *BodyContext,
+        checked_ty: checked.CheckedTypeId,
+        cell: DraftTypeCell,
+    ) Allocator.Error!void {
+        self.builder.constrain_depth += 1;
+        defer self.builder.constrain_depth -= 1;
+        try self.graph.unify(try self.instNode(checked_ty), try cell.toGraphNode(self.graph));
         if (self.builder.constrain_depth == 1) try self.graph.drainDirty();
     }
 
@@ -11395,7 +11411,7 @@ const BodyContext = struct {
         }
         try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(ret_ty));
         try self.graph.drainDirty();
-        return try self.graph.monoFor(try self.graphFunctionNodeFromMono(arg_tys, ret_ty));
+        return try self.graph.sealNode(try self.graphFunctionNodeFromMono(arg_tys, ret_ty));
     }
 
     fn instantiateTargetCallTypeFromMonoArgAtIndexAndRet(
@@ -15939,12 +15955,11 @@ const BodyContext = struct {
         body: DraftExprId,
     ) Allocator.Error!DraftExprId {
         const actual_site = site orelse return body;
-        const ty = try self.exprType(body);
-        return try self.addExpr(.{ .ty = ty, .data = .{ .comptime_branch_taken = .{
+        return try self.addExprWithTypeCell(self.exprTypeCell(body), .{ .comptime_branch_taken = .{
             .site = actual_site,
             .branch_index = @intCast(branch_index),
             .body = body,
-        } } });
+        } });
     }
 
     fn matchComptimeSite(self: *BodyContext, expr_id: checked.CheckedExprId, match: anytype) Allocator.Error!?DraftComptimeSiteId {
