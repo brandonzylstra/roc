@@ -5315,6 +5315,7 @@ const BodyDraft = struct {
         graph.assertNoDeferredRequestsBeforeBodySeal();
         const sealed_root = if (root_node) |node| try sealer.sealNode(node) else null;
         if (sealed_root) |ty| try graph.assertTypeHasNoGraphViews(ty);
+        self.assertNoFinalBodyOutput(end_);
 
         for (builder.program.fns.items[self.fns_start..end_.fns]) |*fn_| {
             try sealFnTemplate(graph, sealer, &fn_.source);
@@ -5324,24 +5325,6 @@ const BodyDraft = struct {
         }
         for (builder.program.nested_defs.items[self.nested_defs_start..end_.nested_defs]) |*def| {
             try sealNestedDef(graph, sealer, def);
-        }
-        for (builder.program.exprs.items[self.exprs_start..end_.exprs]) |*expr| {
-            expr.ty = try sealType(graph, sealer, expr.ty);
-        }
-        for (builder.program.pats.items[self.pats_start..end_.pats]) |*pat| {
-            pat.ty = try sealType(graph, sealer, pat.ty);
-        }
-        for (builder.program.locals.items[self.locals_start..end_.locals]) |*local| {
-            local.ty = try sealType(graph, sealer, local.ty);
-        }
-        for (builder.program.typed_locals.items[self.typed_locals_start..end_.typed_locals]) |*typed_local| {
-            typed_local.ty = try sealType(graph, sealer, typed_local.ty);
-        }
-        for (builder.program.layout_requests.items[self.layout_requests_start..end_.layout_requests]) |*request| {
-            request.ty = try sealType(graph, sealer, request.ty);
-        }
-        for (builder.program.runtime_schema_requests.items[self.runtime_schema_requests_start..end_.runtime_schema_requests]) |*request| {
-            request.ty = try sealType(graph, sealer, request.ty);
         }
         var spec_index = self.specs_start;
         while (spec_index < end_.specs) : (spec_index += 1) {
@@ -5354,6 +5337,27 @@ const BodyDraft = struct {
             try builder.spec_store.updateLocalIdentity(spec_id, identity);
         }
         return sealed_root;
+    }
+
+    fn assertNoFinalBodyOutput(self: BodyDraft, end_: End) void {
+        if (self.exprs_start != end_.exprs) {
+            Common.invariant("active Monotype lowering wrote final expressions instead of BodyDraftStore expressions");
+        }
+        if (self.pats_start != end_.pats) {
+            Common.invariant("active Monotype lowering wrote final patterns instead of BodyDraftStore patterns");
+        }
+        if (self.locals_start != end_.locals) {
+            Common.invariant("active Monotype lowering wrote final locals instead of BodyDraftStore locals");
+        }
+        if (self.typed_locals_start != end_.typed_locals) {
+            Common.invariant("active Monotype lowering wrote final typed locals instead of BodyDraftStore typed locals");
+        }
+        if (self.layout_requests_start != end_.layout_requests) {
+            Common.invariant("active Monotype lowering wrote final layout requests instead of BodyDraftStore layout requests");
+        }
+        if (self.runtime_schema_requests_start != end_.runtime_schema_requests) {
+            Common.invariant("active Monotype lowering wrote final runtime schema requests instead of BodyDraftStore runtime schema requests");
+        }
     }
 
     fn markNestedReady(self: BodyDraft, builder: *Builder, end_: End) Allocator.Error!void {
