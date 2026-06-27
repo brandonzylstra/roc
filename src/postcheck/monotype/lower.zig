@@ -1171,7 +1171,7 @@ const Builder = struct {
         try body_ctx.constrainTypeToMono(template.checked_fn_root, mono_fn_ty);
         try body_ctx.constrainKnownType(root.checked_type, mono_fn_ty);
 
-        const draft = FinalArraySealRange.begin(self);
+        const draft = FinalBodyOutputGuard.begin(self);
         const lowered = try body_ctx.lowerComptimeRootExprAtType(wrapper.body_expr, mono_fn_ty);
         const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
@@ -1377,7 +1377,7 @@ const Builder = struct {
         if (!self.unsolved_monos.contains(lower_fn_ty) and !body_uses_generated_evidence) {
             try graph.addMonoView(root_node, lower_fn_ty);
         }
-        const draft = FinalArraySealRange.begin(self);
+        const draft = FinalBodyOutputGuard.begin(self);
         const live_fn_ty = try body_ctx.activeTypeFromNode(root_node);
         const body_fn_ty = if (body_uses_generated_evidence) lower_fn_ty else live_fn_ty;
         const lowered = try body_ctx.lowerTemplateBody(template_ref, template, body_fn_ty);
@@ -2549,7 +2549,7 @@ const Builder = struct {
                 defer body_draft.deinit();
                 var fn_ctx = try BodyContext.init(self.allocator, self, fn_view, ownerTemplateForConstFnDef(fn_template.fn_def), graph, &body_draft);
                 defer fn_ctx.deinit();
-                const draft = FinalArraySealRange.begin(self);
+                const draft = FinalBodyOutputGuard.begin(self);
                 const fn_id = try self.lowerNestedFnFromContext(&fn_ctx, checkedLambdaExprIdForConstFn(fn_view, fn_template.fn_def), fn_template);
                 const draft_end = draft.end(self);
                 try self.drainSpecRequests(graph);
@@ -2913,23 +2913,47 @@ const Builder = struct {
         self: *Builder,
         graph: *InstGraph,
         body_draft: *const BodyDraftStore,
-        final_range: FinalArraySealRange,
-        final_end: FinalArraySealRange.End,
+        final_guard: FinalBodyOutputGuard,
+        final_end: FinalBodyOutputGuard.End,
         root_node: ?NodeId,
         extra_ty: ?Type.TypeId,
     ) Allocator.Error!ActiveBodyDraftSeal {
+        final_guard.assertNoFinalBodyOutput(final_end);
         const body_ids = BodyDraftStore.finalIdOffsets(self.program);
         var sealer = GraphTypeFinals.init(graph);
         defer sealer.deinit();
-        const sealed_root = try final_range.seal(self, graph, &sealer, root_node, final_end);
+        try graph.drainDirty();
+        graph.assertNoDeferredRequestsBeforeBodySeal();
+        const sealed_root = if (root_node) |node| try sealer.sealNode(node) else null;
+        if (sealed_root) |ty| try graph.assertTypeHasNoGraphViews(ty);
         try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
-        const sealed_extra = if (extra_ty) |ty| try FinalArraySealRange.sealType(graph, &sealer, ty) else null;
-        try final_range.markNestedReady(self, final_end);
+        const sealed_extra = if (extra_ty) |ty| blk: {
+            const sealed = try sealer.sealType(ty);
+            try graph.assertTypeHasNoGraphViews(sealed);
+            break :blk sealed;
+        } else null;
+        try self.markDraftNestedReady(body_draft, body_ids);
         return .{
             .ids = body_ids,
             .root_ty = sealed_root,
             .extra_ty = sealed_extra,
         };
+    }
+
+    fn markDraftNestedReady(
+        self: *Builder,
+        body_draft: *const BodyDraftStore,
+        ids: FinalIdOffsets,
+    ) Allocator.Error!void {
+        for (body_draft.nested_defs.items) |def| {
+            const fn_id = ids.fnTarget(def.fn_id);
+            const fn_template = self.program.fns.items[@intFromEnum(fn_id)].source;
+            const nested = switch (fn_template.fn_def) {
+                .nested => |nested| nested,
+                else => Common.invariant("nested draft definition did not reference a nested function"),
+            };
+            try self.markNestedFnReady(NestedFnFamily.from(nested, fn_template.source_fn_key), fn_id, fn_template.mono_fn_ty);
+        }
     }
 
     fn moduleForConstFnDef(self: *Builder, fn_def: anytype) ModuleView {
@@ -3011,7 +3035,7 @@ const Builder = struct {
         var fn_ctx = try BodyContext.init(self.allocator, self, fn_view, ownerTemplateForConstFnDef(fn_value.fn_def), graph, &body_draft);
         defer fn_ctx.deinit();
         try fn_ctx.constrainTypeToMono(fn_value.source_fn_ty, ty);
-        const draft = FinalArraySealRange.begin(self);
+        const draft = FinalBodyOutputGuard.begin(self);
 
         const lambda_expr_id = checkedLambdaExprIdForConstFn(fn_view, fn_value.fn_def);
         const lambda_expr = fn_view.bodies.expr(lambda_expr_id);
@@ -3134,7 +3158,7 @@ const Builder = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored parser runtime function had an unexpected arity");
 
-        const draft = FinalArraySealRange.begin(self);
+        const draft = FinalBodyOutputGuard.begin(self);
         const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
@@ -3238,7 +3262,7 @@ const Builder = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored encode_to runtime function had an unexpected arity");
 
-        const draft = FinalArraySealRange.begin(self);
+        const draft = FinalBodyOutputGuard.begin(self);
         const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
@@ -5259,102 +5283,46 @@ const FinalIdOffsets = struct {
     }
 };
 
-const FinalArraySealRange = struct {
-    specs_start: usize,
-    fns_start: usize,
-    defs_start: usize,
-    nested_defs_start: usize,
+const FinalBodyOutputGuard = struct {
     exprs_start: usize,
     pats_start: usize,
     locals_start: usize,
     typed_locals_start: usize,
     layout_requests_start: usize,
     runtime_schema_requests_start: usize,
-    lowered_nested_start: usize,
 
     const End = struct {
-        specs: usize,
-        fns: usize,
-        defs: usize,
-        nested_defs: usize,
         exprs: usize,
         pats: usize,
         locals: usize,
         typed_locals: usize,
         layout_requests: usize,
         runtime_schema_requests: usize,
-        lowered_nested: usize,
     };
 
-    fn begin(builder: *Builder) FinalArraySealRange {
+    fn begin(builder: *Builder) FinalBodyOutputGuard {
         return .{
-            .specs_start = builder.program.specs.items.len,
-            .fns_start = builder.program.fns.items.len,
-            .defs_start = builder.program.defs.items.len,
-            .nested_defs_start = builder.program.nested_defs.items.len,
             .exprs_start = builder.program.exprs.items.len,
             .pats_start = builder.program.pats.items.len,
             .locals_start = builder.program.locals.items.len,
             .typed_locals_start = builder.program.typed_locals.items.len,
             .layout_requests_start = builder.program.layout_requests.items.len,
             .runtime_schema_requests_start = builder.program.runtime_schema_requests.items.len,
-            .lowered_nested_start = builder.lowered_nested_fns.items.len,
         };
     }
 
-    fn end(_: FinalArraySealRange, builder: *Builder) End {
+    fn end(_: FinalBodyOutputGuard, builder: *Builder) End {
         return .{
-            .specs = builder.program.specs.items.len,
-            .fns = builder.program.fns.items.len,
-            .defs = builder.program.defs.items.len,
-            .nested_defs = builder.program.nested_defs.items.len,
             .exprs = builder.program.exprs.items.len,
             .pats = builder.program.pats.items.len,
             .locals = builder.program.locals.items.len,
             .typed_locals = builder.program.typed_locals.items.len,
             .layout_requests = builder.program.layout_requests.items.len,
             .runtime_schema_requests = builder.program.runtime_schema_requests.items.len,
-            .lowered_nested = builder.lowered_nested_fns.items.len,
         };
     }
 
-    fn seal(
-        self: FinalArraySealRange,
-        builder: *Builder,
-        graph: *InstGraph,
-        sealer: *GraphTypeFinals,
-        root_node: ?NodeId,
-        end_: End,
-    ) Allocator.Error!?Type.TypeId {
-        try graph.drainDirty();
-        graph.assertNoDeferredRequestsBeforeBodySeal();
-        const sealed_root = if (root_node) |node| try sealer.sealNode(node) else null;
-        if (sealed_root) |ty| try graph.assertTypeHasNoGraphViews(ty);
-        self.assertNoFinalBodyOutput(end_);
-
-        for (builder.program.fns.items[self.fns_start..end_.fns]) |*fn_| {
-            try sealFnTemplate(graph, sealer, &fn_.source);
-        }
-        for (builder.program.defs.items[self.defs_start..end_.defs]) |*def| {
-            try sealDef(graph, sealer, def);
-        }
-        for (builder.program.nested_defs.items[self.nested_defs_start..end_.nested_defs]) |*def| {
-            try sealNestedDef(graph, sealer, def);
-        }
-        var spec_index = self.specs_start;
-        while (spec_index < end_.specs) : (spec_index += 1) {
-            const spec_id: Ast.SpecId = @enumFromInt(@as(u32, @intCast(spec_index)));
-            var identity = builder.program.specs.items[spec_index].identity;
-            const sealed_fn_ty = try sealType(graph, sealer, identity.mono_fn_ty);
-            if (sealed_fn_ty == identity.mono_fn_ty) continue;
-            identity.mono_fn_ty = sealed_fn_ty;
-            identity.mono_fn_ty_digest = builder.specializationTypeDigest(sealed_fn_ty);
-            try builder.spec_store.updateLocalIdentity(spec_id, identity);
-        }
-        return sealed_root;
-    }
-
-    fn assertNoFinalBodyOutput(self: FinalArraySealRange, end_: End) void {
+    fn assertNoFinalBodyOutput(self: FinalBodyOutputGuard, end_: End) void {
         if (self.exprs_start != end_.exprs) {
             Common.invariant("active Monotype lowering wrote final expressions instead of BodyDraftStore expressions");
         }
@@ -5373,42 +5341,6 @@ const FinalArraySealRange = struct {
         if (self.runtime_schema_requests_start != end_.runtime_schema_requests) {
             Common.invariant("active Monotype lowering wrote final runtime schema requests instead of BodyDraftStore runtime schema requests");
         }
-    }
-
-    fn markNestedReady(self: FinalArraySealRange, builder: *Builder, end_: End) Allocator.Error!void {
-        var index = self.lowered_nested_start;
-        while (index < end_.lowered_nested) : (index += 1) {
-            const entry = builder.lowered_nested_fns.items[index];
-            if (entry.status == .ready) continue;
-            const fn_template = builder.program.fns.items[@intFromEnum(entry.fn_id)].source;
-            const nested = switch (fn_template.fn_def) {
-                .nested => |nested| nested,
-                else => Common.invariant("nested specialization entry did not reference a nested function"),
-            };
-            try builder.markNestedFnReady(NestedFnFamily.from(nested, fn_template.source_fn_key), entry.fn_id, fn_template.mono_fn_ty);
-        }
-    }
-
-    fn sealType(graph: *InstGraph, sealer: *GraphTypeFinals, ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        const sealed = try sealer.sealType(ty);
-        try graph.assertTypeHasNoGraphViews(sealed);
-        return sealed;
-    }
-
-    fn sealFnTemplate(graph: *InstGraph, sealer: *GraphTypeFinals, template: *Ast.FnTemplate) Allocator.Error!void {
-        template.mono_fn_ty = try sealType(graph, sealer, template.mono_fn_ty);
-    }
-
-    fn sealDef(graph: *InstGraph, sealer: *GraphTypeFinals, def: *Ast.Def) Allocator.Error!void {
-        if (def.fn_def) |*fn_template| {
-            try sealFnTemplate(graph, sealer, fn_template);
-        }
-        def.ret = try sealType(graph, sealer, def.ret);
-    }
-
-    fn sealNestedDef(graph: *InstGraph, sealer: *GraphTypeFinals, def: *Ast.NestedDef) Allocator.Error!void {
-        try sealFnTemplate(graph, sealer, &def.fn_def);
-        def.ret = try sealType(graph, sealer, def.ret);
     }
 };
 
