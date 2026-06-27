@@ -1171,7 +1171,7 @@ const Builder = struct {
         try body_ctx.constrainTypeToMono(template.checked_fn_root, mono_fn_ty);
         try body_ctx.constrainKnownType(root.checked_type, mono_fn_ty);
 
-        const draft = BodyDraft.begin(self);
+        const draft = FinalArraySealRange.begin(self);
         const lowered = try body_ctx.lowerComptimeRootExprAtType(wrapper.body_expr, mono_fn_ty);
         const draft_end = draft.end(self);
         try self.drainSpecRequests(graph);
@@ -1377,7 +1377,7 @@ const Builder = struct {
         if (!self.unsolved_monos.contains(lower_fn_ty) and !body_uses_generated_evidence) {
             try graph.addMonoView(root_node, lower_fn_ty);
         }
-        const draft = BodyDraft.begin(self);
+        const draft = FinalArraySealRange.begin(self);
         const live_fn_ty = try body_ctx.activeTypeFromNode(root_node);
         const body_fn_ty = if (body_uses_generated_evidence) lower_fn_ty else live_fn_ty;
         const lowered = try body_ctx.lowerTemplateBody(template_ref, template, body_fn_ty);
@@ -2534,7 +2534,7 @@ const Builder = struct {
                 defer body_draft.deinit();
                 var fn_ctx = try BodyContext.init(self.allocator, self, fn_view, ownerTemplateForConstFnDef(fn_template.fn_def), graph, &body_draft);
                 defer fn_ctx.deinit();
-                const draft = BodyDraft.begin(self);
+                const draft = FinalArraySealRange.begin(self);
                 const fn_id = try self.lowerNestedFnFromContext(&fn_ctx, checkedLambdaExprIdForConstFn(fn_view, fn_template.fn_def), fn_template);
                 const draft_end = draft.end(self);
                 try self.drainSpecRequests(graph);
@@ -2898,8 +2898,8 @@ const Builder = struct {
         self: *Builder,
         graph: *InstGraph,
         body_draft: *const BodyDraftStore,
-        final_range: BodyDraft,
-        final_end: BodyDraft.End,
+        final_range: FinalArraySealRange,
+        final_end: FinalArraySealRange.End,
         root_node: ?NodeId,
         extra_ty: ?Type.TypeId,
     ) Allocator.Error!ActiveBodyDraftSeal {
@@ -2908,7 +2908,7 @@ const Builder = struct {
         defer sealer.deinit();
         const sealed_root = try final_range.seal(self, graph, &sealer, root_node, final_end);
         try body_draft.sealCoreIntoProgram(self.program, graph, &sealer);
-        const sealed_extra = if (extra_ty) |ty| try BodyDraft.sealType(graph, &sealer, ty) else null;
+        const sealed_extra = if (extra_ty) |ty| try FinalArraySealRange.sealType(graph, &sealer, ty) else null;
         try final_range.markNestedReady(self, final_end);
         return .{
             .ids = body_ids,
@@ -2996,7 +2996,7 @@ const Builder = struct {
         var fn_ctx = try BodyContext.init(self.allocator, self, fn_view, ownerTemplateForConstFnDef(fn_value.fn_def), graph, &body_draft);
         defer fn_ctx.deinit();
         try fn_ctx.constrainTypeToMono(fn_value.source_fn_ty, ty);
-        const draft = BodyDraft.begin(self);
+        const draft = FinalArraySealRange.begin(self);
 
         const lambda_expr_id = checkedLambdaExprIdForConstFn(fn_view, fn_value.fn_def);
         const lambda_expr = fn_view.bodies.expr(lambda_expr_id);
@@ -3119,7 +3119,7 @@ const Builder = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored parser runtime function had an unexpected arity");
 
-        const draft = BodyDraft.begin(self);
+        const draft = FinalArraySealRange.begin(self);
         const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
@@ -3223,7 +3223,7 @@ const Builder = struct {
         defer self.allocator.free(runtime_arg_tys);
         if (runtime_arg_tys.len != 1) Common.invariant("stored encode_to runtime function had an unexpected arity");
 
-        const draft = BodyDraft.begin(self);
+        const draft = FinalArraySealRange.begin(self);
         const shape_ty = try fn_ctx.lowerTypeView(plan.dispatcher_ty);
         const state_local = try fn_ctx.addLocal(self.symbols.fresh(), runtime_arg_tys[0]);
         const state_expr = try fn_ctx.localExpr(state_local, runtime_arg_tys[0]);
@@ -5244,7 +5244,7 @@ const FinalIdOffsets = struct {
     }
 };
 
-const BodyDraft = struct {
+const FinalArraySealRange = struct {
     specs_start: usize,
     fns_start: usize,
     defs_start: usize,
@@ -5271,7 +5271,7 @@ const BodyDraft = struct {
         lowered_nested: usize,
     };
 
-    fn begin(builder: *Builder) BodyDraft {
+    fn begin(builder: *Builder) FinalArraySealRange {
         return .{
             .specs_start = builder.program.specs.items.len,
             .fns_start = builder.program.fns.items.len,
@@ -5287,7 +5287,7 @@ const BodyDraft = struct {
         };
     }
 
-    fn end(_: BodyDraft, builder: *Builder) End {
+    fn end(_: FinalArraySealRange, builder: *Builder) End {
         return .{
             .specs = builder.program.specs.items.len,
             .fns = builder.program.fns.items.len,
@@ -5304,7 +5304,7 @@ const BodyDraft = struct {
     }
 
     fn seal(
-        self: BodyDraft,
+        self: FinalArraySealRange,
         builder: *Builder,
         graph: *InstGraph,
         sealer: *GraphTypeFinals,
@@ -5339,7 +5339,7 @@ const BodyDraft = struct {
         return sealed_root;
     }
 
-    fn assertNoFinalBodyOutput(self: BodyDraft, end_: End) void {
+    fn assertNoFinalBodyOutput(self: FinalArraySealRange, end_: End) void {
         if (self.exprs_start != end_.exprs) {
             Common.invariant("active Monotype lowering wrote final expressions instead of BodyDraftStore expressions");
         }
@@ -5360,7 +5360,7 @@ const BodyDraft = struct {
         }
     }
 
-    fn markNestedReady(self: BodyDraft, builder: *Builder, end_: End) Allocator.Error!void {
+    fn markNestedReady(self: FinalArraySealRange, builder: *Builder, end_: End) Allocator.Error!void {
         var index = self.lowered_nested_start;
         while (index < end_.lowered_nested) : (index += 1) {
             const entry = builder.lowered_nested_fns.items[index];
