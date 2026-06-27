@@ -1431,6 +1431,10 @@ const Builder = struct {
                         .parse_tag_union_spec,
                         .fields,
                         .field,
+                        .crypto_sha256_digest,
+                        .crypto_sha256_hasher,
+                        .crypto_blake3_digest,
+                        .crypto_blake3_hasher,
                         => {},
                     },
                     else => {},
@@ -3636,6 +3640,10 @@ const BodyContext = struct {
                 .parse_tag_union_spec,
                 .fields,
                 .field,
+                .crypto_sha256_digest,
+                .crypto_sha256_hasher,
+                .crypto_blake3_digest,
+                .crypto_blake3_hasher,
                 => {},
             },
             else => {},
@@ -15699,6 +15707,10 @@ fn builtinOwner(builtin: ?checked.CheckedBuiltinNominal) ?static_dispatch.Builti
         .parse_tag_union_spec => .parse_tag_union_spec,
         .fields => .fields,
         .field => .field,
+        .crypto_sha256_digest => .crypto_sha256_digest,
+        .crypto_sha256_hasher => .crypto_sha256_hasher,
+        .crypto_blake3_digest => .crypto_blake3_digest,
+        .crypto_blake3_hasher => .crypto_blake3_hasher,
     };
 }
 

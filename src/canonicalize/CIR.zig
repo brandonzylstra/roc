@@ -59,6 +59,13 @@ pub const BuiltinIndices = struct {
     f32_type: Statement.Idx,
     f64_type: Statement.Idx,
     numeral_type: Statement.Idx,
+    crypto_type: Statement.Idx,
+    crypto_digest_bytes_err_type: Statement.Idx,
+    crypto_digest_hex_err_type: Statement.Idx,
+    crypto_sha256_digest_type: Statement.Idx,
+    crypto_sha256_hasher_type: Statement.Idx,
+    crypto_blake3_digest_type: Statement.Idx,
+    crypto_blake3_hasher_type: Statement.Idx,
 
     // Ident indices - simple unqualified names (e.g., "Bool", "U8")
     bool_ident: Ident.Idx,
@@ -89,6 +96,13 @@ pub const BuiltinIndices = struct {
     f32_ident: Ident.Idx,
     f64_ident: Ident.Idx,
     numeral_ident: Ident.Idx,
+    crypto_ident: Ident.Idx,
+    crypto_digest_bytes_err_ident: Ident.Idx,
+    crypto_digest_hex_err_ident: Ident.Idx,
+    crypto_sha256_digest_ident: Ident.Idx,
+    crypto_sha256_hasher_ident: Ident.Idx,
+    crypto_blake3_digest_ident: Ident.Idx,
+    crypto_blake3_hasher_ident: Ident.Idx,
     // Tag idents for Try type
     ok_ident: Ident.Idx,
     err_ident: Ident.Idx,

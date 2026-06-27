@@ -236,6 +236,13 @@ fn buildBuiltinIndices(gpa: Allocator, env: *const ModuleEnv) !BuiltinIndices {
     const f32_type_idx = try findNestedTypeDeclaration(gpa, env, "Num", "F32");
     const f64_type_idx = try findNestedTypeDeclaration(gpa, env, "Num", "F64");
     const numeral_type_idx = try findNestedTypeDeclaration(gpa, env, "Num", "Numeral");
+    const crypto_type_idx = try findTypeDeclaration(gpa, env, "Crypto");
+    const crypto_digest_bytes_err_type_idx = try findTypeDeclarationByQualifiedName(env, "Builtin.Crypto.DigestBytesErr");
+    const crypto_digest_hex_err_type_idx = try findTypeDeclarationByQualifiedName(env, "Builtin.Crypto.DigestHexErr");
+    const crypto_sha256_digest_type_idx = try findTypeDeclarationByQualifiedName(env, "Builtin.Crypto.SHA256.Digest");
+    const crypto_sha256_hasher_type_idx = try findTypeDeclarationByQualifiedName(env, "Builtin.Crypto.SHA256.Hasher");
+    const crypto_blake3_digest_type_idx = try findTypeDeclarationByQualifiedName(env, "Builtin.Crypto.BLAKE3.Digest");
+    const crypto_blake3_hasher_type_idx = try findTypeDeclarationByQualifiedName(env, "Builtin.Crypto.BLAKE3.Hasher");
 
     return .{
         .bool_type = bool_type_idx,
@@ -266,6 +273,13 @@ fn buildBuiltinIndices(gpa: Allocator, env: *const ModuleEnv) !BuiltinIndices {
         .f32_type = f32_type_idx,
         .f64_type = f64_type_idx,
         .numeral_type = numeral_type_idx,
+        .crypto_type = crypto_type_idx,
+        .crypto_digest_bytes_err_type = crypto_digest_bytes_err_type_idx,
+        .crypto_digest_hex_err_type = crypto_digest_hex_err_type_idx,
+        .crypto_sha256_digest_type = crypto_sha256_digest_type_idx,
+        .crypto_sha256_hasher_type = crypto_sha256_hasher_type_idx,
+        .crypto_blake3_digest_type = crypto_blake3_digest_type_idx,
+        .crypto_blake3_hasher_type = crypto_blake3_hasher_type_idx,
         .bool_ident = expectBuiltinIdent(env, "Builtin.Bool"),
         .parse_tag_union_spec_ident = expectBuiltinIdent(env, "Builtin.Str.ParseTagUnionSpec"),
         .fields_ident = expectBuiltinIdent(env, "Builtin.Str.FieldName.FieldNames"),
@@ -294,6 +308,13 @@ fn buildBuiltinIndices(gpa: Allocator, env: *const ModuleEnv) !BuiltinIndices {
         .f32_ident = expectBuiltinIdent(env, "Builtin.Num.F32"),
         .f64_ident = expectBuiltinIdent(env, "Builtin.Num.F64"),
         .numeral_ident = expectBuiltinIdent(env, "Builtin.Num.Numeral"),
+        .crypto_ident = expectBuiltinIdent(env, "Builtin.Crypto"),
+        .crypto_digest_bytes_err_ident = expectBuiltinIdent(env, "Builtin.Crypto.DigestBytesErr"),
+        .crypto_digest_hex_err_ident = expectBuiltinIdent(env, "Builtin.Crypto.DigestHexErr"),
+        .crypto_sha256_digest_ident = expectBuiltinIdent(env, "Builtin.Crypto.SHA256.Digest"),
+        .crypto_sha256_hasher_ident = expectBuiltinIdent(env, "Builtin.Crypto.SHA256.Hasher"),
+        .crypto_blake3_digest_ident = expectBuiltinIdent(env, "Builtin.Crypto.BLAKE3.Digest"),
+        .crypto_blake3_hasher_ident = expectBuiltinIdent(env, "Builtin.Crypto.BLAKE3.Hasher"),
         .ok_ident = expectBuiltinIdent(env, "Ok"),
         .err_ident = expectBuiltinIdent(env, "Err"),
     };
@@ -332,6 +353,13 @@ fn installBuiltinNodeIndices(gpa: Allocator, env: *ModuleEnv, indices: BuiltinIn
     try env.common.setTypeNodeIndexById(gpa, indices.f32_ident, @intCast(@intFromEnum(indices.f32_type)));
     try env.common.setTypeNodeIndexById(gpa, indices.f64_ident, @intCast(@intFromEnum(indices.f64_type)));
     try env.common.setTypeNodeIndexById(gpa, indices.numeral_ident, @intCast(@intFromEnum(indices.numeral_type)));
+    try env.common.setTypeNodeIndexById(gpa, indices.crypto_ident, @intCast(@intFromEnum(indices.crypto_type)));
+    try env.common.setTypeNodeIndexById(gpa, indices.crypto_digest_bytes_err_ident, @intCast(@intFromEnum(indices.crypto_digest_bytes_err_type)));
+    try env.common.setTypeNodeIndexById(gpa, indices.crypto_digest_hex_err_ident, @intCast(@intFromEnum(indices.crypto_digest_hex_err_type)));
+    try env.common.setTypeNodeIndexById(gpa, indices.crypto_sha256_digest_ident, @intCast(@intFromEnum(indices.crypto_sha256_digest_type)));
+    try env.common.setTypeNodeIndexById(gpa, indices.crypto_sha256_hasher_ident, @intCast(@intFromEnum(indices.crypto_sha256_hasher_type)));
+    try env.common.setTypeNodeIndexById(gpa, indices.crypto_blake3_digest_ident, @intCast(@intFromEnum(indices.crypto_blake3_digest_type)));
+    try env.common.setTypeNodeIndexById(gpa, indices.crypto_blake3_hasher_ident, @intCast(@intFromEnum(indices.crypto_blake3_hasher_type)));
 }
 
 /// Validates that BuiltinIndices contains all nominal type declarations in the Builtin module.
@@ -362,7 +390,10 @@ fn validateBuiltinIndicesCompleteness(gpa: Allocator, env: *const ModuleEnv, ind
 
                 // Skip container types that are not auto-imported types
                 if (std.mem.eql(u8, ident_text, "Builtin") or
-                    std.mem.eql(u8, ident_text, "Builtin.Num"))
+                    std.mem.eql(u8, ident_text, "Builtin.Num") or
+                    std.mem.eql(u8, ident_text, "Builtin.Crypto") or
+                    std.mem.eql(u8, ident_text, "Builtin.Crypto.SHA256") or
+                    std.mem.eql(u8, ident_text, "Builtin.Crypto.BLAKE3"))
                 {
                     continue;
                 }
