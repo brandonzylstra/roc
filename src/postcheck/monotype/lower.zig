@@ -2497,33 +2497,31 @@ const Builder = struct {
             => |hosted| hosted.template,
             .nested => Common.invariant("nested function specialization must be lowered through nested function lowering"),
         };
-        // Deferral exists so a requester's solved types key the request; a
-        // request typed by an unsolved builder-global Monotype gains nothing
-        // from waiting and its call site must embed the definition's solved
-        // template instead.
-        if (!self.unsolved_monos.contains(fn_template.mono_fn_ty)) {
-            if (self.active_graph) |graph| {
-                var request_template = fn_template;
-                request_template.mono_fn_ty = try self.stableSpecializationRequestType(graph, fn_template.mono_fn_ty);
-                const reserved = try self.reserveTemplateWithMonoFor(
-                    template_ref,
-                    request_template.source_fn_ty,
-                    request_template.source_fn_key,
-                    request_template.mono_fn_ty,
-                    graph,
-                );
-                if (reserved.needs_lowering) {
-                    try graph.deferred_templates.append(self.allocator, .{
-                        .fn_id = reserved.localFnId(),
-                        .template_ref = template_ref,
-                        .module = source_ty_view.key,
-                        .source_fn_ty = request_template.source_fn_ty,
-                        .source_fn_key = request_template.source_fn_key,
-                        .fn_ty = request_template.mono_fn_ty,
-                    });
-                }
-                return reserved.target;
+        // Deferral exists so a requester's solved types key the request. Any
+        // call target requested while an active body graph is open must stay in
+        // that graph's deferred queue; lowering it immediately would write final
+        // body sections before the active draft has sealed.
+        if (self.active_graph) |graph| {
+            var request_template = fn_template;
+            request_template.mono_fn_ty = try self.stableSpecializationRequestType(graph, fn_template.mono_fn_ty);
+            const reserved = try self.reserveTemplateWithMonoFor(
+                template_ref,
+                request_template.source_fn_ty,
+                request_template.source_fn_key,
+                request_template.mono_fn_ty,
+                graph,
+            );
+            if (reserved.needs_lowering) {
+                try graph.deferred_templates.append(self.allocator, .{
+                    .fn_id = reserved.localFnId(),
+                    .template_ref = template_ref,
+                    .module = source_ty_view.key,
+                    .source_fn_ty = request_template.source_fn_ty,
+                    .source_fn_key = request_template.source_fn_key,
+                    .fn_ty = request_template.mono_fn_ty,
+                });
             }
+            return reserved.target;
         }
         const def = try self.lowerTemplateWithMono(template_ref, source_ty_view, fn_template.source_fn_ty, fn_template.source_fn_key, fn_template.mono_fn_ty);
         return .{ .local = self.defFnId(def) };
@@ -5890,38 +5888,14 @@ const BodyContext = struct {
     fn toInspectCall(self: *BodyContext, value: DraftExprId, value_ty: Type.TypeId, str_ty: Type.TypeId) Allocator.Error!?DraftExprId {
         const owner = methodOwnerFromType(&self.builder.program.types, value_ty) orelse return null;
         const lookup = self.builder.lookupMethodTargetByName(owner, "to_inspect") orelse return null;
-        const procedure = switch (lookup.target.kind) {
-            .procedure => |procedure| procedure,
-            .local_proc => return null,
-        };
-        const template = procedure.template;
-
-        const graph = try InstGraph.create(self.allocator, &self.builder.program.types, &self.builder.program.names, &self.builder.unsolved_monos);
-        defer graph.destroy();
-        const saved_graph = self.builder.active_graph;
-        self.builder.active_graph = graph;
-        defer self.builder.active_graph = saved_graph;
-        var body_draft = BodyDraftStore.init(self.allocator);
-        defer body_draft.deinit();
-        var target_ctx = try BodyContext.init(self.allocator, self.builder, lookup.view, template, graph, &body_draft);
-        defer target_ctx.deinit();
-        const callable_node = try target_ctx.instantiateTargetCallNodeFromMonoArgs(lookup.target.callable_ty, &.{value_ty}, str_ty);
-        const callable_mono_ty = try graph.sealNode(callable_node);
-        const callee_def = try self.builder.lowerTemplateWithMono(
-            template,
-            lookup.view,
-            lookup.target.callable_ty,
-            lookup.view.types.rootKey(lookup.target.callable_ty),
-            callable_mono_ty,
-        );
+        const callable_mono_ty = try self.methodTargetMonoTypeFromArgs(lookup, &.{value_ty}, str_ty);
+        const callee = try self.methodTargetCalleeWithMono(lookup, callable_mono_ty);
 
         const args = [_]DraftExprId{value};
-        const call = try self.addExpr(.{ .ty = str_ty, .data = .{ .call_proc = .{
-            .callee = draftProcCalleeFromAst(Ast.localProcCallee(self.builder.defFnId(callee_def))),
+        return try self.addExpr(.{ .ty = str_ty, .data = .{ .call_proc = .{
+            .callee = draftProcCalleeFromAst(Ast.procCalleeForSlot(callee)),
             .args = try self.addExprSpan(&args),
         } } });
-        try self.builder.drainSpecRequests(graph);
-        return call;
     }
 
     fn primitiveInspect(self: *BodyContext, value: DraftExprId, primitive: Type.Primitive, str_ty: Type.TypeId) Allocator.Error!DraftExprId {
@@ -7365,7 +7339,7 @@ const BodyContext = struct {
         const template = view.callable_eval_templates.templates[raw];
         const root = view.compile_time_roots.root(template.root);
         return switch (root.payload) {
-            .fn_value => |fn_id| try self.restoreConstFn(view, view, fn_id, mono_fn_ty),
+            .fn_value => |fn_id| try self.restoreConstFn(view, fn_id, mono_fn_ty),
             .pending => try self.lowerPendingCallableEvalBindingValue(view, template, root, mono_fn_ty),
             else => Common.invariant("callable eval binding root did not output a callable value"),
         };
@@ -11957,7 +11931,7 @@ const BodyContext = struct {
         const value = store_view.const_store.get(node);
         switch (value) {
             .fn_value => |fn_id| {
-                return try self.restoreConstFn(store_view, type_view, fn_id, ty);
+                return try self.restoreConstFn(store_view, fn_id, ty);
             },
             else => {},
         }
@@ -11975,7 +11949,7 @@ const BodyContext = struct {
     ) Allocator.Error!DraftExprId {
         const value = store_view.const_store.get(node);
         switch (value) {
-            .fn_value => |fn_id| return try self.restoreConstFn(store_view, type_view, fn_id, shape_ty),
+            .fn_value => |fn_id| return try self.restoreConstFn(store_view, fn_id, shape_ty),
             else => {},
         }
         const data = try self.restoreConstData(store_view, type_view, value, shape_ty);
@@ -12120,7 +12094,6 @@ const BodyContext = struct {
     fn restoreConstFn(
         self: *BodyContext,
         store_view: ModuleView,
-        type_view: ModuleView,
         fn_id: checked.ConstFnId,
         ty: Type.TypeId,
     ) Allocator.Error!DraftExprId {
@@ -12137,11 +12110,27 @@ const BodyContext = struct {
         if (fn_value.captures.len != 0) {
             return try self.restoreCapturingConstFn(store_view, fn_value, template, ty);
         }
-        const mono_fn_id = try self.builder.lowerRestoredConstFnTemplate(type_view, template);
+        const mono_fn_id = try self.restoreConstFnTemplate(fn_value, template);
         return try self.addExpr(.{
             .ty = self.builder.program.fnSource(mono_fn_id).mono_fn_ty,
             .data = .{ .fn_def = draftFinalFn(mono_fn_id) },
         });
+    }
+
+    fn restoreConstFnTemplate(
+        self: *BodyContext,
+        fn_value: check.ConstStore.ConstFn,
+        template: Ast.FnTemplate,
+    ) Allocator.Error!Ast.FnId {
+        return switch (template.fn_def) {
+            .nested => {
+                const fn_view = self.builder.moduleForConstFnDef(fn_value.fn_def);
+                var fn_ctx = try BodyContext.init(self.allocator, self.builder, fn_view, ownerTemplateForConstFnDef(fn_value.fn_def), self.graph, self.draft);
+                defer fn_ctx.deinit();
+                return try self.builder.lowerNestedFnFromContext(&fn_ctx, checkedLambdaExprIdForConstFn(fn_view, fn_value.fn_def), template);
+            },
+            else => try self.builder.lowerFnTemplateDefFromContext(self, template),
+        };
     }
 
     fn restoreCapturingConstFn(
