@@ -5637,7 +5637,16 @@ const BodyContext = struct {
         ty: Type.TypeId,
         binder: ?checked.PatternBinderId,
     ) Allocator.Error!DraftLocalId {
-        return try self.draft.addLocal(symbol, try self.draftTypeCell(ty), binder);
+        return try self.addLocalWithBinderCell(symbol, try self.draftTypeCell(ty), binder);
+    }
+
+    fn addLocalWithBinderCell(
+        self: *BodyContext,
+        symbol: Common.Symbol,
+        ty: DraftTypeCell,
+        binder: ?checked.PatternBinderId,
+    ) Allocator.Error!DraftLocalId {
+        return try self.draft.addLocal(symbol, ty, binder);
     }
 
     fn addFn(self: *BodyContext, source: Ast.FnTemplate) Allocator.Error!DraftFnId {
@@ -13007,30 +13016,35 @@ const BodyContext = struct {
     }
 
     fn closureFunctionType(self: *BodyContext, closure: anytype) Allocator.Error!Type.TypeId {
+        return try self.activeTypeFromNode(try self.closureFunctionNode(closure));
+    }
+
+    fn closureFunctionNode(self: *BodyContext, closure: anytype) Allocator.Error!NodeId {
         const lambda = self.view.bodies.expr(closure.lambda);
         return switch (lambda.data) {
-            .lambda => |lambda_data| try self.lambdaFunctionType(lambda_data),
+            .lambda => |lambda_data| try self.lambdaFunctionNode(lambda_data),
             else => Common.invariant("checked closure did not point at a lambda expression"),
         };
     }
 
     fn lambdaFunctionType(self: *BodyContext, lambda: anytype) Allocator.Error!Type.TypeId {
+        return try self.activeTypeFromNode(try self.lambdaFunctionNode(lambda));
+    }
+
+    fn lambdaFunctionNode(self: *BodyContext, lambda: anytype) Allocator.Error!NodeId {
         const arg_nodes = try self.graph.arena().alloc(NodeId, lambda.args.len);
-        const args = try self.allocator.alloc(Type.TypeId, lambda.args.len);
-        defer self.allocator.free(args);
         var saved = std.ArrayList(BinderRestore).empty;
         defer saved.deinit(self.allocator);
 
         for (lambda.args, 0..) |pattern_id, i| {
             arg_nodes[i] = try self.instNode(self.view.bodies.pattern(pattern_id).ty);
-            args[i] = try self.activeTypeFromNode(arg_nodes[i]);
             try self.savePatternBinders(pattern_id, &saved);
-            try self.preRegisterPatternBinders(pattern_id, args[i]);
+            try self.preRegisterPatternBindersFromCheckedTypes(pattern_id);
         }
         defer self.restoreBinders(saved.items);
 
         const ret_node = try self.graph.importMono(try self.lowerExprType(lambda.body));
-        return try self.activeTypeFromNode(try self.graphFunctionNode(arg_nodes, ret_node));
+        return try self.graphFunctionNode(arg_nodes, ret_node);
     }
 
     fn lowerLambdaExpr(
@@ -15470,6 +15484,70 @@ const BodyContext = struct {
                     if (step.capture) |capture| {
                         try self.preRegisterPatternBinders(capture, ty);
                     }
+                }
+            },
+            .pending,
+            .num_literal,
+            .small_dec_literal,
+            .dec_literal,
+            .frac_f32_literal,
+            .frac_f64_literal,
+            .str_literal,
+            .underscore,
+            .runtime_error,
+            => {},
+        }
+    }
+
+    fn preRegisterPatternBindersFromCheckedTypes(
+        self: *BodyContext,
+        pattern_id: checked.CheckedPatternId,
+    ) Allocator.Error!void {
+        const pattern = self.view.bodies.pattern(pattern_id);
+        switch (pattern.data) {
+            .assign => |binder| {
+                if (self.binders.get(binder) == null) {
+                    const local = try self.addLocalWithBinderCell(self.builder.symbols.fresh(), try self.lowerTypeCell(pattern.ty), binder);
+                    try self.bindLocalName(local, binder);
+                    try self.binders.put(binder, local);
+                }
+            },
+            .as => |as| {
+                if (self.binders.get(as.binder) == null) {
+                    const local = try self.addLocalWithBinderCell(self.builder.symbols.fresh(), try self.lowerTypeCell(pattern.ty), as.binder);
+                    try self.bindLocalName(local, as.binder);
+                    try self.binders.put(as.binder, local);
+                }
+                try self.preRegisterPatternBindersFromCheckedTypes(as.pattern);
+            },
+            .applied_tag => |tag| {
+                for (tag.args) |arg| try self.preRegisterPatternBindersFromCheckedTypes(arg);
+            },
+            .nominal => |nominal| try self.preRegisterPatternBindersFromCheckedTypes(nominal.backing_pattern),
+            .record_destructure => |destructs| {
+                for (destructs) |destruct| {
+                    switch (destruct.kind) {
+                        .required, .sub_pattern => |child| try self.preRegisterPatternBindersFromCheckedTypes(child),
+                        .rest => |rest_pattern| {
+                            if (!self.patternIsIgnored(rest_pattern)) {
+                                Common.invariant("record rest pattern must be lowered to explicit rest-record construction before Monotype output");
+                            }
+                        },
+                    }
+                }
+            },
+            .list => |list| {
+                for (list.patterns) |child| try self.preRegisterPatternBindersFromCheckedTypes(child);
+                if (list.rest) |rest| {
+                    if (rest.pattern) |rest_pattern| try self.preRegisterPatternBindersFromCheckedTypes(rest_pattern);
+                }
+            },
+            .tuple => |items| {
+                for (items) |item| try self.preRegisterPatternBindersFromCheckedTypes(item);
+            },
+            .str_interpolation => |str| {
+                for (str.steps) |step| {
+                    if (step.capture) |capture| try self.preRegisterPatternBindersFromCheckedTypes(capture);
                 }
             },
             .pending,
