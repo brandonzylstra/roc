@@ -5608,6 +5608,14 @@ const BodyContext = struct {
         );
     }
 
+    fn addExprWithTypeCell(self: *BodyContext, ty: DraftTypeCell, data: BodyExprData) Allocator.Error!DraftExprId {
+        return try self.draft.addExprWithSource(
+            .{ .ty = ty, .data = data },
+            self.builder.program.current_loc,
+            self.builder.program.current_region,
+        );
+    }
+
     fn addPat(self: *BodyContext, pat: BodyPat) Allocator.Error!DraftPatId {
         return try self.draft.addPat(.{ .ty = try self.draftTypeCell(pat.ty), .data = pat.data });
     }
@@ -5806,11 +5814,10 @@ const BodyContext = struct {
 
     fn inspectCall(self: *BodyContext, value: DraftExprId, value_ty: Type.TypeId, str_ty: Type.TypeId) Allocator.Error!DraftExprId {
         const def_id = try self.inspectDefForType(value_ty, str_ty);
-        const fn_ty = try self.builder.oneArgFnType(value_ty, str_ty);
-        const callee = try self.addExpr(.{
-            .ty = fn_ty,
-            .data = .{ .def_ref = .{ .draft = def_id } },
-        });
+        const callee = try self.addExprWithTypeCell(
+            try self.oneArgFnTypeCell(value_ty, str_ty),
+            .{ .def_ref = .{ .draft = def_id } },
+        );
         const args = [_]DraftExprId{value};
         return try self.addExpr(.{
             .ty = str_ty,
@@ -6237,6 +6244,28 @@ const BodyContext = struct {
             args[index] = try self.graph.importMono(arg_ty);
         }
         return try self.graphFunctionNode(args, try self.graph.importMono(ret_ty));
+    }
+
+    fn graphFunctionTypeCellFromMono(
+        self: *BodyContext,
+        arg_tys: []const Type.TypeId,
+        ret_ty: Type.TypeId,
+    ) Allocator.Error!DraftTypeCell {
+        return DraftTypeCell.fromGraphNode(try self.graphFunctionNodeFromMono(arg_tys, ret_ty));
+    }
+
+    fn oneArgFnTypeCell(self: *BodyContext, arg_ty: Type.TypeId, ret_ty: Type.TypeId) Allocator.Error!DraftTypeCell {
+        return try self.graphFunctionTypeCellFromMono(&.{arg_ty}, ret_ty);
+    }
+
+    fn twoArgFnTypeCell(self: *BodyContext, arg_ty: Type.TypeId, ret_ty: Type.TypeId) Allocator.Error!DraftTypeCell {
+        const args = [_]Type.TypeId{ arg_ty, arg_ty };
+        return try self.graphFunctionTypeCellFromMono(&args, ret_ty);
+    }
+
+    fn hashFnTypeCell(self: *BodyContext, value_ty: Type.TypeId, hasher_ty: Type.TypeId) Allocator.Error!DraftTypeCell {
+        const args = [_]Type.TypeId{ value_ty, hasher_ty };
+        return try self.graphFunctionTypeCellFromMono(&args, hasher_ty);
     }
 
     /// Instantiate a checked type into this specialization's graph, caching by
@@ -14880,11 +14909,10 @@ const BodyContext = struct {
         ctx: DerivationCtx,
     ) Allocator.Error!DraftExprId {
         const def_id = try self.derivationDefForType(D, ty, ctx);
-        const fn_ty = try D.fnType(self, ty, ctx.result_ty);
-        const callee = try self.addExpr(.{
-            .ty = fn_ty,
-            .data = .{ .def_ref = .{ .draft = def_id } },
-        });
+        const callee = try self.addExprWithTypeCell(
+            try D.fnType(self, ty, ctx.result_ty),
+            .{ .def_ref = .{ .draft = def_id } },
+        );
         const args = D.callArgs(operand);
         return try self.addExpr(.{
             .ty = ctx.result_ty,
@@ -18025,8 +18053,8 @@ const EqDeriver = struct {
         return .{ .value_ty = @intFromEnum(value_ty), .result_ty = @intFromEnum(result_ty) };
     }
 
-    fn fnType(self: *BodyContext, value_ty: Type.TypeId, result_ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        return try self.builder.twoArgFnType(value_ty, result_ty);
+    fn fnType(self: *BodyContext, value_ty: Type.TypeId, result_ty: Type.TypeId) Allocator.Error!DraftTypeCell {
+        return try self.twoArgFnTypeCell(value_ty, result_ty);
     }
 
     fn callArgs(operand: Operand) [2]DraftExprId {
@@ -18252,8 +18280,8 @@ const HashDeriver = struct {
         return .{ .value_ty = @intFromEnum(value_ty), .result_ty = @intFromEnum(result_ty) };
     }
 
-    fn fnType(self: *BodyContext, value_ty: Type.TypeId, result_ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        return try self.builder.hashFnType(value_ty, result_ty);
+    fn fnType(self: *BodyContext, value_ty: Type.TypeId, result_ty: Type.TypeId) Allocator.Error!DraftTypeCell {
+        return try self.hashFnTypeCell(value_ty, result_ty);
     }
 
     fn callArgs(operand: Operand) [2]DraftExprId {
