@@ -398,7 +398,7 @@ const LoweredLambdaArgs = struct {
 };
 
 const LoweredCall = struct {
-    ret_ty: Type.TypeId,
+    ret_ty: DraftTypeCell,
     data: DraftExprData,
 };
 
@@ -6838,10 +6838,19 @@ const BodyContext = struct {
         const region = self.sourceRegionForExpr(expr);
         self.builder.program.current_loc = try self.sourceLocFor(region);
         self.builder.program.current_region = region;
+        switch (expr.data) {
+            .call => |call| {
+                if (self.view.hoisted_constants.lookupByExpr(expr_id) != null) {
+                    const expr_ty = try self.lowerExprType(expr_id);
+                    if (try self.restoredHoistedExprAtType(expr_id, expr_ty)) |restored| return restored;
+                }
+                return try self.lowerCallExpr(expr_id, expr.ty, call);
+            },
+            else => {},
+        }
         const expr_ty = try self.lowerExprType(expr_id);
         if (try self.restoredHoistedExprAtType(expr_id, expr_ty)) |restored| return restored;
         switch (expr.data) {
-            .call => |call| return try self.lowerCallExpr(expr_id, expr.ty, call),
             .dispatch_call => |plan| return try self.lowerDispatchExpr(expr.ty, plan),
             .interpolation => |interpolation| return try self.lowerDispatchExpr(expr.ty, interpolation.plan),
             .type_dispatch_call => |plan| return try self.lowerDispatchExpr(expr.ty, plan),
@@ -7125,10 +7134,7 @@ const BodyContext = struct {
     fn lowerCallExpr(self: *BodyContext, checked_expr_id: checked.CheckedExprId, checked_ret_ty: checked.CheckedTypeId, call: anytype) Allocator.Error!DraftExprId {
         if (try self.lowerParseIntrinsicCallExpr(checked_expr_id, checked_ret_ty, call, null)) |expr| return expr;
         const lowered = try self.lowerCall(checked_ret_ty, call);
-        return try self.addExpr(.{
-            .ty = lowered.ret_ty,
-            .data = lowered.data,
-        });
+        return try self.addExprWithTypeCell(lowered.ret_ty, lowered.data);
     }
 
     fn checkedFunctionType(self: *BodyContext, checked_fn_ty: checked.CheckedTypeId) checked.CheckedFunctionType {
@@ -11088,7 +11094,7 @@ const BodyContext = struct {
             const fn_data = self.builder.functionShape(mono_fn_ty, "checked direct call target had a non-function type");
             try self.constrainTypeToMono(checked_ret_ty, fn_data.ret);
             return .{
-                .ret_ty = fn_data.ret,
+                .ret_ty = try self.lowerTypeCell(checked_ret_ty),
                 .data = .{ .call_proc = .{
                     .callee = draftProcCalleeFromAst(Ast.procCalleeForSlot(callee)),
                     .args = try self.lowerExprSpanAtTypes(call.args, self.builder.program.types.span(fn_data.args)),
@@ -11105,8 +11111,9 @@ const BodyContext = struct {
             break :fn_ty try call_ctx.instantiateCallTypeFromCaller(call.source_fn_ty_payload, self, checked_ret_ty, call.args);
         };
         const fn_data = self.builder.functionShape(fn_ty, "checked call function type was not a function");
+        try self.constrainTypeToMono(checked_ret_ty, fn_data.ret);
         return .{
-            .ret_ty = fn_data.ret,
+            .ret_ty = try self.lowerTypeCell(checked_ret_ty),
             .data = .{ .call_value = .{
                 .callee = try self.lowerExprAtType(call.func, fn_ty),
                 .args = try self.lowerExprSpanAtTypes(call.args, self.builder.program.types.span(fn_data.args)),
@@ -11178,7 +11185,7 @@ const BodyContext = struct {
     ) Allocator.Error!LoweredCall {
         const ret_ty = try self.lowerTypeView(checked_ret_ty);
         return .{
-            .ret_ty = ret_ty,
+            .ret_ty = try self.lowerTypeCell(checked_ret_ty),
             .data = try self.lowerDivergentExprDataAtType(operand, ret_ty),
         };
     }
@@ -12773,7 +12780,7 @@ const BodyContext = struct {
                 if (try self.lowerParseIntrinsicCallExpr(checked_expr, expr.ty, call, ty)) |lowered| return lowered;
                 try self.constrainKnownType(expr.ty, ty);
                 const lowered = try self.lowerCall(expr.ty, call);
-                if (!self.sameType(ty, lowered.ret_ty)) {
+                if (!self.sameType(ty, try self.activeTypeFromCell(lowered.ret_ty))) {
                     Common.invariant("checked call expression lowered at a type different from its context type");
                 }
                 return try self.addExpr(.{
