@@ -114,7 +114,7 @@ test "Monotype lookup lowering uses explicit resolved use types" {
     try std.testing.expect(std.mem.find(u8, lower_call, "try self.lowerExprType(call.func)") == null);
     try std.testing.expect(std.mem.find(u8, lower_call, "try self.lowerType(call.source_fn_ty_payload)") == null);
 
-    try expectContains(lower_expr_type, ".lookup_required => |resolved| try self.lookupExprMonoType(expr.ty, resolved)");
+    try expectContains(lower_expr_type, ".lookup_required => |resolved| try self.activeNodeFromType(try self.lookupExprMonoType(expr.ty, resolved))");
     try expectContains(lower_expr_at_type, ".lookup_required => |resolved| return try self.lowerLookupExprAtType(expr.ty, resolved, ty)");
     try expectContains(lower_lookup_at_type, ".platform_required_const => |required| return try self.restoreConstUseAtType(required.const_use, ty)");
     try expectContains(lower_lookup_at_type, ".platform_required_proc => |proc| return try self.lowerProcedureUseValue(proc.procedure, ty)");

@@ -6201,6 +6201,11 @@ const BodyContext = struct {
         return try self.instNode(checked_ty);
     }
 
+    fn activeNodeFromType(self: *BodyContext, ty: Type.TypeId) Allocator.Error!NodeId {
+        if (self.graph.monoViewNode(ty)) |node| return node;
+        return try self.graph.importMono(ty);
+    }
+
     fn lowerTypeCell(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!DraftTypeCell {
         return DraftTypeCell.fromGraphNode(try self.lowerTypeNode(checked_ty));
     }
@@ -6762,6 +6767,39 @@ const BodyContext = struct {
         for (lambda.args) |pattern_id| try self.savePatternBinders(pattern_id, &saved);
         defer self.restoreBinders(saved.items);
         return try self.lowerLambdaTemplate(lambda, fn_ty);
+    }
+
+    fn lowerExprTypeNode(self: *BodyContext, expr_id: checked.CheckedExprId) Allocator.Error!NodeId {
+        const expr = self.view.bodies.expr(expr_id);
+        return switch (expr.data) {
+            .call => |call| if (try self.callResultMonoType(expr.ty, call, null)) |ty|
+                try self.activeNodeFromType(ty)
+            else
+                try self.lowerTypeNode(expr.ty),
+            .dispatch_call => |plan| if (try self.dispatchResultMonoType(expr.ty, plan, null)) |ty|
+                try self.activeNodeFromType(ty)
+            else
+                try self.lowerTypeNode(expr.ty),
+            .interpolation => |interpolation| if (try self.dispatchResultMonoType(expr.ty, interpolation.plan, null)) |ty|
+                try self.activeNodeFromType(ty)
+            else
+                try self.lowerTypeNode(expr.ty),
+            .type_dispatch_call => |plan| if (try self.dispatchResultMonoType(expr.ty, plan, null)) |ty|
+                try self.activeNodeFromType(ty)
+            else
+                try self.lowerTypeNode(expr.ty),
+            .method_eq => |plan| if (try self.dispatchResultMonoType(expr.ty, plan, null)) |ty|
+                try self.activeNodeFromType(ty)
+            else
+                try self.lowerTypeNode(expr.ty),
+            .lookup_local => |lookup| try self.activeNodeFromType(try self.lookupExprMonoType(expr.ty, lookup.resolved)),
+            .lookup_external => |resolved| try self.activeNodeFromType(try self.lookupExprMonoType(expr.ty, resolved)),
+            .lookup_required => |resolved| try self.activeNodeFromType(try self.lookupExprMonoType(expr.ty, resolved)),
+            .lambda => |lambda| try self.lambdaFunctionNode(lambda),
+            .closure => |closure| try self.closureFunctionNode(closure),
+            .field_access => |field| try self.activeNodeFromType(try self.fieldAccessMonoType(field.receiver, field.field_name)),
+            else => try self.lowerTypeNode(expr.ty),
+        };
     }
 
     fn lowerExprType(self: *BodyContext, expr_id: checked.CheckedExprId) Allocator.Error!Type.TypeId {
@@ -13042,7 +13080,7 @@ const BodyContext = struct {
         }
         defer self.restoreBinders(saved.items);
 
-        const ret_node = try self.graph.importMono(try self.lowerExprType(lambda.body));
+        const ret_node = try self.lowerExprTypeNode(lambda.body);
         return try self.graphFunctionNode(arg_nodes, ret_node);
     }
 
