@@ -15988,9 +15988,11 @@ const BodyContext = struct {
                 },
                 .rest => |child| {
                     if (self.patternIsIgnored(child)) continue;
-                    const rest_ty = try self.lowerTypeView(self.view.bodies.pattern(child).ty);
-                    const rest_value = try self.lowerRecordRestValue(value, rest_ty);
-                    const pat = try self.lowerPatternAtType(child, rest_ty);
+                    const rest_node = try self.lowerTypeNode(self.view.bodies.pattern(child).ty);
+                    const rest_cell = DraftTypeCell.fromGraphNode(rest_node);
+                    const rest_ty = try self.activeTypeFromNode(rest_node);
+                    const rest_value = try self.lowerRecordRestValueWithTypeCell(value, rest_cell, rest_ty);
+                    const pat = try self.lowerPatternAtTypeCell(child, rest_cell, rest_ty);
                     success = try self.addExpr(.{ .ty = result_ty, .data = .{ .let_ = .{
                         .bind = pat,
                         .value = rest_value,
@@ -16002,9 +16004,10 @@ const BodyContext = struct {
         return success;
     }
 
-    fn lowerRecordRestValue(
+    fn lowerRecordRestValueWithTypeCell(
         self: *BodyContext,
         value: DraftExprId,
+        rest_cell: DraftTypeCell,
         rest_ty: Type.TypeId,
     ) Allocator.Error!DraftExprId {
         const rest_fields = self.constRecordFields(rest_ty);
@@ -16022,9 +16025,9 @@ const BodyContext = struct {
                 }),
             };
         }
-        return try self.addExpr(.{ .ty = rest_ty, .data = .{
+        return try self.addExprWithTypeCell(rest_cell, .{
             .record = try self.addFieldExprSpan(fields),
-        } });
+        });
     }
 
     fn runtimeCrashExpr(self: *BodyContext, ty: Type.TypeId, message: []const u8) Allocator.Error!DraftExprId {
@@ -16695,10 +16698,12 @@ const BodyContext = struct {
                 },
                 .rest => |child| {
                     if (self.patternIsIgnored(child)) continue;
-                    const rest_ty = try self.lowerTypeView(self.view.bodies.pattern(child).ty);
-                    const rest_value = try self.lowerRecordRestValue(value, rest_ty);
+                    const rest_node = try self.lowerTypeNode(self.view.bodies.pattern(child).ty);
+                    const rest_cell = DraftTypeCell.fromGraphNode(rest_node);
+                    const rest_ty = try self.activeTypeFromNode(rest_node);
+                    const rest_value = try self.lowerRecordRestValueWithTypeCell(value, rest_cell, rest_ty);
                     try lowered.append(self.allocator, try self.addStmt(.{ .let_ = .{
-                        .pat = try self.lowerPatternAtType(child, rest_ty),
+                        .pat = try self.lowerPatternAtTypeCell(child, rest_cell, rest_ty),
                         .value = rest_value,
                         .comptime_site = if (self.patternCanMiss(child)) comptime_site else null,
                     } }));
@@ -17771,7 +17776,8 @@ const BodyContext = struct {
         pattern: checked.CheckedPatternId,
     ) Allocator.Error!DraftPatId {
         const checked_pattern = self.view.bodies.pattern(pattern);
-        return try self.lowerPatternAtType(pattern, try self.lowerTypeView(checked_pattern.ty));
+        const node = try self.lowerTypeNode(checked_pattern.ty);
+        return try self.lowerPatternAtTypeCell(pattern, DraftTypeCell.fromGraphNode(node), try self.activeTypeFromNode(node));
     }
 
     fn lowerPatternStatement(
@@ -17864,32 +17870,48 @@ const BodyContext = struct {
     }
 
     fn lowerPatternAtType(self: *BodyContext, pattern_id: checked.CheckedPatternId, ty: Type.TypeId) Allocator.Error!DraftPatId {
+        return try self.lowerPatternAtTypeCell(pattern_id, try self.draftTypeCell(ty), ty);
+    }
+
+    fn lowerPatternAtTypeCell(
+        self: *BodyContext,
+        pattern_id: checked.CheckedPatternId,
+        ty_cell: DraftTypeCell,
+        ty: Type.TypeId,
+    ) Allocator.Error!DraftPatId {
         const pattern = self.view.bodies.pattern(pattern_id);
         switch (pattern.data) {
             .assign => {},
-            else => try self.constrainTypeToMono(pattern.ty, ty),
+            else => try self.constrainTypeToCell(pattern.ty, ty_cell),
         }
         const data: BodyPatData = switch (pattern.data) {
             .pending,
             .runtime_error,
             => Common.invariant("non-runtime checked pattern reached Monotype lowering"),
             .assign => |binder| blk: {
-                const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), ty, binder);
+                const local = try self.addLocalWithBinderCell(self.builder.symbols.fresh(), ty_cell, binder);
                 try self.bindLocalName(local, binder);
                 try self.binders.put(binder, local);
                 break :blk .{ .bind = local };
             },
             .as => |as| blk: {
-                const local = try self.addLocalWithBinder(self.builder.symbols.fresh(), ty, as.binder);
+                const local = try self.addLocalWithBinderCell(self.builder.symbols.fresh(), ty_cell, as.binder);
                 try self.bindLocalName(local, as.binder);
                 try self.binders.put(as.binder, local);
                 break :blk .{ .as = .{
-                    .pattern = try self.lowerPatternAtType(as.pattern, ty),
+                    .pattern = try self.lowerPatternAtTypeCell(as.pattern, ty_cell, ty),
                     .local = local,
                 } };
             },
             .applied_tag => |tag| try self.lowerTagPattern(tag, ty),
-            .nominal => |nominal| .{ .nominal = try self.lowerPatternAtType(nominal.backing_pattern, self.builder.namedBackingType(ty) orelse ty) },
+            .nominal => |nominal| blk: {
+                const backing_ty = self.builder.namedBackingType(ty) orelse ty;
+                break :blk .{ .nominal = try self.lowerPatternAtTypeCell(
+                    nominal.backing_pattern,
+                    try self.draftTypeCell(backing_ty),
+                    backing_ty,
+                ) };
+            },
             .record_destructure => |destructs| try self.lowerRecordPattern(destructs, ty),
             .list => |list| try self.lowerListPattern(list, ty),
             .tuple => |items| .{ .tuple = try self.lowerTuplePattern(items, ty) },
@@ -17914,7 +17936,7 @@ const BodyContext = struct {
             .str_interpolation => |str| try self.lowerStrPattern(str, ty),
             .underscore => .wildcard,
         };
-        return try self.addPat(.{ .ty = ty, .data = data });
+        return try self.addPatWithTypeCell(ty_cell, data);
     }
 
     fn lowerStrPattern(
