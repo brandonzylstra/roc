@@ -271,6 +271,11 @@ sub check_active_body_draft_seal_access {
                 push @violations, "$rel:$line_no: active-body-draft-seal-bypass: $line";
             }
         }
+        if (!$in_test && ($current_fn // '') ne 'activeTypeFromNode') {
+            if ($line =~ /\bactiveTypeViewForNode\(/) {
+                push @violations, "$rel:$line_no: active-graph-view-bypass: $line";
+            }
+        }
 
         my $delta = brace_delta($line);
 

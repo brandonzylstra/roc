@@ -1238,9 +1238,14 @@ pub const InstGraph = struct {
         try entry.value_ptr.append(self.allocator, ty);
     }
 
-    /// Materialize the Monotype view of a node, reserving the id first so
-    /// recursive types tie their own knot.
-    pub fn monoFor(self: *InstGraph, node: NodeId) Allocator.Error!Type.TypeId {
+    /// Materialize the active Monotype view of a node, reserving the id first
+    /// so recursive types tie their own knot. The returned TypeId is mutable
+    /// graph state and must not be written to completed Monotype output.
+    pub fn activeTypeViewForNode(self: *InstGraph, node: NodeId) Allocator.Error!Type.TypeId {
+        return try self.monoFor(node);
+    }
+
+    fn monoFor(self: *InstGraph, node: NodeId) Allocator.Error!Type.TypeId {
         const root = self.find(node);
         if (self.node_monos.get(root)) |views| {
             if (views.items.len != 0) return views.items[0];

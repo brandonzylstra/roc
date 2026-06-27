@@ -5589,7 +5589,7 @@ const BodyContext = struct {
     }
 
     fn activeTypeFromNode(self: *BodyContext, node: NodeId) Allocator.Error!Type.TypeId {
-        return try self.graph.monoFor(node);
+        return try self.graph.activeTypeViewForNode(node);
     }
 
     fn activeTypeFromCell(self: *BodyContext, cell: DraftTypeCell) Allocator.Error!Type.TypeId {
@@ -19102,7 +19102,7 @@ test "draft sealed type cell validation distinguishes closed snapshots from grap
         .graph_node => return error.TestExpectedEqual,
     }
 
-    const graph_view = try graph.monoFor(try graph.newNode(.{ .primitive = .u64 }));
+    const graph_view = try graph.activeTypeViewForNode(try graph.newNode(.{ .primitive = .u64 }));
     const graph_view_cell: DraftTypeCell = .{ .sealed = graph_view };
     try std.testing.expect(try graph_view_cell.sealedHasGraphViews(graph));
     switch (try DraftTypeCell.fromActiveType(graph, graph_view)) {
