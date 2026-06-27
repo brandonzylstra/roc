@@ -1263,6 +1263,16 @@ pub const InstGraph = struct {
         return try sealer.sealNode(node);
     }
 
+    /// Materialize a TypeId into a final copy. If the TypeId is a graph view,
+    /// this snapshots its current solved node instead of returning the mutable
+    /// view id.
+    pub fn sealType(self: *InstGraph, ty: Type.TypeId) Allocator.Error!Type.TypeId {
+        try self.drainDirty();
+        var sealer = GraphTypeFinals.init(self);
+        defer sealer.deinit();
+        return try sealer.sealType(ty);
+    }
+
     pub fn assertNoDeferredRequestsBeforeBodySeal(self: *InstGraph) void {
         if (self.deferred_templates.items.len != 0) {
             Common.invariant("Monotype body draft sealed before deferred specialization requests were drained");
