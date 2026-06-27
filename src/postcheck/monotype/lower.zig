@@ -3065,11 +3065,13 @@ const Builder = struct {
         for (fn_value.captures, 0..) |capture, index| {
             const binder = constCaptureBinder(capture.id);
             const capture_ty = checkedBinderType(fn_view, binder);
-            const lowered_ty = try fn_ctx.lowerTypeView(capture_ty);
-            const value_expr = try fn_ctx.restoreConstNodeAtType(store_view, fn_view, capture.value, lowered_ty);
-            const local = try fn_ctx.addLocalWithBinder(self.symbols.fresh(), lowered_ty, binder);
+            const capture_node = try fn_ctx.lowerTypeNode(capture_ty);
+            const capture_cell = DraftTypeCell.fromGraphNode(capture_node);
+            const capture_shape_ty = try fn_ctx.activeTypeFromNode(capture_node);
+            const value_expr = try fn_ctx.restoreConstNodeAtTypeCell(store_view, fn_view, capture.value, capture_cell, capture_shape_ty);
+            const local = try fn_ctx.addLocalWithBinderCell(self.symbols.fresh(), capture_cell, binder);
             try fn_ctx.bindLocalName(local, binder);
-            const pat = try fn_ctx.addPat(.{ .ty = lowered_ty, .data = .{ .bind = local } });
+            const pat = try fn_ctx.addPatWithTypeCell(capture_cell, .{ .bind = local });
             const previous = fn_ctx.binders.get(binder);
             try fn_ctx.binders.put(binder, local);
             captures[index] = .{
@@ -11963,6 +11965,23 @@ const BodyContext = struct {
         return try self.addExpr(.{ .ty = ty, .data = data });
     }
 
+    fn restoreConstNodeAtTypeCell(
+        self: *BodyContext,
+        store_view: ModuleView,
+        type_view: ModuleView,
+        node: checked.ConstNodeId,
+        ty_cell: DraftTypeCell,
+        shape_ty: Type.TypeId,
+    ) Allocator.Error!DraftExprId {
+        const value = store_view.const_store.get(node);
+        switch (value) {
+            .fn_value => |fn_id| return try self.restoreConstFn(store_view, type_view, fn_id, shape_ty),
+            else => {},
+        }
+        const data = try self.restoreConstData(store_view, type_view, value, shape_ty);
+        return try self.addExprWithTypeCell(ty_cell, data);
+    }
+
     fn restoreConstData(
         self: *BodyContext,
         store_view: ModuleView,
@@ -12165,11 +12184,13 @@ const BodyContext = struct {
         for (fn_value.captures, 0..) |capture, index| {
             const binder = constCaptureBinder(capture.id);
             const capture_ty = checkedBinderType(fn_view, binder);
-            const lowered_ty = try fn_ctx.lowerTypeView(capture_ty);
-            const value_expr = try fn_ctx.restoreConstNodeAtType(store_view, fn_view, capture.value, lowered_ty);
-            const local = try fn_ctx.addLocalWithBinder(self.builder.symbols.fresh(), lowered_ty, binder);
+            const capture_node = try fn_ctx.lowerTypeNode(capture_ty);
+            const capture_cell = DraftTypeCell.fromGraphNode(capture_node);
+            const capture_shape_ty = try fn_ctx.activeTypeFromNode(capture_node);
+            const value_expr = try fn_ctx.restoreConstNodeAtTypeCell(store_view, fn_view, capture.value, capture_cell, capture_shape_ty);
+            const local = try fn_ctx.addLocalWithBinderCell(self.builder.symbols.fresh(), capture_cell, binder);
             try fn_ctx.bindLocalName(local, binder);
-            const pat = try fn_ctx.addPat(.{ .ty = lowered_ty, .data = .{ .bind = local } });
+            const pat = try fn_ctx.addPatWithTypeCell(capture_cell, .{ .bind = local });
             const previous = fn_ctx.binders.get(binder);
             try fn_ctx.binders.put(binder, local);
             captures[index] = .{
