@@ -3810,17 +3810,6 @@ const Builder = struct {
         return try self.functionTypeFromMonoArgs(&.{arg_ty}, ret_ty);
     }
 
-    fn twoArgFnType(self: *Builder, arg_ty: Type.TypeId, ret_ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        const args = [_]Type.TypeId{ arg_ty, arg_ty };
-        return try self.functionTypeFromMonoArgs(&args, ret_ty);
-    }
-
-    /// `(value, Hasher) -> Hasher`, the shape of a `to_hash` helper.
-    fn hashFnType(self: *Builder, value_ty: Type.TypeId, hasher_ty: Type.TypeId) Allocator.Error!Type.TypeId {
-        const args = [_]Type.TypeId{ value_ty, hasher_ty };
-        return try self.functionTypeFromMonoArgs(&args, hasher_ty);
-    }
-
     fn singleTypeArg(self: *Builder, span: Type.Span, comptime owner: []const u8) Type.TypeId {
         const args = self.program.types.span(span);
         if (args.len != 1) Common.invariant(owner ++ " type reached Monotype inspect lowering without one type argument");
@@ -11404,7 +11393,7 @@ const BodyContext = struct {
         }
         try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(ret_ty));
         try self.graph.drainDirty();
-        return try self.graph.sealNode(try self.graphFunctionNodeFromMono(arg_tys, ret_ty));
+        return try self.graph.monoFor(try self.graphFunctionNodeFromMono(arg_tys, ret_ty));
     }
 
     fn instantiateTargetCallTypeFromMonoArgAtIndexAndRet(
