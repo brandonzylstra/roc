@@ -1383,7 +1383,7 @@ const Builder = struct {
             try graph.addMonoView(root_node, lower_fn_ty);
         }
         const draft = BodyDraft.begin(self);
-        const live_fn_ty = try graph.monoFor(root_node);
+        const live_fn_ty = try body_ctx.activeTypeFromNode(root_node);
         const body_fn_ty = if (body_uses_generated_evidence) lower_fn_ty else live_fn_ty;
         const lowered = try body_ctx.lowerTemplateBody(template_ref, template, body_fn_ty);
         const draft_end = draft.end(self);
@@ -2728,7 +2728,7 @@ const Builder = struct {
         if (!self.unsolved_monos.contains(fn_template.mono_fn_ty)) {
             try request.ctx.graph.addMonoView(root_node, fn_template.mono_fn_ty);
         }
-        const live_fn_ty = try request.ctx.graph.monoFor(root_node);
+        const live_fn_ty = try request.ctx.activeTypeFromNode(root_node);
         const lowered = try request.ctx.lowerNestedFunction(request.expr_id, live_fn_ty);
         var def_template = fn_template;
         def_template.mono_fn_ty = live_fn_ty;
@@ -5583,9 +5583,13 @@ const BodyContext = struct {
         return try DraftTypeCell.fromActiveType(self.graph, ty);
     }
 
+    fn activeTypeFromNode(self: *BodyContext, node: NodeId) Allocator.Error!Type.TypeId {
+        return try self.graph.monoFor(node);
+    }
+
     fn activeTypeFromCell(self: *BodyContext, cell: DraftTypeCell) Allocator.Error!Type.TypeId {
         return switch (cell) {
-            .graph_node => |node| try self.graph.monoFor(node),
+            .graph_node => |node| try self.activeTypeFromNode(node),
             .sealed => |ty| ty,
         };
     }
@@ -6216,8 +6220,16 @@ const BodyContext = struct {
         return checkedTypeAddress(self.view, checked_ty);
     }
 
+    fn lowerTypeNode(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!NodeId {
+        return try self.instNode(checked_ty);
+    }
+
+    fn lowerTypeCell(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!DraftTypeCell {
+        return DraftTypeCell.fromGraphNode(try self.lowerTypeNode(checked_ty));
+    }
+
     fn lowerType(self: *BodyContext, checked_ty: checked.CheckedTypeId) Allocator.Error!Type.TypeId {
-        return try self.graph.monoFor(try self.instNode(checked_ty));
+        return try self.activeTypeFromCell(try self.lowerTypeCell(checked_ty));
     }
 
     fn graphFunctionNode(
@@ -11223,7 +11235,7 @@ const BodyContext = struct {
                 .ret = try self.graph.sealNode(try self.instNode(function.ret)),
             } });
         }
-        return try self.graph.monoFor(fn_node);
+        return try self.activeTypeFromNode(fn_node);
     }
 
     fn instantiateDispatchPlanCallTypeFromCaller(
@@ -11235,7 +11247,7 @@ const BodyContext = struct {
         expected_ret_ty: ?Type.TypeId,
     ) Allocator.Error!Type.TypeId {
         const fn_node = try self.instantiateDispatchPlanCallNodeFromCaller(source_fn_ty, caller, checked_ret_ty, operands, expected_ret_ty);
-        return try self.graph.monoFor(fn_node);
+        return try self.activeTypeFromNode(fn_node);
     }
 
     fn instantiateDispatchPlanCallNodeFromCaller(
@@ -11314,7 +11326,7 @@ const BodyContext = struct {
             try self.relateFormalToOperand(formal_ty, caller, operand);
         }
         try self.graph.drainDirty();
-        return try self.graph.monoFor(fn_node);
+        return try self.activeTypeFromNode(fn_node);
     }
 
     fn instantiateTargetFromPlan(
@@ -11335,7 +11347,7 @@ const BodyContext = struct {
             try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(expected));
         }
         try self.graph.drainDirty();
-        return try self.graph.monoFor(fn_node);
+        return try self.activeTypeFromNode(fn_node);
     }
 
     fn instantiateTargetCallTypePreservingSourceArgsAndRet(
@@ -11347,7 +11359,7 @@ const BodyContext = struct {
         const fn_node = try self.instNode(source_fn_ty);
         try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(ret_ty));
         try self.graph.drainDirty();
-        return try self.graph.monoFor(fn_node);
+        return try self.activeTypeFromNode(fn_node);
     }
 
     fn instantiateTargetCallTypeFromMonoArgs(
@@ -11357,7 +11369,7 @@ const BodyContext = struct {
         ret_ty: Type.TypeId,
     ) Allocator.Error!Type.TypeId {
         const fn_node = try self.instantiateTargetCallNodeFromMonoArgs(source_fn_ty, arg_tys, ret_ty);
-        return try self.graph.monoFor(fn_node);
+        return try self.activeTypeFromNode(fn_node);
     }
 
     fn instantiateTargetCallNodeFromMonoArgs(
@@ -11394,7 +11406,7 @@ const BodyContext = struct {
         }
         try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(ret_ty));
         try self.graph.drainDirty();
-        return try self.graph.monoFor(try self.graphFunctionNodeFromMono(arg_tys, ret_ty));
+        return try self.activeTypeFromNode(try self.graphFunctionNodeFromMono(arg_tys, ret_ty));
     }
 
     fn instantiateTargetCallTypeFromMonoArgAtIndexAndRet(
@@ -11412,7 +11424,7 @@ const BodyContext = struct {
         try self.graph.unify(try self.instNode(function.args[arg_index]), try self.graph.importMono(arg_ty));
         try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(ret_ty));
         try self.graph.drainDirty();
-        return try self.graph.monoFor(fn_node);
+        return try self.activeTypeFromNode(fn_node);
     }
 
     fn instantiateTargetCallNodeFromMonoArgAtIndex(
@@ -11900,7 +11912,7 @@ const BodyContext = struct {
         if (!self.builder.unsolved_monos.contains(ty)) {
             try self.graph.addMonoView(result_node, ty);
         }
-        const live_ty = try self.graph.monoFor(result_node);
+        const live_ty = try self.activeTypeFromNode(result_node);
         const lowered = try body_ctx.lowerComptimeRootExprAtType(body.body_expr, live_ty);
         return lowered;
     }
@@ -12991,14 +13003,14 @@ const BodyContext = struct {
 
         for (lambda.args, 0..) |pattern_id, i| {
             arg_nodes[i] = try self.instNode(self.view.bodies.pattern(pattern_id).ty);
-            args[i] = try self.graph.monoFor(arg_nodes[i]);
+            args[i] = try self.activeTypeFromNode(arg_nodes[i]);
             try self.savePatternBinders(pattern_id, &saved);
             try self.preRegisterPatternBinders(pattern_id, args[i]);
         }
         defer self.restoreBinders(saved.items);
 
         const ret_node = try self.graph.importMono(try self.lowerExprType(lambda.body));
-        return try self.graph.monoFor(try self.graphFunctionNode(arg_nodes, ret_node));
+        return try self.activeTypeFromNode(try self.graphFunctionNode(arg_nodes, ret_node));
     }
 
     fn lowerLambdaExpr(
@@ -16916,7 +16928,7 @@ const BodyContext = struct {
             try self.graph.unify(try self.instNode(function.ret), try self.graph.importMono(expected));
         }
         try self.graph.drainDirty();
-        return try self.graph.monoFor(fn_node);
+        return try self.activeTypeFromNode(fn_node);
     }
 
     fn iteratorOperandMonoType(
