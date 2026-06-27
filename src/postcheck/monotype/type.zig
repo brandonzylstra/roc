@@ -648,7 +648,7 @@ pub const Store = struct {
         }
 
         if (lhs.builtin_owner) |owner| {
-            if (owner == .fields) {
+            if (generatedEvidenceOwnerUsesBacking(owner)) {
                 const lhs_backing = lhs.backing orelse return rhs.backing == null;
                 const rhs_backing = rhs.backing orelse return false;
                 return try self.typeEqlInner(name_store, lhs_backing.ty, rhs_backing.ty, visited);
@@ -905,8 +905,8 @@ pub const Store = struct {
                 if (named.builtin_owner) |owner| {
                     writeBytes(hasher, "builtin");
                     writeBytes(hasher, @tagName(owner));
-                    if (owner == .fields) {
-                        writeBytes(hasher, "fields-backing");
+                    if (generatedEvidenceOwnerUsesBacking(owner)) {
+                        writeBytes(hasher, "generated-evidence-backing");
                         if (named.backing) |backing| {
                             self.writeCachedChildDigest(name_store, hasher, backing.ty, ctx, stats);
                         } else {
@@ -1012,8 +1012,8 @@ pub const Store = struct {
                 if (named.builtin_owner) |owner| {
                     writeBytes(hasher, "builtin");
                     writeBytes(hasher, @tagName(owner));
-                    if (owner == .fields) {
-                        writeBytes(hasher, "fields-backing");
+                    if (generatedEvidenceOwnerUsesBacking(owner)) {
+                        writeBytes(hasher, "generated-evidence-backing");
                         if (named.backing) |backing| {
                             self.writeTypeDigest(name_store, hasher, backing.ty, visiting);
                         } else {
@@ -1331,7 +1331,7 @@ fn namedTypeEqlAcrossStores(
     }
 
     if (lhs.builtin_owner) |owner| {
-        if (owner == .fields) {
+        if (generatedEvidenceOwnerUsesBacking(owner)) {
             const lhs_backing = lhs.backing orelse return rhs.backing == null;
             const rhs_backing = rhs.backing orelse return false;
             return try typeEqlAcrossStoresInner(name_store, lhs_view, lhs_backing.ty, rhs_view, rhs_backing.ty, visited);
@@ -1882,6 +1882,15 @@ fn deepDigest(ty: TypeId) names.TypeDigest {
 fn writeBytes(hasher: *std.crypto.hash.sha2.Sha256, bytes: []const u8) void {
     writeU32(hasher, @intCast(bytes.len));
     hasher.update(bytes);
+}
+
+fn generatedEvidenceOwnerUsesBacking(owner: static_dispatch.BuiltinOwner) bool {
+    return switch (owner) {
+        .fields,
+        .parse_tag_union_spec,
+        => true,
+        else => false,
+    };
 }
 
 fn writeU32(hasher: *std.crypto.hash.sha2.Sha256, value: u32) void {

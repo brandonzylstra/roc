@@ -1923,6 +1923,17 @@ const Builder = struct {
         return true;
     }
 
+    fn generatedParseTagUnionSpecBackingInfo(self: *Builder, spec_ty: Type.TypeId) bool {
+        if (!self.typeHasBuiltinOwner(spec_ty, .parse_tag_union_spec)) return false;
+        const backing_ty = self.namedBackingType(spec_ty) orelse return false;
+        const record_fields = switch (self.shapeContent(backing_ty)) {
+            .record => |span| self.program.types.fieldSpan(span),
+            .zst => &.{},
+            else => return false,
+        };
+        return record_fields.len != 0;
+    }
+
     fn monoTypeHasGeneratedOpaqueEvidence(self: *Builder, ty: Type.TypeId) Allocator.Error!bool {
         var visited = std.AutoHashMap(Type.TypeId, void).init(self.allocator);
         defer visited.deinit();
@@ -1943,7 +1954,11 @@ const Builder = struct {
             .zst,
             => false,
             .named => |named| blk: {
-                if (self.generatedFieldNamesBackingInfo(ty)) break :blk true;
+                if (self.generatedFieldNamesBackingInfo(ty) or
+                    self.generatedParseTagUnionSpecBackingInfo(ty))
+                {
+                    break :blk true;
+                }
                 for (self.program.types.span(named.args)) |arg| {
                     if (try self.monoTypeHasGeneratedOpaqueEvidenceInner(arg, visited)) break :blk true;
                 }
@@ -5474,14 +5489,14 @@ const BodyContext = struct {
 
     const ParserPrecomputedPlan = struct {
         allocator: Allocator,
-        records: std.AutoHashMap(Type.TypeId, ParserPrecomputedRecord),
+        records: std.AutoHashMap(names.TypeDigest, ParserPrecomputedRecord),
         captures: std.ArrayList(ParserPrecomputedCapture),
         next_capture_id: usize,
 
         fn init(allocator: Allocator) ParserPrecomputedPlan {
             return .{
                 .allocator = allocator,
-                .records = std.AutoHashMap(Type.TypeId, ParserPrecomputedRecord).init(allocator),
+                .records = std.AutoHashMap(names.TypeDigest, ParserPrecomputedRecord).init(allocator),
                 .captures = .empty,
                 .next_capture_id = 1,
             };
@@ -5499,6 +5514,38 @@ const BodyContext = struct {
             self.captures.deinit(self.allocator);
         }
     };
+
+    fn parserPlanKey(self: *BodyContext, shape_ty: Type.TypeId) names.TypeDigest {
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        hasher.update("roc.parser_precomputed_record");
+        const fields = self.recordFieldsForShape(shape_ty);
+        var count = std.mem.nativeToLittle(u32, @intCast(fields.len));
+        hasher.update(std.mem.asBytes(&count));
+        for (fields) |field| {
+            const label = self.builder.program.names.recordFieldLabelText(field.name);
+            var label_len = std.mem.nativeToLittle(u32, @intCast(label.len));
+            hasher.update(std.mem.asBytes(&label_len));
+            hasher.update(label);
+        }
+        return .{ .bytes = hasher.finalResult() };
+    }
+
+    fn parserPlanContains(self: *BodyContext, plan: *const ParserPrecomputedPlan, shape_ty: Type.TypeId) bool {
+        return plan.records.contains(self.parserPlanKey(shape_ty));
+    }
+
+    fn parserPlanGet(self: *BodyContext, plan: *const ParserPrecomputedPlan, shape_ty: Type.TypeId) ?ParserPrecomputedRecord {
+        return plan.records.get(self.parserPlanKey(shape_ty));
+    }
+
+    fn parserPlanPut(
+        self: *BodyContext,
+        plan: *ParserPrecomputedPlan,
+        shape_ty: Type.TypeId,
+        record: ParserPrecomputedRecord,
+    ) Allocator.Error!void {
+        try plan.records.put(self.parserPlanKey(shape_ty), record);
+    }
 
     const MaterializedArg = struct {
         pattern: checked.CheckedPatternId,
@@ -8205,7 +8252,7 @@ const BodyContext = struct {
     }
 
     fn isGeneratedSpecializationEvidenceType(self: *BodyContext, ty: Type.TypeId) bool {
-        return self.isGeneratedFieldNamesEvidenceType(ty);
+        return self.isGeneratedFieldNamesEvidenceType(ty) or self.isGeneratedParseTagUnionSpecEvidenceType(ty);
     }
 
     fn functionHasGeneratedOpaqueEvidence(self: *BodyContext, fn_ty: Type.TypeId) bool {
@@ -9000,7 +9047,7 @@ const BodyContext = struct {
         encoding_ty: Type.TypeId,
         str_ty: Type.TypeId,
     ) Allocator.Error!void {
-        if (plan.records.contains(shape_ty)) return;
+        if (self.parserPlanContains(plan, shape_ty)) return;
 
         const fields = self.recordFieldsForShape(shape_ty);
         const locals = try self.allocator.alloc(DraftLocalId, fields.len);
@@ -9024,7 +9071,7 @@ const BodyContext = struct {
             values[index] = try self.renamedRecordFieldNameExpr(encoding_expr, encoding_ty, field, str_ty);
         }
 
-        try plan.records.put(shape_ty, .{
+        try self.parserPlanPut(plan, shape_ty, .{
             .renamed_field_locals = locals,
             .renamed_field_values = values,
             .renamed_field_lengths = null,
@@ -9044,7 +9091,7 @@ const BodyContext = struct {
         shape_ty: Type.TypeId,
         str_ty: Type.TypeId,
     ) Allocator.Error!void {
-        if (plan.records.contains(shape_ty)) return;
+        if (self.parserPlanContains(plan, shape_ty)) return;
 
         const fields = self.recordFieldsForShape(shape_ty);
         const locals = try self.allocator.alloc(DraftLocalId, fields.len);
@@ -9068,7 +9115,7 @@ const BodyContext = struct {
             values[index] = try self.restoreConstNodeAtType(store_view, fn_view, node, str_ty);
         }
 
-        try plan.records.put(shape_ty, .{
+        try self.parserPlanPut(plan, shape_ty, .{
             .renamed_field_locals = locals,
             .renamed_field_values = values,
             .renamed_field_lengths = null,
@@ -9087,7 +9134,7 @@ const BodyContext = struct {
         encoding_ty: Type.TypeId,
         str_ty: Type.TypeId,
     ) Allocator.Error!void {
-        if (plan.records.contains(shape_ty)) return;
+        if (self.parserPlanContains(plan, shape_ty)) return;
 
         const fields = self.recordFieldsForShape(shape_ty);
         const locals = try self.allocator.alloc(DraftLocalId, fields.len);
@@ -9111,7 +9158,7 @@ const BodyContext = struct {
             values[index] = try self.renamedRecordFieldNameExpr(encoding_expr, encoding_ty, field, str_ty);
         }
 
-        try plan.records.put(shape_ty, .{
+        try self.parserPlanPut(plan, shape_ty, .{
             .renamed_field_locals = locals,
             .renamed_field_values = values,
             .renamed_field_lengths = null,
@@ -9186,7 +9233,7 @@ const BodyContext = struct {
 
         switch (self.builder.shapeContent(shape_ty)) {
             .record, .zst => {
-                if (plan == null or plan.?.records.contains(shape_ty)) {
+                if (plan == null or self.parserPlanContains(plan.?, shape_ty)) {
                     try shapes.append(self.allocator, shape_ty);
                 }
                 for (self.recordFieldsForShape(shape_ty)) |field| {
@@ -9269,7 +9316,7 @@ const BodyContext = struct {
         defer self.allocator.free(outer_values);
 
         for (record_shapes, backing_fields, 0..) |record_shape, backing_field, record_index| {
-            const precomputed = plan.records.get(record_shape) orelse
+            const precomputed = self.parserPlanGet(plan, record_shape) orelse
                 Common.invariant("generated tag-union spec requested missing parser precomputed record");
             const inner_fields = self.builder.program.types.fieldSpan(self.builder.recordFieldsSpan(backing_field.ty));
             if (inner_fields.len != precomputed.renamed_field_locals.len) {
@@ -9321,7 +9368,7 @@ const BodyContext = struct {
 
         const str_ty = try self.builder.primitiveType(.str);
         for (record_shapes, backing_fields) |record_shape, backing_field| {
-            if (plan.records.contains(record_shape)) continue;
+            if (self.parserPlanContains(plan, record_shape)) continue;
 
             const record_fields = self.recordFieldsForShape(record_shape);
             const backing_record_fields = self.builder.program.types.fieldSpan(self.builder.recordFieldsSpan(backing_field.ty));
@@ -9359,7 +9406,7 @@ const BodyContext = struct {
                 });
             }
 
-            try plan.records.put(record_shape, .{
+            try self.parserPlanPut(plan, record_shape, .{
                 .renamed_field_locals = locals,
                 .renamed_field_values = values,
                 .renamed_field_lengths = null,
@@ -9380,7 +9427,7 @@ const BodyContext = struct {
         shape_ty: Type.TypeId,
         str_ty: Type.TypeId,
     ) Allocator.Error!void {
-        if (plan.records.contains(shape_ty)) return;
+        if (self.parserPlanContains(plan, shape_ty)) return;
 
         const fields = self.recordFieldsForShape(shape_ty);
         const locals = try self.allocator.alloc(DraftLocalId, fields.len);
@@ -9410,7 +9457,7 @@ const BodyContext = struct {
             texts[index] = constStrNodeBytes(store_view, node);
         }
 
-        try plan.records.put(shape_ty, .{
+        try self.parserPlanPut(plan, shape_ty, .{
             .renamed_field_locals = locals,
             .renamed_field_values = values,
             .renamed_field_lengths = lengths,
@@ -9437,7 +9484,7 @@ const BodyContext = struct {
     ) Allocator.Error!DraftExprId {
         const selected = self.parseShapeSelection(shape_ty);
         if (Ident.textEql(selected.tag_text, "Record")) {
-            const precomputed = if (precomputed_plan) |plan| plan.records.get(shape_ty) else null;
+            const precomputed = if (precomputed_plan) |plan| self.parserPlanGet(plan, shape_ty) else null;
             return try self.lowerParseRecordFromState(
                 shape_ty,
                 encoding_expr,
@@ -14055,7 +14102,7 @@ const BodyContext = struct {
         var owned_renamed_field_values: ?[]DraftExprId = null;
         defer if (owned_renamed_field_values) |values| self.allocator.free(values);
 
-        const precomputed = if (precomputed_plan) |plan| plan.records.get(shape_ty) else null;
+        const precomputed = if (precomputed_plan) |plan| self.parserPlanGet(plan, shape_ty) else null;
         const renamed_field_locals = if (precomputed) |record| blk: {
             if (record.renamed_field_locals.len != record_fields.len) Common.invariant("encode_to precomputed renamed field arity differed from record field count");
             break :blk record.renamed_field_locals;

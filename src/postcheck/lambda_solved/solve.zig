@@ -905,6 +905,17 @@ const Solver = struct {
         };
     }
 
+    fn generatedOpaqueEvidenceScore(self: *Solver, named: anytype) u8 {
+        if (!isGeneratedOpaqueEvidenceOwner(named.builtin_owner)) return 0;
+
+        const backing = named.backing orelse return 0;
+        return switch (self.program.types.rootContent(backing.ty)) {
+            .record => |fields| if (fields.count() == 0) 1 else 2,
+            .zst => 1,
+            else => 2,
+        };
+    }
+
     fn bindLowLevelTypes(
         self: *Solver,
         op: can.CIR.Expr.LowLevel,
@@ -1178,7 +1189,19 @@ const Solver = struct {
                         Common.invariant("named type identity failed Lambda Solved unification");
                     }
                     try self.unifySpans(left_named.args, right_named.args, "named type arguments failed Lambda Solved unification");
-                    if (!sameBuiltinOwner(left_named.builtin_owner, right_named.builtin_owner, .fields)) {
+                    // Aliases have already been unwrapped above. Generated
+                    // opaque evidence uses its backing only to carry generated
+                    // compile-time facts, so two values with the same nominal
+                    // identity may intentionally have different backing rows.
+                    if (isGeneratedOpaqueEvidenceOwner(left_named.builtin_owner) or
+                        isGeneratedOpaqueEvidenceOwner(right_named.builtin_owner))
+                    {
+                        if (self.generatedOpaqueEvidenceScore(right_named) > self.generatedOpaqueEvidenceScore(left_named)) {
+                            self.program.types.set(a, .{ .link = b });
+                        } else {
+                            self.program.types.set(b, .{ .link = a });
+                        }
+                    } else {
                         if (left_named.backing) |left_backing| {
                             const right_backing = right_named.backing orelse Common.invariant("named type backing differed during Lambda Solved unification");
                             if (left_backing.use != right_backing.use) Common.invariant("named type backing use differed during Lambda Solved unification");
@@ -1186,8 +1209,8 @@ const Solver = struct {
                         } else if (right_named.backing != null) {
                             Common.invariant("named type backing differed during Lambda Solved unification");
                         }
+                        self.program.types.set(b, .{ .link = a });
                     }
-                    self.program.types.set(b, .{ .link = a });
                 },
                 else => Common.invariant("named type failed Lambda Solved unification"),
             },
@@ -1531,10 +1554,14 @@ const TypeCloner = struct {
     }
 };
 
-fn sameBuiltinOwner(left: ?static_dispatch.BuiltinOwner, right: ?static_dispatch.BuiltinOwner, owner: static_dispatch.BuiltinOwner) bool {
-    const left_owner = left orelse return false;
-    const right_owner = right orelse return false;
-    return left_owner == owner and right_owner == owner;
+fn isGeneratedOpaqueEvidenceOwner(owner: ?static_dispatch.BuiltinOwner) bool {
+    const actual = owner orelse return false;
+    return switch (actual) {
+        .fields,
+        .parse_tag_union_spec,
+        => true,
+        else => false,
+    };
 }
 
 fn sameMonoTypeDef(left: MonoType.TypeDef, right: MonoType.TypeDef) bool {
