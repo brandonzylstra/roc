@@ -5619,6 +5619,10 @@ const BodyContext = struct {
         return try self.draft.addPat(.{ .ty = try self.draftTypeCell(pat.ty), .data = pat.data });
     }
 
+    fn addPatWithTypeCell(self: *BodyContext, ty: DraftTypeCell, data: BodyPatData) Allocator.Error!DraftPatId {
+        return try self.draft.addPat(.{ .ty = ty, .data = data });
+    }
+
     fn addLocal(self: *BodyContext, symbol: Common.Symbol, ty: Type.TypeId) Allocator.Error!DraftLocalId {
         return try self.addLocalWithBinder(symbol, ty, null);
     }
@@ -16965,10 +16969,10 @@ const BodyContext = struct {
     }
 
     fn iteratorDonePattern(self: *BodyContext, step: IterStepShape) Allocator.Error!DraftPatId {
-        return try self.addPat(.{ .ty = try self.lowerTypeView(step.step_ty), .data = .{ .tag = .{
+        return try self.addPatWithTypeCell(try self.lowerTypeCell(step.step_ty), .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.done_tag),
             .payloads = .empty(),
-        } } });
+        } });
     }
 
     fn iteratorOneBranch(
@@ -16992,10 +16996,10 @@ const BodyContext = struct {
         else
             null;
         const record_pat = try self.iteratorOnePayloadPattern(for_.pattern, step, item_ty, iterator_ty, rest_local, item_local);
-        const tag_pat = try self.addPat(.{ .ty = try self.lowerTypeView(step.step_ty), .data = .{ .tag = .{
+        const tag_pat = try self.addPatWithTypeCell(try self.lowerTypeCell(step.step_ty), .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.one_tag),
             .payloads = try self.addPatSpan(&[_]DraftPatId{record_pat}),
-        } } });
+        } });
 
         const rest_expr = try self.localExpr(rest_local, iterator_ty);
         const block = if (item_local) |local| blk: {
@@ -17111,10 +17115,10 @@ const BodyContext = struct {
     ) Allocator.Error!DraftBranch {
         const rest_local = try self.addLocal(self.builder.symbols.fresh(), iterator_ty);
         const record_pat = try self.iteratorSkipPayloadPattern(step, iterator_ty, rest_local);
-        const tag_pat = try self.addPat(.{ .ty = try self.lowerTypeView(step.step_ty), .data = .{ .tag = .{
+        const tag_pat = try self.addPatWithTypeCell(try self.lowerTypeCell(step.step_ty), .{ .tag = .{
             .name = try self.builder.tagName(self.view, step.skip_tag),
             .payloads = try self.addPatSpan(&[_]DraftPatId{record_pat}),
-        } } });
+        } });
         const rest_expr = try self.localExpr(rest_local, iterator_ty);
         return .{
             .pat = tag_pat,
@@ -17138,10 +17142,10 @@ const BodyContext = struct {
         const item_field = try self.iteratorRecordDestruct(step.one_item.name, item_pat);
         const rest_field = try self.iteratorRecordDestruct(step.one_rest.name, try self.bindPat(rest_local, iterator_ty));
         const fields = [_]DraftRecordDestruct{ item_field, rest_field };
-        return try self.addPat(.{
-            .ty = try self.lowerTypeView(step.one_payload_ty),
-            .data = .{ .record = try self.addRecordDestructSpan(&fields) },
-        });
+        return try self.addPatWithTypeCell(
+            try self.lowerTypeCell(step.one_payload_ty),
+            .{ .record = try self.addRecordDestructSpan(&fields) },
+        );
     }
 
     fn iteratorSkipPayloadPattern(
@@ -17152,10 +17156,10 @@ const BodyContext = struct {
     ) Allocator.Error!DraftPatId {
         const rest_field = try self.iteratorRecordDestruct(step.skip_rest.name, try self.bindPat(rest_local, iterator_ty));
         const fields = [_]DraftRecordDestruct{rest_field};
-        return try self.addPat(.{
-            .ty = try self.lowerTypeView(step.skip_payload_ty),
-            .data = .{ .record = try self.addRecordDestructSpan(&fields) },
-        });
+        return try self.addPatWithTypeCell(
+            try self.lowerTypeCell(step.skip_payload_ty),
+            .{ .record = try self.addRecordDestructSpan(&fields) },
+        );
     }
 
     fn iteratorRecordDestruct(
