@@ -371,6 +371,43 @@ test "monotype spec builder reuses exact specialization identities" {
     try std.testing.expectEqual(@as(Ast.FnId, @enumFromInt(3)), builder.records.items[@intFromEnum(first_spec)].fn_id);
 }
 
+test "monotype spec builder rekeys local records after sealed identity update" {
+    var name_store = names.NameStore.init(std.testing.allocator);
+    defer name_store.deinit();
+
+    var type_store = Type.Store.init(std.testing.allocator);
+    defer type_store.deinit();
+
+    const request_ty = try type_store.add(.zst);
+    const sealed_ty = try type_store.add(.{ .primitive = .str });
+    const source_digest = digestWithFirstByte(1);
+    const request_identity = testSpecIdentity(request_ty, source_digest, digestWithFirstByte(2));
+    const sealed_identity = testSpecIdentity(sealed_ty, source_digest, digestWithFirstByte(3));
+
+    var records = std.ArrayList(Ast.SpecRecord).empty;
+    defer records.deinit(std.testing.allocator);
+
+    var builder = SpecBuilder.init(std.testing.allocator, &name_store, &type_store, &records);
+    defer builder.deinit();
+
+    const reserved = try builder.reserve(request_identity, @enumFromInt(1));
+    const spec = reserved.spec orelse return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(@as(?LookupResult, null), try builder.find(sealed_identity));
+    try builder.updateLocalIdentity(spec, sealed_identity);
+
+    const sealed_found = (try builder.find(sealed_identity)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(?Ast.SpecId, spec), sealed_found.spec);
+    try std.testing.expectEqual(Ast.FnSlot{ .local = @as(Ast.FnId, @enumFromInt(1)) }, sealed_found.target);
+    try std.testing.expectEqual(@as(?LookupResult, null), try builder.find(request_identity));
+
+    const repeated = try builder.reserve(sealed_identity, @enumFromInt(2));
+    try std.testing.expect(!repeated.created);
+    try std.testing.expectEqual(@as(?Ast.SpecId, spec), repeated.spec);
+    try std.testing.expectEqual(Ast.FnSlot{ .local = @as(Ast.FnId, @enumFromInt(1)) }, repeated.target);
+    try std.testing.expectEqual(@as(usize, 1), records.items.len);
+}
+
 test "monotype spec builder keeps checked module boundary in callable identity" {
     var name_store = names.NameStore.init(std.testing.allocator);
     defer name_store.deinit();
