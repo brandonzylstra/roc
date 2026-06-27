@@ -1191,7 +1191,7 @@ const Solver = struct {
                     try self.unifySpans(left_named.args, right_named.args, "named type arguments failed Lambda Solved unification");
                     // Aliases have already been unwrapped above. Generated
                     // opaque evidence uses its backing only to carry generated
-                    // compile-time facts, so two values with the same nominal
+                    // compile-time evidence rows, so two values with the same nominal
                     // identity may intentionally have different backing rows.
                     if (isGeneratedOpaqueEvidenceOwner(left_named.builtin_owner) or
                         isGeneratedOpaqueEvidenceOwner(right_named.builtin_owner))
