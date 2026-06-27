@@ -114,7 +114,7 @@ pub const tests = [_]TestCase{
         .source =
         \\main = {
         \\    r = { a: 1.I64, b: 2.I64 }
-        \\    f = |{ a }| a
+        \\    f = |{ a, .. }| a
         \\    f(r)
         \\}
         ,
