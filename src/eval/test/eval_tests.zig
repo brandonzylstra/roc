@@ -4611,9 +4611,9 @@ const core_tests = [_]TestCase{
             .{
                 .name = "Helpers",
                 .source =
-                \\module [read]
-                \\
-                \\read = |value| value.get()
+                \\Helpers := [].{
+                \\  read = |value| value.get()
+                \\}
                 ,
             },
         },
@@ -4650,12 +4650,12 @@ const core_tests = [_]TestCase{
             .{
                 .name = "Helpers",
                 .source =
-                \\module [read]
-                \\
                 \\import CrateMod
                 \\
-                \\read : item -> U64 where [item.get : item -> U64]
-                \\read = |value| value.get()
+                \\Helpers := [].{
+                \\  read : item -> U64 where [item.get : item -> U64]
+                \\  read = |value| value.get()
+                \\}
                 ,
             },
         },

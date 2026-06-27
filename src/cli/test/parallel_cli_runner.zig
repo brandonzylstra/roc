@@ -1818,7 +1818,7 @@ fn customWatchInputsRejectAbsoluteImport(
     const rejected_import_path = "/tmp/roc-watch-absolute-import-data.txt";
     const app_source = std.fmt.allocPrint(
         allocator,
-        "module [main]\n\nimport \"{s}\" as data : Str\n\nmain = data\n",
+        "import \"{s}\" as data : Str\n\nmain = data\n",
         .{rejected_import_path},
     ) catch |err| return customInfraFailure(allocator, timer, "failed to render app source: {}", .{err});
     defer allocator.free(app_source);
@@ -2010,8 +2010,6 @@ const hot_reload_app_data_body =
 ;
 
 const hot_reload_extra_five_source =
-    \\module [value]
-    \\
     \\value : U64
     \\value = 5
     \\
@@ -2273,17 +2271,14 @@ const hot_reload_host_c_source =
     \\"main_for_host! = |arg| main!(arg) + 1\n";
     \\
     \\static const char *extra_five =
-    \\"module [value]\n\n"
     \\"value : U64\n"
     \\"value = 5\n";
     \\
     \\static const char *extra_six =
-    \\"module [value]\n\n"
     \\"value : U64\n"
     \\"value = 6\n";
     \\
     \\static const char *extra_eight =
-    \\"module [value]\n\n"
     \\"value : U64\n"
     \\"value = 8\n";
     \\

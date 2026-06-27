@@ -14,8 +14,6 @@ main = Color.to_str(Color.red)
 ~~~
 ## Color.roc
 ~~~roc
-module [Color, red, green, blue, to_str]
-
 Color : [Red, Green, Blue]
 
 red : Color
