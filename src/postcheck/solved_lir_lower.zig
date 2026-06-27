@@ -24,6 +24,7 @@ const lir_core = @import("lir_core");
 const LIR = lir_core.LIR;
 const LirProgram = lir_core.Program;
 const RootMetadata = lir_core.RootMetadata.RootMetadata;
+const const_store = check.ConstStore;
 
 /// Runtime field order for a named record field.
 pub const RuntimeRecordFieldSchema = struct {
@@ -166,6 +167,20 @@ const CaptureSpanId = struct {
     }
 };
 
+const CaptureTypeId = struct {
+    start: u32,
+    len: u32,
+    solved_fn_ty: SolvedType.TypeVarId,
+
+    fn from(span: SolvedType.Span, solved_fn_ty: SolvedType.TypeVarId) CaptureTypeId {
+        return .{
+            .start = span.start,
+            .len = span.len,
+            .solved_fn_ty = solved_fn_ty,
+        };
+    }
+};
+
 const FnSpec = struct {
     source: Lifted.FnId,
     solved_fn_ty: SolvedType.TypeVarId,
@@ -200,18 +215,21 @@ const FnSpecContext = struct {
     }
 };
 
-const CaptureTypeMap = std.HashMap(CaptureSpanId, Type.TypeId, CaptureSpanContext, std.hash_map.default_max_load_percentage);
+const CaptureTypeMap = std.HashMap(CaptureTypeId, Type.TypeId, CaptureSpanContext, std.hash_map.default_max_load_percentage);
 
 const CaptureSpanContext = struct {
-    pub fn hash(_: CaptureSpanContext, span: CaptureSpanId) u64 {
+    pub fn hash(_: CaptureSpanContext, span: CaptureTypeId) u64 {
         var hasher = std.hash.Wyhash.init(0);
         std.hash.autoHash(&hasher, span.start);
         std.hash.autoHash(&hasher, span.len);
+        std.hash.autoHash(&hasher, @intFromEnum(span.solved_fn_ty));
         return hasher.final();
     }
 
-    pub fn eql(_: CaptureSpanContext, lhs: CaptureSpanId, rhs: CaptureSpanId) bool {
-        return lhs.start == rhs.start and lhs.len == rhs.len;
+    pub fn eql(_: CaptureSpanContext, lhs: CaptureTypeId, rhs: CaptureTypeId) bool {
+        return lhs.start == rhs.start and
+            lhs.len == rhs.len and
+            lhs.solved_fn_ty == rhs.solved_fn_ty;
     }
 };
 
@@ -221,6 +239,11 @@ const FnEntry = struct {
     source: ?Mono.FnTemplate,
     ret: Type.TypeId,
     proc: ?LIR.LirProcSpecId,
+};
+
+const ConstFnTypeInfo = struct {
+    args: const_store.ConstRange,
+    ret: const_store.ConstTypeId,
 };
 
 const RootEntry = struct {
@@ -278,6 +301,8 @@ const Lowerer = struct {
     runtime_schema_requests: std.ArrayList(RuntimeSchemaRequest),
     type_layouts: std.AutoHashMap(Type.TypeId, layout.Idx),
     const_plan_map: std.AutoHashMap(Type.TypeId, LirProgram.ConstPlanId),
+    const_type_map: std.AutoHashMap(Type.TypeId, const_store.ConstTypeId),
+    mono_const_type_map: std.AutoHashMap(MonoType.TypeId, const_store.ConstTypeId),
     symbols: Common.SymbolGen,
     local_map: []?LIR.LocalId,
     comptime_site_map: []?LIR.ComptimeSiteId,
@@ -338,6 +363,8 @@ const Lowerer = struct {
             .runtime_schema_requests = .empty,
             .type_layouts = std.AutoHashMap(Type.TypeId, layout.Idx).init(allocator),
             .const_plan_map = std.AutoHashMap(Type.TypeId, LirProgram.ConstPlanId).init(allocator),
+            .const_type_map = std.AutoHashMap(Type.TypeId, const_store.ConstTypeId).init(allocator),
+            .mono_const_type_map = std.AutoHashMap(MonoType.TypeId, const_store.ConstTypeId).init(allocator),
             .symbols = .{ .next = solved.lifted.next_symbol },
             .local_map = local_map,
             .comptime_site_map = comptime_site_map,
@@ -351,6 +378,8 @@ const Lowerer = struct {
         self.allocator.free(self.comptime_site_map);
         self.allocator.free(self.local_map);
         self.const_plan_map.deinit();
+        self.const_type_map.deinit();
+        self.mono_const_type_map.deinit();
         self.type_layouts.deinit();
         self.runtime_schema_requests.deinit(self.allocator);
         self.layout_requests.deinit(self.allocator);
@@ -380,6 +409,8 @@ const Lowerer = struct {
         self.allocator.free(self.comptime_site_map);
         self.allocator.free(self.local_map);
         self.const_plan_map.deinit();
+        self.const_type_map.deinit();
+        self.mono_const_type_map.deinit();
         self.type_layouts.deinit();
         self.runtime_schema_requests.deinit(self.allocator);
         self.layout_requests.deinit(self.allocator);
@@ -586,12 +617,13 @@ const Lowerer = struct {
         captures: SolvedType.Span,
     ) Common.LowerError!Type.FnId {
         const capture_items = self.solved.types.captureSpan(captures);
+        const root_fn_ty = self.solved.types.root(solved_fn_ty);
         const spec = FnSpec{
             .source = source,
-            .solved_fn_ty = self.solved.types.root(solved_fn_ty),
+            .solved_fn_ty = root_fn_ty,
             .abi = abi,
             .captures = CaptureSpanId.from(captures),
-            .capture_ty = if (capture_items.len == 0) null else try self.captureRecordType(captures),
+            .capture_ty = if (capture_items.len == 0) null else try self.captureRecordType(captures, root_fn_ty),
         };
 
         const result = try self.fn_spec_map.getOrPut(spec);
@@ -810,8 +842,12 @@ const Lowerer = struct {
         return ty;
     }
 
-    fn captureRecordType(self: *Lowerer, captures: SolvedType.Span) Common.LowerError!Type.TypeId {
-        const id = CaptureSpanId.from(captures);
+    fn captureRecordType(
+        self: *Lowerer,
+        captures: SolvedType.Span,
+        solved_fn_ty: SolvedType.TypeVarId,
+    ) Common.LowerError!Type.TypeId {
+        const id = CaptureTypeId.from(captures, self.solved.types.root(solved_fn_ty));
         if (self.capture_types.get(id)) |existing| return existing;
 
         const capture_items = self.solved.types.captureSpan(captures);
@@ -847,9 +883,14 @@ const Lowerer = struct {
         if (self.type_map.get(root)) |cached| return cached;
 
         const content = self.solved.types.get(root);
-        switch (content) {
-            .func => |func| return try self.lowerType(func.callable),
-            else => {},
+        if (content == .func) {
+            const reserved = try self.types.add(.zst);
+            try self.type_map.put(root, reserved);
+            errdefer {
+                if (self.type_map.get(root) == reserved) _ = self.type_map.remove(root);
+            }
+            self.types.set(reserved, try self.lowerCallableForFn(content.func.callable, root));
+            return reserved;
         }
 
         const reserved = try self.types.add(.zst);
@@ -866,9 +907,9 @@ const Lowerer = struct {
             .zst => .zst,
             .erased => |erased| .{ .erased_fn = .{
                 .source_fn_ty = erased.source_fn_ty,
-                .members = try self.lowerFnMembers(erased.members, .erased),
+                .members = try self.lowerFnMembersFromOwnTypes(erased.members, .erased),
             } },
-            .func => |func| return self.types.get(try self.lowerType(func.callable)),
+            .func => Common.invariant("function type reached content lowering without its call signature"),
             .list => |elem| .{ .list = try self.lowerType(elem) },
             .box => |elem| .{ .box = try self.lowerType(elem) },
             .tuple => |items| blk: {
@@ -914,7 +955,22 @@ const Lowerer = struct {
                     .declared_order = try self.lowerDeclaredOrder(named.declared_order),
                 } };
             },
-            .lambda_set => |members| .{ .callable = try self.lowerFnMembers(members, .finite) },
+            .lambda_set => |members| .{ .callable = try self.lowerFnMembersFromOwnTypes(members, .finite) },
+        };
+    }
+
+    fn lowerCallableForFn(
+        self: *Lowerer,
+        callable: SolvedType.TypeVarId,
+        solved_fn_ty: SolvedType.TypeVarId,
+    ) Common.LowerError!Type.Content {
+        return switch (self.solved.types.rootContent(callable)) {
+            .lambda_set => |members| .{ .callable = try self.lowerFnMembers(members, .finite, solved_fn_ty) },
+            .erased => |erased| .{ .erased_fn = .{
+                .source_fn_ty = erased.source_fn_ty,
+                .members = try self.lowerFnMembers(erased.members, .erased, solved_fn_ty),
+            } },
+            else => Common.invariant("function callable slot was unresolved before direct Lambda Mono"),
         };
     }
 
@@ -935,12 +991,39 @@ const Lowerer = struct {
         return try self.types.addDeclaredFields(lowered);
     }
 
-    fn lowerFnMembers(self: *Lowerer, members: SolvedType.Span, abi: CaptureAbi) Common.LowerError!Type.Span {
+    fn lowerFnMembers(
+        self: *Lowerer,
+        members: SolvedType.Span,
+        abi: CaptureAbi,
+        solved_fn_ty: SolvedType.TypeVarId,
+    ) Common.LowerError!Type.Span {
+        const solved_members = self.solved.types.memberSpan(members);
+        const variants = try self.allocator.alloc(Type.FnVariant, solved_members.len);
+        defer self.allocator.free(variants);
+        const root_fn_ty = self.solved.types.root(solved_fn_ty);
+        for (solved_members, 0..) |member, i| {
+            const source = self.sourceFnForSymbol(member.lambda);
+            const target = try self.ensureFnSpec(
+                source,
+                root_fn_ty,
+                abi,
+                member.captures,
+            );
+            variants[i] = .{
+                .id = undefined,
+                .source = member.lambda,
+                .target = target,
+                .capture_ty = self.fn_entries.items[@intFromEnum(target)].spec.capture_ty,
+            };
+        }
+        return try self.types.addFnVariants(variants);
+    }
+
+    fn lowerFnMembersFromOwnTypes(self: *Lowerer, members: SolvedType.Span, abi: CaptureAbi) Common.LowerError!Type.Span {
         const solved_members = self.solved.types.memberSpan(members);
         const variants = try self.allocator.alloc(Type.FnVariant, solved_members.len);
         defer self.allocator.free(variants);
         for (solved_members, 0..) |member, i| {
-            const captures = self.solved.types.captureSpan(member.captures);
             const source = self.sourceFnForSymbol(member.lambda);
             const target = try self.ensureFnSpec(
                 source,
@@ -952,7 +1035,7 @@ const Lowerer = struct {
                 .id = undefined,
                 .source = member.lambda,
                 .target = target,
-                .capture_ty = if (captures.len == 0) null else try self.captureRecordType(member.captures),
+                .capture_ty = self.fn_entries.items[@intFromEnum(target)].spec.capture_ty,
             };
         }
         return try self.types.addFnVariants(variants);
@@ -1145,6 +1228,254 @@ const Lowerer = struct {
         };
     }
 
+    fn constTypeOfType(self: *Lowerer, ty: Type.TypeId) Common.LowerError!const_store.ConstTypeId {
+        if (self.const_type_map.get(ty)) |existing| return existing;
+
+        const id = try self.result.const_types.reserve();
+        try self.const_type_map.put(ty, id);
+        errdefer {
+            if (self.const_type_map.get(ty) == id) _ = self.const_type_map.remove(ty);
+        }
+
+        const stored = try self.buildConstType(ty);
+        self.result.const_types.fill(id, stored);
+        return id;
+    }
+
+    fn constRecordFieldName(self: *Lowerer, name: check.CheckedNames.RecordFieldNameId) std.mem.Allocator.Error!check.CheckedNames.RecordFieldNameId {
+        return self.result.const_type_names.internRecordFieldLabel(self.solved.lifted.names.recordFieldLabelText(name));
+    }
+
+    fn constTagName(self: *Lowerer, name: check.CheckedNames.TagNameId) std.mem.Allocator.Error!check.CheckedNames.TagNameId {
+        return self.result.const_type_names.internTagLabel(self.solved.lifted.names.tagLabelText(name));
+    }
+
+    fn constTypeDef(self: *Lowerer, def: MonoType.TypeDef) std.mem.Allocator.Error!const_store.TypeDef {
+        return .{
+            .module_name = try self.result.const_type_names.internModuleName(self.solved.lifted.names.moduleNameText(def.module_name)),
+            .type_name = try self.result.const_type_names.internTypeName(self.solved.lifted.names.typeNameText(def.type_name)),
+            .source_decl = def.source_decl,
+        };
+    }
+
+    fn buildConstType(self: *Lowerer, ty: Type.TypeId) Common.LowerError!const_store.ConstType {
+        return switch (self.types.get(ty)) {
+            .primitive => |primitive| .{ .primitive = constPrimitive(primitive) },
+            .zst => .zst,
+            .list => |elem| .{ .list = try self.constTypeOfType(elem) },
+            .box => |elem| .{ .box = try self.constTypeOfType(elem) },
+            .tuple => |items| blk: {
+                const source = self.types.span(items);
+                const out = try self.allocator.alloc(const_store.ConstTypeId, source.len);
+                defer self.allocator.free(out);
+                for (source, 0..) |item, i| out[i] = try self.constTypeOfType(item);
+                break :blk .{ .tuple = try self.result.const_types.appendTypeSpan(out) };
+            },
+            .record => |fields| blk: {
+                const source = self.types.fieldSpan(fields);
+                const out = try self.allocator.alloc(const_store.TypeField, source.len);
+                defer self.allocator.free(out);
+                for (source, 0..) |field, i| {
+                    out[i] = .{
+                        .name = try self.constRecordFieldName(field.name),
+                        .ty = try self.constTypeOfType(field.ty),
+                    };
+                }
+                break :blk .{ .record = try self.result.const_types.appendFieldSpan(out) };
+            },
+            .tag_union => |tags| blk: {
+                const source = self.types.tagSpan(tags);
+                const out = try self.allocator.alloc(const_store.TypeTag, source.len);
+                defer self.allocator.free(out);
+                for (source, 0..) |tag, i| {
+                    const payloads = self.types.span(tag.payloads);
+                    const stored_payloads = try self.allocator.alloc(const_store.ConstTypeId, payloads.len);
+                    defer self.allocator.free(stored_payloads);
+                    for (payloads, 0..) |payload, j| stored_payloads[j] = try self.constTypeOfType(payload);
+                    out[i] = .{
+                        .name = try self.constTagName(tag.name),
+                        .checked_name = try self.constTagName(tag.checked_name),
+                        .payloads = try self.result.const_types.appendTypeSpan(stored_payloads),
+                    };
+                }
+                break :blk .{ .tag_union = try self.result.const_types.appendTagSpan(out) };
+            },
+            .named => |named| blk: {
+                const args = self.types.span(named.args);
+                const stored_args = try self.allocator.alloc(const_store.ConstTypeId, args.len);
+                defer self.allocator.free(stored_args);
+                for (args, 0..) |arg, i| stored_args[i] = try self.constTypeOfType(arg);
+
+                const declared = self.types.declaredFieldSpan(named.declared_order);
+                const stored_declared = try self.allocator.alloc(const_store.TypeDeclaredField, declared.len);
+                defer self.allocator.free(stored_declared);
+                for (declared, 0..) |entry, i| {
+                    stored_declared[i] = switch (entry) {
+                        .named => |name| .{ .named = try self.constRecordFieldName(name) },
+                        .padding => |padding| .{ .padding = try self.constTypeOfType(padding) },
+                    };
+                }
+
+                break :blk .{ .named = .{
+                    .named_type = .{
+                        .module = named.named_type.module,
+                        .ty = named.named_type.ty,
+                    },
+                    .def = try self.constTypeDef(named.def),
+                    .kind = constNamedKind(named.kind),
+                    .builtin_owner = named.builtin_owner,
+                    .args = try self.result.const_types.appendTypeSpan(stored_args),
+                    .backing = if (named.backing) |backing| .{
+                        .ty = try self.constTypeOfType(backing.ty),
+                        .use = constBackingUse(backing.use),
+                    } else null,
+                    .declared_order = try self.result.const_types.appendDeclaredFieldSpan(stored_declared),
+                } };
+            },
+            .callable => |variants| return try self.constFuncTypeForCallable(variants),
+            .erased_fn => |erased| return try self.constFuncTypeForErased(erased.members),
+            .capture_record => Common.invariant("capture record reached ConstStore type output as a captured value"),
+            .erased_capture_ptr => Common.invariant("erased capture pointer reached ConstStore type output as a captured value"),
+        };
+    }
+
+    fn constFuncTypeForCallable(self: *Lowerer, variants_span: Type.Span) Common.LowerError!const_store.ConstType {
+        const variants = self.types.fnVariantSpan(variants_span);
+        if (variants.len == 0) Common.invariant("callable capture type had no function variants");
+        const function = try self.constFuncTypeForVariants(variants);
+        return .{ .func = .{ .args = function.args, .ret = function.ret } };
+    }
+
+    fn constFuncTypeForErased(self: *Lowerer, variants_span: Type.Span) Common.LowerError!const_store.ConstType {
+        const variants = self.types.fnVariantSpan(variants_span);
+        if (variants.len == 0) Common.invariant("erased function capture type had no function variants");
+        const function = try self.constFuncTypeForVariants(variants);
+        return .{ .func = .{ .args = function.args, .ret = function.ret } };
+    }
+
+    fn constFuncTypeForVariants(
+        self: *Lowerer,
+        variants: []const Type.FnVariant,
+    ) Common.LowerError!ConstFnTypeInfo {
+        const first_template = self.fnTemplateForFn(variants[0].target);
+        const first_digest = self.solved.lifted.types.typeDigest(&self.solved.lifted.names, first_template.mono_fn_ty);
+        for (variants[1..]) |variant| {
+            const template = self.fnTemplateForFn(variant.target);
+            const digest = self.solved.lifted.types.typeDigest(&self.solved.lifted.names, template.mono_fn_ty);
+            if (!std.mem.eql(u8, first_digest.bytes[0..], digest.bytes[0..])) {
+                Common.invariant("callable capture variants had different source-level function types");
+            }
+        }
+        const fn_ty = try self.constTypeOfMonoType(first_template.mono_fn_ty);
+        return switch (self.result.const_types.get(fn_ty)) {
+            .func => |function| .{ .args = function.args, .ret = function.ret },
+            else => Common.invariant("callable capture source type was not a function"),
+        };
+    }
+
+    fn constTypeOfMonoType(self: *Lowerer, ty: MonoType.TypeId) Common.LowerError!const_store.ConstTypeId {
+        if (self.mono_const_type_map.get(ty)) |existing| return existing;
+
+        const id = try self.result.const_types.reserve();
+        try self.mono_const_type_map.put(ty, id);
+        errdefer {
+            if (self.mono_const_type_map.get(ty) == id) _ = self.mono_const_type_map.remove(ty);
+        }
+
+        const stored = try self.buildConstTypeFromMono(ty);
+        self.result.const_types.fill(id, stored);
+        return id;
+    }
+
+    fn buildConstTypeFromMono(self: *Lowerer, ty: MonoType.TypeId) Common.LowerError!const_store.ConstType {
+        const mono_types = &self.solved.lifted.types;
+        return switch (mono_types.get(ty)) {
+            .primitive => |primitive| .{ .primitive = constPrimitive(primitive) },
+            .zst => .zst,
+            .erased => |erased| .{ .erased = erased },
+            .list => |elem| .{ .list = try self.constTypeOfMonoType(elem) },
+            .box => |elem| .{ .box = try self.constTypeOfMonoType(elem) },
+            .tuple => |items| blk: {
+                const source = mono_types.span(items);
+                const out = try self.allocator.alloc(const_store.ConstTypeId, source.len);
+                defer self.allocator.free(out);
+                for (source, 0..) |item, i| out[i] = try self.constTypeOfMonoType(item);
+                break :blk .{ .tuple = try self.result.const_types.appendTypeSpan(out) };
+            },
+            .func => |function| blk: {
+                const args = mono_types.span(function.args);
+                const stored_args = try self.allocator.alloc(const_store.ConstTypeId, args.len);
+                defer self.allocator.free(stored_args);
+                for (args, 0..) |arg, i| stored_args[i] = try self.constTypeOfMonoType(arg);
+                break :blk .{ .func = .{
+                    .args = try self.result.const_types.appendTypeSpan(stored_args),
+                    .ret = try self.constTypeOfMonoType(function.ret),
+                } };
+            },
+            .record => |fields| blk: {
+                const source = mono_types.fieldSpan(fields);
+                const out = try self.allocator.alloc(const_store.TypeField, source.len);
+                defer self.allocator.free(out);
+                for (source, 0..) |field, i| {
+                    out[i] = .{
+                        .name = try self.constRecordFieldName(field.name),
+                        .ty = try self.constTypeOfMonoType(field.ty),
+                    };
+                }
+                break :blk .{ .record = try self.result.const_types.appendFieldSpan(out) };
+            },
+            .tag_union => |tags| blk: {
+                const source = mono_types.tagSpan(tags);
+                const out = try self.allocator.alloc(const_store.TypeTag, source.len);
+                defer self.allocator.free(out);
+                for (source, 0..) |tag, i| {
+                    const payloads = mono_types.span(tag.payloads);
+                    const stored_payloads = try self.allocator.alloc(const_store.ConstTypeId, payloads.len);
+                    defer self.allocator.free(stored_payloads);
+                    for (payloads, 0..) |payload, j| stored_payloads[j] = try self.constTypeOfMonoType(payload);
+                    out[i] = .{
+                        .name = try self.constTagName(tag.name),
+                        .checked_name = try self.constTagName(tag.checked_name),
+                        .payloads = try self.result.const_types.appendTypeSpan(stored_payloads),
+                    };
+                }
+                break :blk .{ .tag_union = try self.result.const_types.appendTagSpan(out) };
+            },
+            .named => |named| blk: {
+                const args = mono_types.span(named.args);
+                const stored_args = try self.allocator.alloc(const_store.ConstTypeId, args.len);
+                defer self.allocator.free(stored_args);
+                for (args, 0..) |arg, i| stored_args[i] = try self.constTypeOfMonoType(arg);
+
+                const declared = mono_types.declaredFieldSpan(named.declared_order);
+                const stored_declared = try self.allocator.alloc(const_store.TypeDeclaredField, declared.len);
+                defer self.allocator.free(stored_declared);
+                for (declared, 0..) |entry, i| {
+                    stored_declared[i] = switch (entry) {
+                        .named => |name| .{ .named = try self.constRecordFieldName(name) },
+                        .padding => |padding| .{ .padding = try self.constTypeOfMonoType(padding) },
+                    };
+                }
+
+                break :blk .{ .named = .{
+                    .named_type = .{
+                        .module = named.named_type.module,
+                        .ty = named.named_type.ty,
+                    },
+                    .def = try self.constTypeDef(named.def),
+                    .kind = constNamedKind(named.kind),
+                    .builtin_owner = named.builtin_owner,
+                    .args = try self.result.const_types.appendTypeSpan(stored_args),
+                    .backing = if (named.backing) |backing| .{
+                        .ty = try self.constTypeOfMonoType(backing.ty),
+                        .use = constBackingUse(backing.use),
+                    } else null,
+                    .declared_order = try self.result.const_types.appendDeclaredFieldSpan(stored_declared),
+                } };
+            },
+        };
+    }
+
     fn fnSetForType(self: *Lowerer, ty: Type.TypeId, variants_span: Type.Span) Common.LowerError!LirProgram.FnSetId {
         const type_variants = self.types.fnVariantSpan(variants_span);
         const value_layout = try self.layoutOfType(ty);
@@ -1269,6 +1600,7 @@ const Lowerer = struct {
                 else
                     .{ .generated = @intFromEnum(field.symbol) },
                 .slot = @intCast(index),
+                .ty = try self.constTypeOfType(field.ty),
                 .plan = try self.constPlanOfType(field.ty),
             };
         }
@@ -2083,7 +2415,8 @@ const Lowerer = struct {
         if (captures.len == 0) {
             return try self.lowerKnownCallInto(target, target_fn, args, null, is_cold, next);
         }
-        const capture_ty = try self.captureRecordType(captures);
+        const capture_ty = self.fn_entries.items[@intFromEnum(target_fn)].spec.capture_ty orelse
+            Common.invariant("capturing direct call target had no capture record type");
         const capture_local = try self.addTemp(capture_ty);
         const call = try self.lowerKnownCallInto(target, target_fn, args, capture_local, is_cold, next);
         return try self.lowerCaptureRecordFromCapturesInto(capture_local, captures, capture_ty, call);
@@ -3181,8 +3514,8 @@ const Lowerer = struct {
     }
 
     fn lowerBlockInto(self: *Lowerer, target: LIR.LocalId, stmts_span: Lifted.Span(Lifted.StmtId), final_expr: Lifted.ExprId, next: LIR.CFStmtId) Common.LowerError!LIR.CFStmtId {
-        var current = try self.lowerExprInto(target, final_expr, next);
         const stmts = self.solved.lifted.stmtSpan(stmts_span);
+        var current = try self.lowerExprInto(target, final_expr, next);
         var i = stmts.len;
         while (i > 0) {
             i -= 1;
@@ -5313,6 +5646,26 @@ fn cloneArrayList(comptime T: type, allocator: std.mem.Allocator, source: *const
     return cloned;
 }
 
+fn constPrimitive(primitive: MonoType.Primitive) const_store.Primitive {
+    return std.meta.stringToEnum(const_store.Primitive, @tagName(primitive)) orelse
+        Common.invariant("monotype primitive had no ConstStore primitive equivalent");
+}
+
+fn constNamedKind(kind: MonoType.NamedKind) const_store.TypeNamedKind {
+    return switch (kind) {
+        .nominal => .nominal,
+        .@"opaque" => .@"opaque",
+        .alias => .alias,
+    };
+}
+
+fn constBackingUse(use: MonoType.BackingUse) const_store.TypeBackingUse {
+    return switch (use) {
+        .inspectable => .inspectable,
+        .runtime_layout_only => .runtime_layout_only,
+    };
+}
+
 fn lirSymbol(symbol: Common.Symbol) LIR.Symbol {
     return LIR.Symbol.fromRaw(@intCast(@intFromEnum(symbol)));
 }
@@ -5332,6 +5685,7 @@ fn constFnDefFromMono(fn_def: Mono.FnDef) check.ConstStore.FnDef {
         .nested => |nested| .{ .nested = .{
             .owner = nested.owner,
             .site = nested.site,
+            .context_fn_key = nested.context_fn_key,
         } },
         .local_hosted => |hosted| .{ .local_hosted = hosted.template },
         .imported_hosted => |hosted| .{ .imported_hosted = hosted.template },
