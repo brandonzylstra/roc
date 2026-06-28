@@ -2655,14 +2655,14 @@ const Builder = struct {
                 var added = std.ArrayList(Ast.LocalId).empty;
                 defer added.deinit(self.allocator);
                 try self.bindPatLocals(let_.bind, bound, &added);
-                defer self.removeBoundLocals(bound, added.items);
+                defer removeBoundLocals(bound, added.items);
                 return try self.exprDependsOnFreeLocalInner(let_.rest, target, bound, active_fns);
             },
             .lambda => |lambda| {
                 var added = std.ArrayList(Ast.LocalId).empty;
                 defer added.deinit(self.allocator);
                 try self.bindTypedLocalLocals(lambda.args, bound, &added);
-                defer self.removeBoundLocals(bound, added.items);
+                defer removeBoundLocals(bound, added.items);
                 return try self.exprDependsOnFreeLocalInner(lambda.body, target, bound, active_fns);
             },
             .fn_def => |fn_id| return try self.fnDependsOnFreeLocal(fn_id, target, bound, active_fns),
@@ -2705,7 +2705,7 @@ const Builder = struct {
                     var added = std.ArrayList(Ast.LocalId).empty;
                     defer added.deinit(self.allocator);
                     try self.bindPatLocals(branch.pat, bound, &added);
-                    defer self.removeBoundLocals(bound, added.items);
+                    defer removeBoundLocals(bound, added.items);
                     if (branch.guard) |guard| {
                         if (try self.exprDependsOnFreeLocalInner(guard, target, bound, active_fns)) return true;
                     }
@@ -2743,7 +2743,7 @@ const Builder = struct {
             .block => |block| {
                 var added = std.ArrayList(Ast.LocalId).empty;
                 defer added.deinit(self.allocator);
-                defer self.removeBoundLocals(bound, added.items);
+                defer removeBoundLocals(bound, added.items);
                 for (self.program.stmtSpan(block.statements)) |stmt| {
                     if (try self.stmtDependsOnFreeLocal(stmt, target, bound, active_fns, &added)) return true;
                 }
@@ -2756,7 +2756,7 @@ const Builder = struct {
                 var added = std.ArrayList(Ast.LocalId).empty;
                 defer added.deinit(self.allocator);
                 try self.bindTypedLocalLocals(loop.params, bound, &added);
-                defer self.removeBoundLocals(bound, added.items);
+                defer removeBoundLocals(bound, added.items);
                 return try self.exprDependsOnFreeLocalInner(loop.body, target, bound, active_fns);
             },
             .break_ => |maybe| if (maybe) |value|
@@ -2951,11 +2951,9 @@ const Builder = struct {
     }
 
     fn removeBoundLocals(
-        self: *Builder,
         bound: *std.AutoHashMap(Ast.LocalId, void),
         locals: []const Ast.LocalId,
     ) void {
-        _ = self;
         var index = locals.len;
         while (index > 0) {
             index -= 1;
