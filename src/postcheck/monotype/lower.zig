@@ -221,11 +221,11 @@ const HostedSectionMap = struct {
 };
 
 const BinderMap = std.AutoHashMap(checked.PatternBinderId, Ast.LocalId);
-const BinderTypeKey = struct {
+const TypedBinder = struct {
     binder: checked.PatternBinderId,
     type_digest: names.TypeDigest,
 };
-const TypedBinderMap = std.AutoHashMap(BinderTypeKey, Ast.LocalId);
+const TypedBinders = std.AutoHashMap(TypedBinder, Ast.LocalId);
 const LexicalBinderEntry = struct {
     kind: u8,
     binder: u32,
@@ -3924,7 +3924,7 @@ const BodyContext = struct {
     current_fn_key: names.TypeDigest,
     comptime_exhaustiveness_depth: u32,
     binders: BinderMap,
-    typed_binders: TypedBinderMap,
+    typed_binders: TypedBinders,
     local_proc_contexts: std.AutoHashMap(checked.PatternBinderId, LocalProcContext),
     /// This specialization's type solver, shared by every instantiation
     /// context created while lowering the same specialization.
@@ -4040,7 +4040,7 @@ const BodyContext = struct {
         local: Ast.LocalId,
     };
 
-    fn binderTypeKey(self: *BodyContext, binder: checked.PatternBinderId, ty: Type.TypeId) BinderTypeKey {
+    fn typedBinder(self: *BodyContext, binder: checked.PatternBinderId, ty: Type.TypeId) TypedBinder {
         return .{
             .binder = binder,
             .type_digest = self.builder.program.types.typeDigest(&self.builder.program.names, ty),
@@ -4053,7 +4053,7 @@ const BodyContext = struct {
         ty: Type.TypeId,
         local: Ast.LocalId,
     ) Allocator.Error!?Ast.LocalId {
-        const key = self.binderTypeKey(binder, ty);
+        const key = self.typedBinder(binder, ty);
         const previous = self.typed_binders.get(key);
         try self.typed_binders.put(key, local);
         return previous;
@@ -4065,7 +4065,7 @@ const BodyContext = struct {
         ty: Type.TypeId,
         previous: ?Ast.LocalId,
     ) void {
-        const key = self.binderTypeKey(binder, ty);
+        const key = self.typedBinder(binder, ty);
         if (previous) |local| {
             self.typed_binders.put(key, local) catch |err| switch (err) {
                 error.OutOfMemory => Common.invariant("restoring a previously inserted typed binder cannot reallocate"),
@@ -4094,7 +4094,7 @@ const BodyContext = struct {
             .current_fn_key = .{},
             .comptime_exhaustiveness_depth = 0,
             .binders = BinderMap.init(allocator),
-            .typed_binders = TypedBinderMap.init(allocator),
+            .typed_binders = TypedBinders.init(allocator),
             .local_proc_contexts = std.AutoHashMap(checked.PatternBinderId, LocalProcContext).init(allocator),
             .graph = graph,
             .node_map = std.AutoHashMap(CheckedTypeAddress, NodeId).init(allocator),
@@ -4218,7 +4218,7 @@ const BodyContext = struct {
                     entry.local = @intFromEnum(local);
                 },
                 1 => {
-                    const key = BinderTypeKey{
+                    const key = TypedBinder{
                         .binder = @enumFromInt(entry.binder),
                         .type_digest = entry.type_digest,
                     };
@@ -9668,7 +9668,7 @@ const BodyContext = struct {
             .promoted_top_level_proc,
             => return null,
         };
-        return if (self.typed_binders.get(self.binderTypeKey(binder, ty))) |local|
+        return if (self.typed_binders.get(self.typedBinder(binder, ty))) |local|
             .{ .binder = binder, .local = local }
         else
             null;
